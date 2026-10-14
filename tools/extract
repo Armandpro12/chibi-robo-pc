@@ -1,0 +1,4 @@
+#!/bin/sh
+# Launcher: py -3 on Windows, python3 elsewhere.
+if command -v py >/dev/null 2>&1; then exec py -3 "$(dirname "$0")/extract.py" "$@"; fi
+exec python3 "$(dirname "$0")/extract.py" "$@"

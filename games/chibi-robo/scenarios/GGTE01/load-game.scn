@@ -1,0 +1,29 @@
+# Scenario "load-game" (US, milestone 7, rewritten for step 10b): RUN IT WITH THE USER FOLDER OF
+# "new-game" (the "after" directive below: tools/ab.py prepares it; by hand: tools/run.py --user-seed
+# <new-game folder>/user). Title screen -> Load Game (the game puts the cursor on it) -> file 1 -> the
+# save is read back (CARDRead) and the game resumes (first dialogue of the intro). Same path as
+# ../load-game.scn, without the 50/60 Hz prompt: PAL frames from the title screen on, minus 1000.
+# DATE: the initial cursor of "Load Game" depends on the date stored in the save (see the header of the
+# PAL scenario); the "new-game" -> "load-game" chain runs at the fixed bench clock: start on
+# file 1, LEFT/RIGHT there and back (1 -> 3 -> 1), "file-1-selected" checks it before A.
+name load-game
+description With the save from "new-game": Load Game, file 1, reload, 3D intro (US).
+version GGTE01
+after new-game   # preparation: user folder (save) left by "new-game"
+window 4
+
+input  450 A       # health and safety warning
+input 1600 A       # title screen: Load Game
+input 1850 LEFT    # Load Game file selection screen: from file 1 (initial cursor) to file 3 (the cursor wraps around)
+input 1900 RIGHT   # ... and back to file 1
+input 1950 A       # load file 1
+
+check  400 health-warning
+check 1500 title-screen-with-save
+check 1800 load-file-select
+check 1890 cursor-file-3
+check 1940 file-1-selected
+check 2150 loading soft
+check 3450 birthday-dialogue
+
+end 3520

@@ -1,0 +1,20 @@
+# Scenario "new-game" (US, milestone 7, native memory card always present): title screen -> New Game ->
+# file 1 (empty) -> the game creates its save CHIBIROBO(0) -> 3D introduction (first dialogue).
+# Same logical path as ../new-game.scn (PAL); frames recorded on GGTE01 (native card, cycle
+# clock, RTC 800000000, fresh user folder). Effect: <user folder>/saves/01-GGTE-CHIBIROBO(0).gci.
+name new-game
+description Title screen, New Game, file 1: creates the save on the native card, then 3D intro (US).
+version GGTE01
+window 4
+
+input  450 A       # health and safety warning
+input 1600 A       # title screen: New Game (empty card: cursor on New Game)
+input 1900 A       # New Game file selection screen: file 1 -> save created
+
+check  400 health-warning
+check 1500 title-screen
+check 1800 new-game-file-select
+check 2060 loading soft
+check 3000 birthday-dialogue
+
+end 3150

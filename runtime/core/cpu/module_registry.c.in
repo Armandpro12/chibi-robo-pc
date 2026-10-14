@@ -1,0 +1,32 @@
+/* File produced by CMake from runtime/core/cpu/module_registry.c.in (do not edit).
+ * List of the recompiled modules linked into the executable, and build parameters. */
+#include "boot/gcrt_boot.h"
+
+@GCRT_MODULE_DECLS@
+static const GcrtModule* const gcrt_module_list[] = {
+@GCRT_MODULE_ENTRIES@    0,
+};
+
+const GcrtModuleTable gcrt_recompiled_modules = { gcrt_module_list, @GCRT_MODULE_COUNT@u };
+
+/* Layout of the recompiled RELs (recomp/rel_layout.txt). */
+static const GcrtRelLayout gcrt_rel_layout_list[] = {
+@GCRT_REL_LAYOUT@    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+};
+
+/* Entry points compiled with an HLE hook (recomp/hle_hooks.txt). */
+static const u32 gcrt_hle_hook_list[] = {
+@GCRT_HLE_HOOKS@    0,
+};
+
+const GcrtBuildInfo gcrt_build_info = {
+    "@GCRT_GAME@",
+    "@GCRT_GAME_VERSION@",
+    "@GCRT_DISC_ROOT@",
+    @GCRT_DOL_FNV64@ull,
+    @GCRT_RAM_SIZE@u,
+    gcrt_rel_layout_list,
+    @GCRT_REL_COUNT@u,
+    gcrt_hle_hook_list,
+    @GCRT_HLE_HOOK_COUNT@u,
+};

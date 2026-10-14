@@ -1,0 +1,25 @@
+# Reference scenario "title-boot", US version (GGTE01): cold boot up to the title screen.
+# Same logical scenario as games/chibi-robo/scenarios/title-boot.scn (PAL), with US-specific frame numbers:
+# the US version has neither the 50/60 Hz prompt nor the language choice (fixed 60 Hz); it starts on the health warning.
+# Format: tools/scenario.py (times in PRESENTED FRAMES, numbered from 1; no game data here).
+# Written on GGTE01 with the last build that still emulated the hardware (kept outside this repository's public
+# history; cycle clock, RTC 800000000, fixed seed from game.toml [run.force]); its reference run is now recorded
+# natively. Checkpoints on stable screens (the warning's line asking for a button press pulses: its state is
+# deterministic per frame, identical from one run to the next).
+# Observed sequence (mean luminance of the captures, plateaus = logo at full intensity): health warning (from
+# frame 1) -> Nintendo logo (plateau, frames ~510-560) -> Bandai logo (~630-680) -> developer logo (~750-800)
+# -> black -> fade -> title screen (stable from ~930). The checkpoints are placed in the middle of the plateaus.
+name title-boot
+description Cold boot (US): health warning, logos, title screen.
+version GGTE01
+window 4
+
+input  450 A       # health and safety warning, which waits for a button press
+
+check  400 health-warning
+check  540 nintendo-logo
+check  660 publisher-logo
+check  780 developer-logo
+check 1800 title-screen
+
+end 1900

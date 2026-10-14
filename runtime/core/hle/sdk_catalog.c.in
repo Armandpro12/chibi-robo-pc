@@ -1,0 +1,7 @@
+/* File produced by CMake from runtime/core/hle/sdk_signatures.tsv (do not edit). */
+#include "hle/gcrt_hle.h"
+
+const GcrtSdkSignature gcrt_sdk_catalog[] = {
+@GCRT_SDK_CATALOG@    { 0, 0, 0, 0, 0, 0 },
+};
+const unsigned gcrt_sdk_catalog_count = @GCRT_SDK_CATALOG_COUNT@u;

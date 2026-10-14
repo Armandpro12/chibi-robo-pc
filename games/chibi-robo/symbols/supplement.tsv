@@ -1,0 +1,193 @@
+# Functions named by our own analysis (reverse agent, 2026-10-09), missing from the cbr_decomp names.
+# Merged into <ID>.map by tools/symbols.py ONLY if the status starts with "verified".
+# Hypotheses stay here for the record (and in the internal function notes) but do not go into the maps.
+# Format (TSV): name  GGTP01_address  GGTE01_address  status  evidence ("-" = unknown address)
+# This file only contains names and addresses, no game data.
+# This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
+VIInit	80173A30	80171180	verified	only caller of OSRegisterVersion with the "Dolphin SDK - VI" banner; writes the VI registers; installs the handler of interrupt 24 (PI VI)
+PADInit	801760BC	80173848	verified	calls OSRegisterVersion with the "Dolphin SDK - PAD" banner; SI registers
+AIInit	80177398	80174B24	verified	calls OSRegisterVersion with the "Dolphin SDK - AI" banner; AI registers 0xCC006C00-0C
+ARInit	80177AB4	8017524C	verified	calls OSRegisterVersion with the "Dolphin SDK - AR" banner; DSP ARAM registers 0xCC005012-502A
+ARQInit	801795EC	80176D84	verified	calls OSRegisterVersion with the "Dolphin SDK - ARQ" banner
+AXInit	801797B8	80176F50	verified	wrapper: calls AXInitEx(0)
+AXInitEx	801797DC	80176F74	verified	calls OSRegisterVersion with the "Dolphin SDK - AX" banner
+DSPInit	8017F634	8017CDCC	verified	calls OSRegisterVersion with the "Dolphin SDK - DSP" banner
+CARDInit	801811E4	8017E97C	verified	calls OSRegisterVersion with the "Dolphin SDK - CARD" banner; calls DSPInit
+THPInit	801FFB38	801FD144	verified	calls OSRegisterVersion with the "Dolphin SDK - THP" banner
+VIWaitForRetrace	80173EE0	80171630	verified	loops on OSSleepThread(&queue) as long as the retrace counter (SDA) has not changed; called at the top of the main loop (US 0x800156C8, cf. ChibiRobo-GBA-Link)
+VIGetRetraceCount	8017515C	801728AC	verified	returns the retrace counter incremented by __VIRetraceHandler
+__VIRetraceHandler	80173488	80170BD8	verified	handler installed by VIInit for interrupt 24; increments the counter, calls the pre/post callbacks, wakes up the VIWaitForRetrace queue
+OSSleepThread	8016D684	8016ADD4	verified	called by VIWaitForRetrace on the queue woken up by __VIRetraceHandler; calls SelectThread
+OSWakeupThread	8016D770	8016AEC0	verified	called by __VIRetraceHandler on the VIWaitForRetrace queue
+OSLink	8016A510	80167C60	verified	wrapper Link(module, bss, 0); called by the game's module loader before calling the prolog
+OSUnlink	8016A76C	80167EBC	verified	calls Undo (string "OSUnlink: unknown relocation type"); called by the module unloader after the epilog
+Relocate	80169F74	801676C4	strong hypothesis	static function of OSLink.c (string "OSLink: unknown relocation type"); name taken from the SDK structure
+Link	8016A230	80167980	strong hypothesis	static function called by OSLink; calls Relocate 3 times, then memset (BSS) and OSNotifyLink
+Undo	8016A534	80167C84	strong hypothesis	static function of OSUnlink (string "OSUnlink: unknown relocation type")
+OSNotifyLink	80169F6C	801676BC	strong hypothesis	empty function (blr) called at the end of Link (debugger breakpoint)
+OSNotifyUnlink	80169F70	801676C0	strong hypothesis	empty function (blr) that follows OSNotifyLink
+OSInitStopwatch	8016C490	80169BE0	strong hypothesis	called 3 times by the CGame init (vtable +0x10) with a 0x40-byte object and the names "$dsync$", "$update$", "$draw$"
+OSResetStopwatch	8016C634	80169D84	hypothesis	in the main loop, on the 3 stopwatches, before OSStartStopwatch
+OSStartStopwatch	8016C4BC	80169C0C	hypothesis	same as above
+OSCheckStopwatch	8016C5C4	80169D14	hypothesis	returns a 64-bit value (r3:r4) stored in the game object
+OSStopStopwatch	8016C4F8	80169C48	hypothesis	follows OSCheckStopwatch
+__dt__5CGameFv	800078A0	80007880	verified	entry +8 of the CGame virtual table in both versions (PAL 0x8021638C, US 0x8020FC80); in US it is the function named __dt__5CGameFv by cbr_decomp; the code differs between versions
+# Step 10a (reverse agent, 2026-10-10): public SDK functions for DVD, SI/PAD, VI, AR/ARQ and cache (the internal SDK notes).
+DVDLowRead	8016F720	8016CE70	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowSeek	8016F9B8	8016D108	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowReadDiskID	8016FA78	8016D1C8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowRequestError	8016FBA8	8016D2F8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowInquiry	8016FC34	8016D384	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowAudioStream	8016FCD0	8016D420	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowRequestAudioStatus	8016FD68	8016D4B8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowAudioBufferConfig	8016FDF4	8016D544	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowBreak	8016FF4C	8016D69C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDLowClearCallback	8016FF60	8016D6B0	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDLowTestAlarm	8016FFC0	8016D710	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDConvertPathToEntrynum	80170030	8016D780	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDFastOpen	80170324	8016DA74	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDClose	80170398	8016DAE8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDChangeDir	801703BC	8016DB0C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDReadAsyncPrio	8017041C	8016DB6C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDReadAbsAsyncPrio	8017214C	8016F89C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDReadAbsAsyncForBS	80172228	8016F978	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDCancelStreamAsync	801723CC	8016FB1C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDGetCommandBlockStatus	8017259C	8016FCEC	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDSetAutoInvalidation	80172694	8016FDE4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDResume	801726A4	8016FDF4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDCancelAsync	801726F4	8016FE44	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDCancel	80172970	801700C0	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDGetCurrentDiskID	80172A40	80170190	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDCheckDisk	80172A48	80170198	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDPrepareResetAsync	80172B40	80170290	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDTestAlarm	80172C5C	801703AC	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDDequeueWaitingQueue	80172E2C	8017057C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDCompareDiskID	80173024	80170774	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDShowFatalMessage	8017311C	8017086C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DVDSetAutoFatalMessaging	801731A8	801708F8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__DVDPrintFatalMessage	80173218	80170968	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__OSGetDIConfig	8016468C	80161DDC	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIBusy	80162208	8015F958	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIIsChanBusy	80162228	8015F978	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIEnablePollingInterrupt	801628A4	8015FFF4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIRegisterPollingHandler	8016293C	8016008C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIUnregisterPollingHandler	80162A08	80160158	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__SITransfer	80162BB0	80160300	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIGetStatus	80162DBC	8016050C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SISetCommand	80162E38	80160588	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SITransferCommands	80162E4C	8016059C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIEnablePolling	80162EC8	80160618	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIDisablePolling	80162F64	801606B4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIGetResponse	801630A4	801607F4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIGetTypeAsync	801637BC	80160F0C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+SIRefreshSamplingRate	801639DC	8016112C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADReset	80175E98	80173624	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADRecalibrate	80175FA8	80173734	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADRead	8017620C	80173998	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADControlMotor	8017650C	80173C98	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADSetSpec	801765C4	80173D50	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+PADSetSamplingCallback	80176E98	80174624	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VISetPreRetraceCallback	801736FC	80170E4C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VISetPostRetraceCallback	80173740	80170E90	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VIConfigure	801743A8	80171AF8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VIConfigurePan	80174BB0	80172300	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VIFlush	80174F44	80172694	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VISetNextFrameBuffer	80175074	801727C4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VISetBlack	801750E0	80172830	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VIGetNextField	80175208	80172958	strong hypothesis	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+VIGetCurrentLine	801752A4	801729F4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__VIDisplayPositionToXY	801753A4	80172B30	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__VIGetCurrentPosition	801755C0	80172D4C	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+OSGetFontEncode	80168734	80165E84	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARRegisterDMACallback	80177868	80175000	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARGetDMAStatus	801778AC	80175044	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARStartDMA	801778E8	80175080	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARAlloc	801779D8	80175170	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARFree	80177A40	801751D8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARGetSize	80177B78	80175310	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARHandler	80177B80	80175318	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARClearInterrupt	80177BF8	80175390	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARGetInterruptStatus	80177C18	801753B0	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARChecksize	80177C28	801753C0	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARQServiceQueueLo	8017941C	80176BB4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARQCallbackHack	8017951C	80176CB4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__ARQInterruptServiceRoutine	80179520	80176CB8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+ARQPostRequest	8017965C	80176DF4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DCStoreRange	80165888	80162FD8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+DCZeroRange	801658E4	80163034	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__LCEnable	80165968	801630B8	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+LCEnable	80165A34	80163184	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+LCStoreBlocks	80165A94	801631E4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+LCStoreData	80165AB8	80163208	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+LCQueueWait	80165B64	801632B4	verified	SDK (step 10a): order and size match the reference source (cbr_decomp CC0), calls and registers; sdksig signature identical in PAL and US; details in the internal SDK notes
+__CARDSyncCallback	80180150	8017D8E8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDExtHandler	80180184	8017D91C	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDExiHandler	8018025C	8017D9F4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDTxHandler	80180374	8017DB0C	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDUnlockedHandler	8018041C	8017DBB4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDEnableInterrupt	801804A0	8017DC38	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDReadStatus	80180560	8017DCF8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDReadVendorID	80180650	8017DDE8	strong hypothesis	milestone 7: position, size and calls only (missing from the reference source); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDClearStatus	80180740	8017DED8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDStart	80180C40	8017E3D8	strong hypothesis	milestone 7: order and calls match the reference source (cbr_decomp CC0) but the size differs (newer SDK revision); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDReadSegment	80180E64	8017E5FC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDWritePage	80180F98	8017E730	strong hypothesis	milestone 7: order and calls match the reference source (cbr_decomp CC0) but the size differs (newer SDK revision); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDEraseSector	801810D4	8017E86C	strong hypothesis	milestone 7: order and calls match the reference source (cbr_decomp CC0) but the size differs (newer SDK revision); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDGetFontEncode	80181290	8017EA28	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDSetDiskID	80181298	8017EA30	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDGetControlBlock	801812D0	8017EA68	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDPutControlBlock	80181388	8017EB20	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDFreeBlocks	801813EC	8017EB84	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDGetSectorSize	8018153C	8017ECD4	verified	milestone 7: disassembly read (control block +0x0C after __CARDGetControlBlock) and use by the game (free bytes / sector size); missing from the reference source; sdksig signature unique in PAL and US; the internal SDK notes, section 10
+__CARDSync	801815C0	8017ED58	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDSetFastMode	801816A8	8017EE40	strong hypothesis	milestone 7: position, size and calls only (missing from the reference source); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+CARDGetFastMode	801816DC	8017EE74	strong hypothesis	milestone 7: position, size and calls only (missing from the reference source); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDUnlock	80181A6C	8017F204	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDRead	80182A34	801801CC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDWrite	80182B80	80180318	strong hypothesis	milestone 7: order and calls match the reference source (cbr_decomp CC0) but the size differs (newer SDK revision); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDGetFatBlock	80182BE8	80180380	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDAllocBlock	80182D8C	80180524	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDFreeBlock	80182EA4	8018063C	strong hypothesis	milestone 7: position, size and calls only (missing from the reference source); sdksig signature unique in PAL and US; the internal SDK notes, section 10.1
+__CARDUpdateFatBlock	80182F40	801806D8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDGetDirBlock	80182FEC	80180784	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDUpdateDir	8018318C	80180924	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDCheckSum	80183250	801809E8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDVerify	80183B48	801812E0	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDCheckExAsync	80183BD4	8018136C	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDCheck	80184164	801818FC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDProbeEx	80184284	80181A1C	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDMountCallback	80184854	80181FEC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDMountAsync	8018498C	80182124	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDMount	80184B2C	801822C4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; shared sdksig signature, anchored by the order in the file; details in the internal SDK notes, section 10
+CARDUnmount	80184C10	801823A8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDFormatRegionAsync	80184E00	80182598	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDFormat	80185458	80182BF0	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDCompareFileName	801854AC	80182C44	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDAccess	80185514	80182CAC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDIsWritable	801855A8	80182D40	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDIsReadable	801856DC	80182E74	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDGetFileNo	801857D0	80182F68	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDOpen	80185920	801830B8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDClose	80185A3C	801831D4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDCreateAsync	80185BC8	80183360	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDCreate	80185DE8	80183580	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+__CARDSeek	80185E30	801835C8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDReadAsync	80186118	801838B0	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDRead	8018625C	801839F4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; shared sdksig signature, anchored by the order in the file; details in the internal SDK notes, section 10
+CARDWriteAsync	801864C4	80183C5C	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDWrite	801865D8	80183D70	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; shared sdksig signature, anchored by the order in the file; details in the internal SDK notes, section 10
+CARDDeleteAsync	801866C4	80183E5C	verified	milestone 7: disassembly read (__CARDGetFileNo, entry filled with 0xFF, __CARDUpdateDir with a callback that frees the blocks) and use by the game; sdksig signature unique in PAL and US; the internal SDK notes, section 10.4
+CARDDelete	801867D4	80183F6C	verified	milestone 7: disassembly read (wrapper of CARDDeleteAsync + __CARDSync) and use by the game (file deletion by name); shared signature, anchored after CARDDeleteAsync; the internal SDK notes, section 10.7
+CARDGetStatus	80186A14	801841AC	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDSetStatusAsync	80186B28	801842C0	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+CARDSetStatus	80186C9C	80184434	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; shared sdksig signature, anchored by the order in the file; details in the internal SDK notes, section 10
+EXIImmEx	801605C4	8015DD14	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXISetExiCallback	801609E4	8015E134	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXIProbe	80160BD4	8015E324	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXIProbeEx	80160C54	8015E3A4	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXIAttach	80160D08	8015E458	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXIDetach	80160E14	8015E564	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+EXIGetState	80161860	8015EFB0	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+InitializeUART	80161F98	8015F6E8	verified	SDK (milestone 7): order and size match the reference source (cbr_decomp CC0), calls; sdksig signature unique in PAL and US; details in the internal SDK notes, section 10
+PPCSync	80163A38	80161188	verified	PAL and US disassembly (sc ; blr), position matches PPCArch.c (after PPCMtdec, before PPCHalt); sdksig signature unique in PAL and US; the internal SDK notes, section 11
+PPCMthid0	80163A18	80161168	verified	PAL and US disassembly (mtspr HID0, r3 ; blr), position matches PPCArch.c; sdksig signature unique in PAL and US; the internal SDK notes, section 11

@@ -1,0 +1,183 @@
+diff --git a/src/app/cli.c b/src/app/cli.c
+index e3e0677..b3bb050 100644
+--- a/src/app/cli.c
++++ b/src/app/cli.c
+@@ -39,6 +39,7 @@ void print_usage(const char* argv0) {
+     fprintf(stderr, "  --gamecube                     GameCube mode (no title ID required)\n");
+     fprintf(stderr, "  --rel-base <addr>              Override first virtual load address for REL codegen\n");
+     fprintf(stderr, "  --map <path>                   Load optional function names from a linker MAP\n");
++    fprintf(stderr, "  --hle-hooks <path>             C backend: hex guest addresses whose entry checks host_call\n");
+     fprintf(stderr, "  --setup                        Download titles database and optionally install wit\n");
+     fprintf(stderr, "\n");
+     fprintf(stderr, "Examples:\n");
+@@ -651,6 +652,24 @@ int parse_cli(int argc, char** argv, CliOptions* opts) {
+             continue;
+         }
+ 
++        if (strcmp(arg, "--hle-hooks") == 0) {
++            if (i + 1 >= argc) {
++                fprintf(stderr, "error: --hle-hooks needs a path\n");
++                return 0;
++            }
++            opts->hle_hooks_path = argv[++i];
++            continue;
++        }
++
++        if (strncmp(arg, "--hle-hooks=", 12) == 0) {
++            if (arg[12] == '\0') {
++                fprintf(stderr, "error: --hle-hooks needs a path\n");
++                return 0;
++            }
++            opts->hle_hooks_path = arg + 12;
++            continue;
++        }
++
+         if (strcmp(arg, "--map") == 0) {
+             if (i + 1 >= argc) {
+                 fprintf(stderr, "error: --map needs a path\n");
+diff --git a/src/app/cli.h b/src/app/cli.h
+index 2b938e0..2f012cc 100644
+--- a/src/app/cli.h
++++ b/src/app/cli.h
+@@ -22,6 +22,7 @@ typedef struct {
+     const char* range_profile_path;
+     const char* native_entry_points_path;
+     const char* config_path;
++    const char* hle_hooks_path;
+     const char* game_id;
+     DolRecompCPU cpu;
+     DolRecompBackend backend;
+diff --git a/src/app/pipeline.c b/src/app/pipeline.c
+index d5cb313..eab30dd 100644
+--- a/src/app/pipeline.c
++++ b/src/app/pipeline.c
+@@ -2490,6 +2490,58 @@ fail:
+ }
+ #endif
+ 
++static int compare_u32_values(const void* left, const void* right) {
++    u32 a = *(const u32*)left, b = *(const u32*)right;
++    return a < b ? -1 : a > b ? 1 : 0;
++}
++
++/* --hle-hooks: one hex guest address per line ('#' starts a comment). Loaded
++   once; the table stays alive for the whole run (folder mode emits several modules). */
++static int load_hle_hooks(const CliOptions* options) {
++    static u32* hooks = NULL;
++    static int loaded = 0;
++    if (loaded || !options->hle_hooks_path)
++        return 1;
++    FILE* f = fopen(options->hle_hooks_path, "r");
++    if (!f) {
++        fprintf(stderr, "error: can't open hook list '%s'\n", options->hle_hooks_path);
++        return 0;
++    }
++    char line[256];
++    u32 count = 0, capacity = 0;
++    while (fgets(line, sizeof(line), f)) {
++        char* p = line;
++        while (*p == ' ' || *p == '\t')
++            p++;
++        if (*p == '#' || *p == '\n' || *p == '\r' || *p == '\0')
++            continue;
++        char* end = NULL;
++        unsigned long value = strtoul(p, &end, 16);
++        if (end == p) {
++            fprintf(stderr, "error: bad address in hook list: %s", line);
++            fclose(f);
++            return 0;
++        }
++        if (count == capacity) {
++            capacity = capacity ? capacity * 2u : 64u;
++            u32* grown = (u32*)realloc(hooks, capacity * sizeof(u32));
++            if (!grown) {
++                fclose(f);
++                return 0;
++            }
++            hooks = grown;
++        }
++        hooks[count++] = (u32)value;
++    }
++    fclose(f);
++    if (count)
++        qsort(hooks, count, sizeof(u32), compare_u32_values);
++    emit_set_hook_table(hooks, count);
++    loaded = 1;
++    printf("hle hooks: %u entry points from %s\n", count, options->hle_hooks_path);
++    return 1;
++}
++
+ int emit_code_sections_split(const LoadedCodeSection* sections,
+                              u32 section_count, const char* output_path,
+                                     DolRecompCPU cpu, u32 entry_point, u32 jobs,
+@@ -2507,6 +2559,8 @@ int emit_code_sections_split(const LoadedCodeSection* sections,
+         return 0;
+     }
+ #endif
++    if (!load_hle_hooks(options))
++        return 0;
+     char stem[1024];
+     char header_path[1100];
+     char symbol_header_path[1100];
+diff --git a/src/backend/emitter.c b/src/backend/emitter.c
+index 45c3286..6355f16 100644
+--- a/src/backend/emitter.c
++++ b/src/backend/emitter.c
+@@ -318,6 +318,28 @@ static bool branch_target_is_local(u32 func_start, u32 func_end, u32 target) {
+ static const u32* g_chunk_starts = NULL;
+ static u32 g_chunk_count = 0;
+ 
++static const u32* g_hook_addrs = NULL;
++static u32 g_hook_count = 0;
++
++void emit_set_hook_table(const u32* addrs, u32 count) {
++    g_hook_addrs = count ? addrs : NULL;
++    g_hook_count = count ? count : 0;
++}
++
++static bool address_is_hooked(u32 addr) {
++    u32 lo = 0, hi = g_hook_count;
++    while (lo < hi) {
++        u32 mid = lo + (hi - lo) / 2u;
++        if (g_hook_addrs[mid] == addr)
++            return true;
++        if (g_hook_addrs[mid] < addr)
++            lo = mid + 1u;
++        else
++            hi = mid;
++    }
++    return false;
++}
++
+ void emit_set_chunk_table(const u32* starts, u32 count) {
+     g_chunk_starts = count ? starts : NULL;
+     g_chunk_count = count ? count : 0;
+@@ -1931,6 +1953,11 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+ 
+     for (u32 i = 0; i < count; i++) {
+         fprintf(out, "label_%08X:\n", insts[i].address);
++        if (g_hook_count && address_is_hooked(insts[i].address)) {
++            fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
++            fprintf(out, "    if (ctx->host_call && ppc_host_call(ctx, 0x%08Xu)) return; /* --hle-hooks */\n",
++                    insts[i].address);
++        }
+         if (cfg.loop_ends[i] != UINT32_MAX) {
+             u32 continuation = insts[cfg.loop_ends[i]].address + 4u;
+             fprintf(out, "    loop_%08X(ctx);\n", insts[i].address);
+diff --git a/src/backend/emitter.h b/src/backend/emitter.h
+index 39d8f3c..58e4881 100644
+--- a/src/backend/emitter.h
++++ b/src/backend/emitter.h
+@@ -23,6 +23,12 @@ void emit_header_for_cpu(FILE* out, DolRecompCPU cpu);
+ // passing count == 0 restores the safe return-to-chassis form.
+ void emit_set_chunk_table(const u32* starts, u32 count);
+ 
++// Guest addresses (sorted) whose entry label must offer the runtime a chance to
++// replace the function: `if (ctx->host_call && ppc_host_call(ctx, addr)) return;`.
++// Needed because direct calls inside a chunk are emitted as goto and never reach
++// the chassis. Call before worker emission; count == 0 disables the hooks.
++void emit_set_hook_table(const u32* addrs, u32 count);
++
+ // emit a single recompiled function as C code
+ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr);
+ 

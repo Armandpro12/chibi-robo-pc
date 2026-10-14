@@ -1,0 +1,35 @@
+# Scenario "overwrite-save" (US, milestone 7, safe write): RUN IT WITH THE USER FOLDER OF
+# "new-game" (the "after" directive below: tools/ab.py prepares it; by hand: tools/run.py --user-seed
+# <new-game folder>/user). Title screen -> New Game -> file 1 (occupied) -> overwrite confirmation: Yes ->
+# the game rewrites CHIBIROBO(0): CARDCreate (EXIST) then CARDOpen, two CARDWrite (copies 1 and 2). Same logical path
+# as ../overwrite-save.scn (PAL), without the 50/60 Hz prompt: every PAL frame from the title screen on
+# is shifted by -1000 (new-game: 2600 -> 1600, 2900 -> 1900), since the menu durations are the game's own.
+# Frames RECORDED on GGTE01 (native card, cycle clock, RTC 800000000) and checked by eye, capture by capture:
+#   1500 title screen (cursor on Load Game)        1640 cursor on New Game
+#   1700-1900 New Game file selection screen (file 1 occupied: its summary shows the start of the game)
+#   1940 overwrite confirmation with No preselected; 1960 and 1990 with Yes selected (after LEFT at 1950)
+#   2050 saving message, with the usual warning not to touch the memory card or the power button
+#   2300 loading (clock scene), 2500 text of the first dialogue being typed out, 2700 the birthday greeting of that
+#   dialogue
+# Used by the hard-kill test: with GCRT_SAVE_FAULT=before-rename:1 (or mid-write:1), the process is killed
+# while copy 1 is being written; the previous save must stay intact (tests/card/test_save_e2e.py).
+name overwrite-save
+description With the save from "new-game": New Game on file 1, overwrite (Yes), rewrite (US).
+version GGTE01
+after new-game   # preparation: user folder (save) left by "new-game"
+window 4
+
+input  450 A       # health and safety warning
+input 1600 UP      # title screen: cursor from Load Game to New Game
+input 1650 A       # New Game
+input 1900 A       # file 1 (occupied)
+input 1950 LEFT    # overwrite confirmation: cursor from No (preselected) to Yes
+input 2000 A       # confirm Yes -> the save is rewritten, then intro
+
+check  400 health-warning
+check 1895 new-game-file-occupied
+check 1990 overwrite-confirm
+check 2050 saving soft
+check 2300 loading soft
+
+end 2720

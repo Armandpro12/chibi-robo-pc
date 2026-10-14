@@ -1,0 +1,28 @@
+# Scenario "overwrite-save" (milestone 7, safe write): RUN IT WITH THE USER FOLDER OF
+# "new-game" (the "after" directive below: tools/ab.py prepares it; by hand: tools/run.py --user-seed
+# <new-game folder>/user). Title screen -> New Game -> file 1 (occupied) -> overwrite confirmation: Yes ->
+# the game rewrites CHIBIROBO(0): CARDCreate (EXIST) then CARDOpen, two CARDWrite (copies 1 and 2).
+# Used by the hard-kill test: with GCRT_SAVE_FAULT=before-rename:1 (or mid-write:1), the process is killed
+# while copy 1 is being written; the previous save must stay intact (tests/card/test_save_e2e.py).
+# Format: tools/scenario.py. Recorded on GGTP01 with the native card (cycle clock, RTC 800000000).
+name overwrite-save
+description With the save from "new-game": New Game on file 1, overwrite (Yes), rewrite.
+version GGTP01
+after new-game   # preparation: user folder (save) left by "new-game"
+window 4
+
+input  150 A       # 60/50 Hz prompt: confirm the 50 Hz option
+input 1050 A       # health and safety warning
+input 2600 UP      # title screen: cursor from Load Game to New Game
+input 2650 A       # New Game
+input 2900 A       # file 1 (occupied)
+input 2950 LEFT    # overwrite confirmation: cursor from No (preselected) to Yes
+input 3000 A       # confirm Yes -> the save is rewritten, then intro
+
+check  800 health-warning
+check 2895 new-game-file-occupied
+check 2990 overwrite-confirm
+check 3050 saving soft    # saving message (transient screen: soft)
+check 3300 loading soft
+
+end 3720

@@ -1,0 +1,20 @@
+/* File produced by CMake from runtime/core/cpu/module_glue.c.in (do not edit).
+ * Recompiled module: @GCRT_MODULE_NAME@
+ * Exposes the module's block lookup (dolrecomp_find_original, a static function of its generated.h)
+ * to the generic chassis (cpu/chassis.c). */
+#include "@GCRT_MODULE_HEADER@"
+#include "cpu/gcrt_cpu.h"
+
+#ifndef DOLRECOMP_ENTRY_POINT
+#define DOLRECOMP_ENTRY_POINT 0u
+#endif
+
+static GcrtGuestFn gcrt_find_@GCRT_MODULE_ID@(u32 address) {
+    return (GcrtGuestFn)dolrecomp_find_original(address);
+}
+
+const GcrtModule gcrt_module_@GCRT_MODULE_ID@ = {
+    "@GCRT_MODULE_NAME@",
+    DOLRECOMP_ENTRY_POINT,
+    gcrt_find_@GCRT_MODULE_ID@,
+};

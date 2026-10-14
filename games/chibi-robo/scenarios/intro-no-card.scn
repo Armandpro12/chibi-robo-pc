@@ -1,0 +1,29 @@
+# Reference scenario "intro-no-card": title screen -> New Game -> no memory card -> continue without
+# saving -> 3D introduction (first dialogue, which waits for A). Converts the old scenario in .txt format
+# (seconds of emulated time -> presented frames; the START press at 50 s, which had no effect on the title screen, is removed).
+# Format: tools/scenario.py (times in PRESENTED FRAMES, numbered from 1; no game data here).
+# Written on GGTP01 with the last build that still emulated the hardware (kept outside this repository's public
+# history; cycle clock, RTC 800000000); its reference run is now recorded natively (tools/ab.py record). The checkpoints are on screens
+# that wait for an input, except "loading" (simulated disc read time: soft, never makes the comparator fail).
+name intro-no-card
+description Title screen, New Game, no memory card, continue without saving, 3D intro.
+version GGTP01
+window 4
+env GCRT_CARD=absent   # empty port A: this scenario follows the "no memory card" path (as the emulated build did)
+
+input  150 A       # 60/50 Hz prompt: confirm the 50 Hz option
+input 1050 A       # health and safety warning
+input 2600 A       # title screen: New Game
+input 2900 A       # no-memory-card message: A goes on without saving
+input 3100 LEFT    # prompt to confirm playing without saving: cursor from No (preselected) to Yes
+input 3250 A       # confirm Yes -> loading, clock scene, birthday party
+
+check  800 health-warning
+check 2000 title-screen
+check 2800 no-card
+check 3060 continue-without-saving
+check 3200 yes-selected
+check 3330 loading soft
+check 4000 birthday-dialogue
+
+end 4150

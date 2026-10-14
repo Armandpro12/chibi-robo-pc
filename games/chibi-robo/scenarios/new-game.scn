@@ -1,0 +1,24 @@
+# Scenario "new-game" (milestone 7, native memory card always present): title screen -> New Game -> file 1
+# (empty) -> the game creates its save CHIBIROBO(0) and writes the starting data to it -> 3D introduction (first
+# dialogue, which waits for A). Replaces the "no memory card" path of intro-no-card, a path that no longer exists.
+# Format: tools/scenario.py (times in PRESENTED FRAMES, numbered from 1; no game data here).
+# Recorded on GGTP01 with the native card (cycle clock, RTC 800000000, fresh user folder: empty card).
+# Expected effect: <user folder>/saves/01-GGTP-CHIBIROBO(0).gci (49,216 bytes) after frame 2900;
+# the "load-game" scenario reads it back (same folder: tools/run.py --user-dir).
+name new-game
+description Title screen, New Game, file 1: creates the save on the native card, then 3D intro.
+version GGTP01
+window 4
+
+input  150 A       # 60/50 Hz prompt: confirm the 50 Hz option
+input 1050 A       # health and safety warning
+input 2600 A       # title screen: New Game (empty card: cursor on New Game)
+input 2900 A       # New Game file selection screen: file 1 -> save created
+
+check  800 health-warning
+check 2000 title-screen
+check 2800 new-game-file-select
+check 3060 loading soft
+check 4000 birthday-dialogue
+
+end 4150

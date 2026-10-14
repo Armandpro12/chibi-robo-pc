@@ -1,0 +1,87 @@
+# Description of Chibi-Robo! for the generic tools in tools/.
+# No game data here: only identifiers, checksums and paths.
+
+[game]
+name = "Chibi-Robo!"
+slug = "chibi-robo"
+platform = "gamecube"
+default_version = "GGTP01"
+
+# Recognized versions. The checksum covers the complete (uncompressed) .iso image.
+[[versions]]
+game_id = "GGTP01"
+region = "PAL"
+revision = 0
+iso_sha1 = "f321aa7fb1ae5101ec60f1bbca8184898142135a"
+
+[[versions]]
+game_id = "GGTE01"
+region = "NTSC-U"
+revision = 0
+iso_sha1 = "9052f186411b49845323eaaeb014755bcf96321b"
+
+[extract]
+# U8 archives to unpack after extracting the disc (paths relative to the extracted root).
+u8_archives = ["files/qp.bin"]
+
+[code]
+# Main executable and REL modules (paths relative to the extracted root).
+dol = "sys/main.dol"
+rel_dir = "unpacked/qp.bin/rel"
+
+[recomp]
+# Virtual address of the first REL module for DolRecomp (--rel-base). The modules are laid out one after the other,
+# aligned on 64 KiB (16 modules, under 1 MiB: the actual end is computed by tools/build.py).
+# Choice: right after the 24 MiB of MEM1 (0x80000000-0x817FFFFF). This area overlaps neither the DOL
+# (0x80003100-0x80667438 in PAL, BSS included), nor the game heap (OS arena, always below 0x81800000),
+# nor the uncached mirror (0xC0000000-0xC17FFFFF), nor the hardware registers (0xCC000000),
+# nor the locked cache (0xE0000000). The runtime enlarges its host RAM to cover this area;
+# the memory size reported to the game stays 24 MiB. See notes/recomp.md.
+rel_base = 0x81800000
+# Optional symbol map (MAP format read by DolRecomp), relative to games/<game>/; {id} = version.
+symbol_map = "symbols/{id}.map"
+
+[symbols]
+# Reference symbols (read by tools/symbols.py, applied by tools/ghidra/analyze.py):
+# decomp-toolkit (dtk) configuration of cbr_decomp, US version only; transposed to the other versions.
+# dtk_dir is relative to the repository root (external/ is cloned locally and ignored by Git).
+dtk_dir = "external/cbr_decomp/decomp_dtk_main/config/GGTE01"
+reference = "GGTE01"
+map_dir = "symbols"
+attribution = """
+Function names from cbr_decomp (https://github.com/eavpsp/cbr_decomp),
+folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LICENSE).
+This file only contains names and addresses, no game data.
+This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt)."""
+
+[run.watch]
+# tools/run.py: code addresses whose hits at block entry the executable counts (GCRT_WATCH),
+# to prove that the main loop runs (the internal boot notes, sections 7 and 8):
+# return from VIWaitForRetrace in the main loop, then entry of VIWaitForRetrace.
+GGTP01 = ["80015998", "80173EE0"]
+GGTE01 = ["800156CC", "80171630"]
+
+[run.force]
+# tools/run.py --scenario: values forced on entry to game functions (GCRT_FORCE_ARG="ADDRESS:rN=VALUE;...",
+# hexadecimal address, then the original function runs) so that runs can be compared pixel for pixel and
+# bit for bit. Why: the game calls srand(OSGetTick()) at startup; a version that executes fewer
+# instructions before that point (any native replacement of milestone 10) gets another seed, hence other random
+# scenery on the title screen and in the menus (rings, character paths). Same seed for the reference and the
+# candidate: strict A/B (notes/validation.md). Address of `srand` (MSL) specific to each version, same seed value.
+# GGTE01: 0x80158A0C found by disassembling the US DOL (`stw r3,-0x7350(r13) ; blr`, 8 bytes): called only
+# once, by the CGame startup code right after `bl OSGetTick` (8001D900 -> 8001D904), like the PAL (8001DCE4 ->
+# 8001DCE8: call to `srand` 0x8015B2BC); the next function (`rand`) reads and writes the same SDA variable.
+GGTP01 = ["8015B2BC:r3=0x12345678"]
+GGTE01 = ["80158A0C:r3=0x12345678"]
+
+[pgo]
+# tools/pgo.py train (local PGO profiles of our builds, build/pgo/, never in Git): scenarios replayed by the instrumented
+# executable (tools/run.py --scenario, cycle clock, hence reproducible). They must go through the game's hot
+# code: menus, title screen, 3D scene of the introduction (birthday party). Measurements: notes/performance.md.
+scenarios = ["title-boot", "intro-no-card"]
+
+[hle.hooks]
+# Game-specific entry points to compile with an HLE hook (tools/build.py -> DolRecomp --hle-hooks),
+# for the address-based replacements installed in games/chibi-robo/main.c (GcrtGameDesc.install,
+# gcrt_hle_register). SDK functions do not need to be listed here: they are found by signature
+# (runtime/core/hle/sdk_signatures.tsv). See notes/hle.md. Example: GGTP01 = [0x801ABBC0]

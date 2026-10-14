@@ -1,0 +1,63 @@
+# ============================================================
+# The repository only contains what is needed to
+# build and play the game from your own copy:
+# runtime/, games/, tools/, build files, README, license.
+# ============================================================
+
+# --- Claude's configuration and work (never published) ---
+CLAUDE.md
+CLAUDE.local.md
+.claude/
+docs/
+notes/
+
+# --- Game data and everything derived from it (never published) ---
+orig/
+generated/
+mods/
+*.iso
+*.gcm
+*.rvz
+*.gcz
+*.ciso
+*.wia
+*.nkit.iso
+*.dol
+*.rel
+*.dtm
+*.gci
+*.raw
+
+# --- Cloned third-party tools ---
+external/
+
+# --- Tests and captures (may contain game images) ---
+tests/
+
+# --- Build outputs ---
+build/
+out/
+bin/
+*.exe
+*.dll
+*.pdb
+*.lib
+*.obj
+*.o
+
+# --- Local files ---
+config/local*
+*.log
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# --- Python caches ---
+__pycache__/
+*.pyc
+
+# --- PGO profiles (never in the repository: they stay local in build/, see README.md) ---
+*.profraw
+*.profdata
