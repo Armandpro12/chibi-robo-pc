@@ -39,6 +39,8 @@ bool host_poll_events();
 // Waits until Aurora's pipeline compilation queue is empty (otherwise the draws whose
 // pipeline is not ready are skipped by Aurora). Returns the time waited in seconds.
 double host_wait_pipelines(double timeoutSeconds);
+// Pipelines requested from Aurora and not compiled yet (same statistic, without waiting).
+uint32_t host_pending_pipelines();
 // Logical size of the game's EFB (rectangle of the copy to the XFB): Aurora adjusts its rendering to it.
 void host_configure_efb(uint32_t width, uint32_t height);
 

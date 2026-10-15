@@ -16,9 +16,15 @@
  *   GCRT_CAPTURE_FRAMES numbers of the presented frames to capture (1 = first copy to the XFB)
  *   GCRT_CAPTURE_FIELDS VI field numbers: capture at the first frame presented afterwards
  *   GCRT_CAPTURE_DIR   screenshot folder (default: current folder)
- *   GCRT_PIPELINES     "sync" (default): end of frame delayed until every pipeline has been compiled
- *                      (no draw skipped, emulated clock suspended during the wait);
- *                      "async": Aurora behaviour (draws skipped while the pipeline compiles)
+ *   GCRT_PIPELINES     "sync" (default): before each EFB -> texture copy and at the end of each frame, wait until
+ *                      every pipeline requested so far has been compiled (no draw skipped: Aurora skips a draw
+ *                      whose pipeline is not ready when it hands the render pass over, which happens at both
+ *                      places; emulated clock suspended during the wait);
+ *                      "frame": wait at the end of each frame only (former behaviour: the draws of a pass ended
+ *                      by an EFB -> texture copy can still be skipped); diagnostic;
+ *                      "async": Aurora behaviour (draws skipped while the pipeline compiles); diagnostic
+ *   GCRT_PIPELINES_PROBE 1: with "frame" or "async", count and trace the EFB -> texture copies forwarded while
+ *                      pipelines are still compiling (makes Aurora catch up at each copy); default 0
  *   GCRT_PACING        "throttle" (default): emulated time = executed cycles, the host waits at each VI
  *                      field if it is ahead, a lag above GCRT_MAX_LAG (0.1 s) is dropped
  *                      (the game slows down instead of skipping time); "host": real-time clock of the

@@ -141,6 +141,11 @@ double host_wait_pipelines(double timeoutSeconds) {
   return waited;
 }
 
+uint32_t host_pending_pipelines() {
+  auto& queued = const_cast<AuroraStats*>(aurora_get_stats())->queuedPipelines;
+  return std::atomic_ref<uint32_t>(queued).load(std::memory_order_acquire);
+}
+
 void host_configure_efb(uint32_t width, uint32_t height) {
   if (width == g_efbWidth && height == g_efbHeight) {
     return;
