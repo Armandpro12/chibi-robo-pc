@@ -27,6 +27,7 @@ target_sources(gcrt PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/input_host.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/user_dir.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/save_file.c"
+  "${CMAKE_CURRENT_LIST_DIR}/crash_handler.cpp"
 )
 # PRIVATE: Aurora's compile options (C++20, /Zc:__cplusplus...) do not propagate
 # to the generated code; linking, however, does follow (static library).

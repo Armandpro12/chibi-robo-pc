@@ -46,6 +46,7 @@ constexpr uint8_t OP_AURORA = 0x50;
 constexpr uint16_t AUR_LOAD_ARRAYBASE = 0x0010;
 constexpr uint16_t AUR_LOAD_TEXOBJ = 0x0030;
 constexpr uint16_t AUR_LOAD_TLUT = 0x0031;
+constexpr uint16_t AUR_DESTROY_COPY_TEX = 0x0034;
 constexpr uint16_t AUR_LOAD_COPY_SRC = 0x0035;
 constexpr uint16_t AUR_LOAD_COPY_DST = 0x0036;
 constexpr uint16_t AUR_LOAD_COPY_DEST = 0x0037;
@@ -287,6 +288,9 @@ void FifoBridge::reset() {
   m_pendingOff = 0;
   m_inDisplayList = false;
   m_stats = {};
+  m_copies.clear();
+  const char* staleCopies = std::getenv("GCRT_GX_STALE_COPIES");
+  m_evictStaleCopies = staleCopies == nullptr || std::strcmp(staleCopies, "keep") != 0;
 }
 
 void FifoBridge::set_recording(std::vector<uint8_t>* out) { g_record = out; }
@@ -946,6 +950,7 @@ void FifoBridge::on_bp(uint32_t raw) {
     out_u64(reinterpret_cast<uint64_t>(dest));
     emit_bp(0x52000000u | (merged & ~(1u << 14)));
     ++m_stats.efbCopies;
+    m_copies[destPhys] = CopyRecord{copy_prefix_hash(destPhys), m_stats.displayCopies};
     GCRT_TRACE(GCRT_TRACE_GX, "EFB->texture copy 0x%08X %ux%u fmt=0x%X", destPhys, dstW, dstH,
                efb_copy_format(realFmt, depth, intensity));
     return;
@@ -1005,6 +1010,48 @@ int FifoBridge::tlut_slot_for(uint16_t tmemOffset) {
   return freeSlot >= 0 ? freeSlot : oldest;
 }
 
+// Fingerprint (FNV-1a 64) of the first 256 bytes at the destination of a copy: enough to see that the game loaded
+// other data there, without reaching beyond a small copy buffer (whose exact size in guest memory is not known here).
+uint64_t FifoBridge::copy_prefix_hash(uint32_t phys) const {
+  const uint32_t n = 256u;
+  const uint8_t* p = host_ptr(phys, n);
+  uint64_t h = 0xCBF29CE484222325ull;
+  if (p == nullptr) {
+    return h;
+  }
+  for (uint32_t i = 0; i < n; ++i) {
+    h = (h ^ p[i]) * 0x100000001B3ull;
+  }
+  return h;
+}
+
+void FifoBridge::check_copy_destination(uint32_t phys, const uint8_t* data, uint32_t map, uint32_t w, uint32_t h,
+                                        uint32_t fmt) {
+  const auto it = m_copies.find(phys);
+  if (it == m_copies.end()) {
+    return;
+  }
+  ++m_stats.copyTextureLoads;
+  if (copy_prefix_hash(phys) == it->second.prefixHash) {
+    return; // memory untouched since the copy: the copy is what the console would read
+  }
+  ++m_stats.staleCopies;
+  if (m_stats.staleCopies <= 16) {
+    GCRT_TRACE(GCRT_TRACE_UNHANDLED,
+               "GX: texture %u at 0x%08X (%ux%u fmt %u) was the destination of an EFB copy %llu frames ago, but the "
+               "game has rewritten that memory since: copy %s",
+               map, phys, w, h, fmt, static_cast<unsigned long long>(m_stats.displayCopies - it->second.frame),
+               m_evictStaleCopies ? "evicted, texture read from memory" : "kept (GCRT_GX_STALE_COPIES=keep)");
+  }
+  if (m_evictStaleCopies) {
+    write_aurora_header(AUR_DESTROY_COPY_TEX);
+    out_u64(reinterpret_cast<uint64_t>(data));
+    m_copies.erase(it);
+  } else {
+    it->second.prefixHash = copy_prefix_hash(phys); // report each rewrite once
+  }
+}
+
 void FifoBridge::flush_textures() {
   if (m_texDirty == 0) {
     return;
@@ -1061,6 +1108,9 @@ void FifoBridge::flush_textures() {
         ++m_stats.tlutLoads;
         tlutSlot = static_cast<uint32_t>(slot);
       }
+    }
+    if (data != nullptr && !m_copies.empty()) {
+      check_copy_destination(phys, data, map, w, h, fmt);
     }
     write_aurora_header(AUR_LOAD_TEXOBJ);
     out_u8(static_cast<uint8_t>(map));

@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace gcrt::gx {
@@ -75,6 +76,8 @@ struct BridgeStats {
   uint64_t efbCopies = 0;        // EFB -> texture copies
   uint64_t displayCopies = 0;    // EFB -> XFB copies
   uint64_t badAddresses = 0;     // physical addresses outside guest RAM
+  uint64_t copyTextureLoads = 0; // textures loaded from the destination of an earlier EFB -> texture copy
+  uint64_t staleCopies = 0;      // ... whose guest memory was rewritten since the copy (copy evicted in Aurora)
 };
 
 class FifoBridge {
@@ -194,6 +197,18 @@ private:
 
   BridgeHooks m_hooks{};
   BridgeStats m_stats{};
+  // EFB -> texture copies by guest destination (physical address): fingerprint of the first bytes of guest memory at
+  // the time of the copy. Aurora keeps the copy on the GPU and binds it to any later texture whose data pointer is
+  // that destination; on the console, the texture unit reads guest memory. If the game has rewritten that memory
+  // since the copy (other data loaded at the same address), the copy is stale: it is evicted (GXDestroyCopyTex).
+  struct CopyRecord {
+    uint64_t prefixHash;
+    uint64_t frame;
+  };
+  std::unordered_map<uint32_t, CopyRecord> m_copies;
+  bool m_evictStaleCopies = true; // GCRT_GX_STALE_COPIES=keep: former behavior (diagnostic)
+  uint64_t copy_prefix_hash(uint32_t phys) const;
+  void check_copy_destination(uint32_t phys, const uint8_t* data, uint32_t map, uint32_t w, uint32_t h, uint32_t fmt);
 
   // Stream fingerprint (GCRT_GX_STREAM).
   void stream_hash(const uint8_t* p, size_t n);

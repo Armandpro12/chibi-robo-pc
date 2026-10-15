@@ -20,6 +20,8 @@ Format (one directive per line, `#` starts a comment up to the end of the line):
     window <n>                           optional: half-width (in frames) of the capture window around
                                          each checkpoint (default 4, 0 = no window)
     input <frame> <BUTTONS> [<hold>]     BUTTONS = A, B, X, Y, Z, L, R, START, UP, DOWN, LEFT, RIGHT
+                                         (D-pad), SUP, SDOWN, SLEFT, SRIGHT (main stick pushed all the way),
+                                         CUP, CDOWN, CLEFT, CRIGHT (C-stick)
                                          joined by "+"; hold in frames (default 10)
     check <frame> <name> [soft]          capture of presented frame number <frame>;
                                          "soft": compared and reported but never fails (screen whose
@@ -65,6 +67,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 BUTTONS = ("A", "B", "X", "Y", "Z", "L", "R", "START", "UP", "DOWN", "LEFT", "RIGHT")
+# Stick directions pushed all the way (main stick, C-stick); `input` accepts them like buttons.
+STICKS = ("SUP", "SDOWN", "SLEFT", "SRIGHT", "CUP", "CDOWN", "CLEFT", "CRIGHT")
 DEFAULT_HOLD = 10
 DEFAULT_WINDOW = 4
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -184,9 +188,9 @@ def parse(text: str, path: Path | None = None, default_name: str = "") -> Scenar
                 if len(args) not in (2, 3):
                     raise ScenarioError(f'{where}: "input <frame> <BUTTONS> [<hold>]" expected')
                 names = [b.upper() for b in args[1].split("+")]
-                bad = [b for b in names if b not in BUTTONS]
+                bad = [b for b in names if b not in BUTTONS and b not in STICKS]
                 if bad:
-                    raise ScenarioError(f"{where}: unknown button {bad} (allowed: {', '.join(BUTTONS)})")
+                    raise ScenarioError(f"{where}: unknown button {bad} (allowed: {', '.join(BUTTONS + STICKS)})")
                 hold = int(args[2]) if len(args) == 3 else DEFAULT_HOLD
                 if int(args[0]) < 1 or hold < 1:
                     raise ScenarioError(f"{where}: frame >= 1 and hold >= 1 expected")

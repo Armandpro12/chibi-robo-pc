@@ -58,10 +58,17 @@
  *                      accesses" line is written to the trace at each report
  *   GCRT_FORCE_ARG     diagnostic: "ADDRESS:rN=VALUE" forces a register on entry to a function (hle)
  *   GCRT_WATCH         addresses (hex) whose passes at block start are counted (e.g. "80001234,80005678")
+ *   GCRT_GX_STALE_COPIES "evict" (default): an EFB -> texture copy whose guest memory the game has rewritten since
+ *                      is dropped and the texture is read from memory, like the console; "keep": former behavior
+ *                      (Aurora keeps binding the copy); counted in the final GX report (gx/gx_bridge.hpp)
  *   GCRT_GX_STREAM     diagnostic: fingerprint of the received GX command stream, one line per frame ("frame bytes
  *                      fnv64 draws") in this file; "1" = gx-stream.txt in GCRT_CAPTURE_DIR. GCRT_GX_STREAM_DUMP:
  *                      frames ("12,500") whose full stream is also written (<file>.<frame>.bin)
- *   GCRT_REPORT        period of the intermediate report in seconds (default 5)
+ *   GCRT_REPORT        period of the intermediate report in seconds (default 5); each report also gives the process
+ *                      memory (working set, private bytes, handles)
+ *   GCRT_CRASH_DIR, GCRT_CRASH_HANDLER: crash reports (platform/gcrt_crash.h; default folder <user folder>/crashes/,
+ *                      or GCRT_CAPTURE_DIR in automated runs); GCRT_CRASH_TEST=read|write|abort:<frame>: deliberate
+ *                      fault once that frame is presented (test of the crash handler)
  *   GCRT_TRACE, GCRT_TRACE_FILE: traces (platform/trace.h)
  */
 #ifndef GCRT_PLATFORM_H

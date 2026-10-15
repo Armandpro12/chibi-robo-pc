@@ -12,6 +12,7 @@
 #include "boot/gcrt_boot.h"
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native.h"
+#include "platform/gcrt_crash.h"
 #include "platform/gcrt_platform.h"
 
 #include <stdlib.h>
@@ -346,6 +347,9 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         free(dol_data);
         return 1;
     }
+    /* Crash report (host exception or abort): exception, host and guest stacks, minidump, guest memory
+     * (platform/gcrt_crash.h). */
+    gcrt_crash_handler_install(g);
     GcrtDolInfo dol;
     bool ok = gcrt_dol_load(&g->state, dol_data, dol_size, &dol);
     free(dol_data);

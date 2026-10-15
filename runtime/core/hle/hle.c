@@ -351,6 +351,18 @@ u32 gcrt_hle_find(const char* name, unsigned* count) {
     return first;
 }
 
+const char* gcrt_hle_name_at(u32 address, u32* start) {
+    for (unsigned i = 0; i < s_match_count; i++) {
+        const GcrtSdkSignature* sig = &gcrt_sdk_catalog[s_matches[i].sig];
+        if (address >= s_matches[i].address && address - s_matches[i].address < sig->size) {
+            if (start)
+                *start = s_matches[i].address;
+            return sig->name;
+        }
+    }
+    return NULL;
+}
+
 unsigned gcrt_hle_find_all(const char* name, u32* out, unsigned max) {
     unsigned n = 0;
     for (unsigned i = 0; i < s_match_count; i++) {

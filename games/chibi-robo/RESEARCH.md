@@ -425,6 +425,10 @@ THPSimple and the game each add their own AI DMA callback in front of AX's.
 2. The game's callback (US `0x8000A678` / PAL `0x8000A698`) calls the previous callback, then polls the microphone driver into a buffer of its own. It never touches the output.
 3. `__AXOutAiCallback` → `__AXOutNewFrame` → the HAL frame callback (US `0x801F07D8` / PAL `0x801F31CC`). The HAL callback frees finished voices, runs the synthesizer envelopes, and services `.hps` streams by re-chaining the ADPCM loop and end addresses of stream voices.
 
+**Music by place** `[verified: native DVD trace + Dolphin audio dump, US, a 47-minute save, night]`:
+- Inside the Chibi-House no `.hps` stream is read: the output is a mono low-frequency loop (main energy near 42 Hz, left = right), the same in Dolphin and in the native port.
+- In the living room at night the game streams `qp/streaming/bgm_night.hps` (envelope correlation 0.80 native, 0.86 Dolphin, with sound effects mixed in).
+
 **AUX effects**: the HAL effect setup (US `0x801E8D84` / PAL `0x801EB778`) takes an effect type from 0 to 4 and a bus (A or B); type 0 installs no effect. Its only caller passes type 0, and no pointer to it exists in the DOL or the RELs `[verified: Ghidra, REL relocations]`.
 
 ---
@@ -448,6 +452,10 @@ THPSimple and the game each add their own AI DMA callback in front of AX's.
 **Copies** `[verified: Ghidra + trace]`:
 - One display copy per frame, made by HAL (US `0x801CB8A4` / PAL `0x801CE1A0`): copy setup, `GXSetDispCopyYScale`, `GXSetCopyClear`, `GXSetCopyFilter`, gamma, then `GXCopyDisp` with clear. On PAL the source is the full 640×528 EFB, pixel format RGBA6_Z24, gamma 1.0, with a vertical copy filter.
 - EFB-to-texture copies (`GXCopyTex`) come from HAL's `shadow.c` and from the game function US `0x801A66A4` / PAL `0x801A8F1C`. There are none on the title screen.
+- In 3D gameplay (US, living room at night, frame dump of the GX stream), each frame has two EFB-to-texture copies `[verified: trace]`:
+  - at the start of the frame, a few fan and strip draws, then a copy of the red channel (`GX_CTF_R8`, source 640x480, with clear); later draws of the same frame sample that destination as an `I8` 640x480 texture (22 loads in the traced frame);
+  - at the end of the frame, a copy of the alpha channel (`GX_CTF_A8`, 640x448, without clear), sampled as `I8` right after.
+  The source of the red-channel copy (480 lines) is taller than the display copy (448 lines on US).
 - The CPU never reads or writes the EFB `[verified: Ghidra]`.
 
 **Synchronisation** `[verified: Ghidra + trace]`:
