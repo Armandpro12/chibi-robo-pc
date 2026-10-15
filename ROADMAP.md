@@ -2,7 +2,7 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-14.**
+**Last update: 2026-10-15.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
@@ -42,7 +42,7 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: only the health and safety warning has been compared with Dolphin. |
 | 6 | Audio | 🟡 | Music and effects work. Title music matches Dolphin (peak and RMS); still to do: intro and US comparison against Dolphin, and a listening test. |
 | 7 | Saves | ✅ | Native PC saves: card always inserted, crash-safe writes (temporary file, then rename). |
-| 8 | Playable game | ⬜ | Replayed inputs must progress through the first level, then the whole game. |
+| 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; open issues from player reports are listed under "Known issues". |
 | 9 | Comparison with Dolphin | ⬜ | Key scenes compared; differences listed. |
 | 10 | No emulated hardware | ✅ | See below. |
 | 11 | Installer (private) | ⬜ | Disc check, extraction, install and uninstall, tested on a clean Windows. It stays private until the C++ version exists. |
@@ -145,6 +145,14 @@ and assets are read from the player's files.
 
 ## Known issues
 
+- Player reports with late saves (US version):
+  - **crashes** after a few minutes to 45 minutes of play (access violations). Not reproduced yet in scripted
+    sessions of up to 50 minutes; the new crash handler writes a full report to the user folder (`crashes/`) to
+    locate them;
+  - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
+    a texture). Dolphin does not show them; the cause is under investigation;
+  - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays
+    exactly what Dolphin plays.
 - An intermittent crash at the start of 3D rendering was seen early on; it has not been reproduced in more than
   1,200 runs since.
 - A few TEV color registers differ from the reference because the game reads uninitialized stack memory; no

@@ -61,3 +61,7 @@ __pycache__/
 # --- PGO profiles (never in the repository: they stay local in build/, see README.md) ---
 *.profraw
 *.profdata
+
+# --- Crash reports (they hold guest memory and local paths; never published) ---
+crash-*
+*-guest-ram.bin

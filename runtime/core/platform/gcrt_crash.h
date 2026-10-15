@@ -13,7 +13,10 @@
  * The same summary goes to stderr. The exception is then passed on (process exit code = exception code).
  *
  * Folder: GCRT_CRASH_DIR, otherwise GCRT_CAPTURE_DIR (automated runs: run folder), otherwise the default given by the
- * platform (<user folder>/crashes/), otherwise the current folder. GCRT_CRASH_HANDLER=0 disables the handler
+ * platform (<user folder>/crashes/), otherwise the system temporary folder (%TEMP%\gcrt-crashes), never the current
+ * folder. Only the 5 most recent reports are kept (older ones are deleted at startup when the folder is chosen).
+ * The guest memory file holds game data and the minidump holds local paths: they stay on the user's machine and must
+ * not be attached to public issues. GCRT_CRASH_HANDLER=0 disables the handler
  * (to let a debugger or Windows Error Reporting see the exception first). Windows only; elsewhere the functions do
  * nothing.
  */

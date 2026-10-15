@@ -9,6 +9,9 @@ extern "C" {
 #include "../hle/gcrt_hle.h"
 }
 
+#include <algorithm>
+#include <string>
+#include <vector>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -66,6 +69,35 @@ void set_dir(const wchar_t* dir) {
   if (n > 0 && n + 1 < sizeof(g_dir) / sizeof(g_dir[0]) && g_dir[n - 1] != L'\\' && g_dir[n - 1] != L'/') {
     g_dir[n] = L'\\';
     g_dir[n + 1] = 0;
+  }
+}
+
+// Number of crash reports kept in the crash folder. Each report holds the guest memory (about 25 MiB) and a
+// minidump, so older ones are deleted. Called at startup when the folder is chosen, never from the handler.
+constexpr size_t kMaxReports = 5;
+
+void prune_old_reports() {
+  std::vector<std::wstring> stems;
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW((std::wstring(g_dir) + L"crash-*.txt").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    return;
+  }
+  do {
+    std::wstring name = fd.cFileName;
+    stems.push_back(name.substr(0, name.size() - 4)); // without ".txt"
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  if (stems.size() <= kMaxReports) {
+    return;
+  }
+  // Names are crash-YYYYMMDD-HHMMSS-pid: lexicographic order is chronological.
+  std::sort(stems.begin(), stems.end());
+  for (size_t i = 0; i + kMaxReports < stems.size(); ++i) {
+    const std::wstring base = std::wstring(g_dir) + stems[i];
+    DeleteFileW((base + L".txt").c_str());
+    DeleteFileW((base + L".dmp").c_str());
+    DeleteFileW((base + L"-guest-ram.bin").c_str());
   }
 }
 
@@ -414,8 +446,15 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   if (env_set(L"GCRT_CRASH_DIR", buf, MAX_PATH * 2) || env_set(L"GCRT_CAPTURE_DIR", buf, MAX_PATH * 2)) {
     set_dir(buf);
     g_dir_from_env = true;
+    prune_old_reports();
   } else {
-    set_dir(L".");
+    // Until the platform gives the user folder: the system temporary folder, never the current folder (which may
+    // be a source tree, where a report holding guest memory must not end up).
+    const DWORD n = GetTempPathW(MAX_PATH, buf);
+    if (n > 0 && n < MAX_PATH) {
+      wcsncat_s(buf, L"gcrt-crashes", _TRUNCATE);
+      set_dir(buf);
+    }
   }
   SetUnhandledExceptionFilter(unhandled_filter);
   std::signal(SIGABRT, on_abort);
@@ -428,6 +467,7 @@ extern "C" void gcrt_crash_handler_set_default_dir(const char* dir_utf8) {
   wchar_t buf[MAX_PATH * 2];
   if (MultiByteToWideChar(CP_UTF8, 0, dir_utf8, -1, buf, MAX_PATH * 2) > 0) {
     set_dir(buf);
+    prune_old_reports();
   }
 }
 
