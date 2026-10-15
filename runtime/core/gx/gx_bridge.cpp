@@ -936,6 +936,9 @@ void FifoBridge::on_bp(uint32_t raw) {
       GCRT_TRACE(GCRT_TRACE_UNHANDLED, "GX: EFB copy to an address outside RAM 0x%08X", destPhys);
       return;
     }
+    if (g_output && m_hooks.textureCopy != nullptr) {
+      m_hooks.textureCopy(m_hooks.user); // before the copy: it ends Aurora's render pass (see BridgeHooks)
+    }
     write_aurora_header(AUR_LOAD_COPY_SRC);
     out_u32(left);
     out_u32(top);

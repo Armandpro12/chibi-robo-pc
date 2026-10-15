@@ -95,7 +95,11 @@ struct GcrtPlatform {
   size_t nextCaptureFrame = 0;
   std::vector<uint64_t> captureFields; // VI field numbers
   size_t nextCaptureField = 0;
-  bool waitPipelines = true;
+  // GCRT_PIPELINES (see gcrt_platform.h): when the game thread waits for Aurora's pipeline compilations.
+  //   Sync : before each EFB -> texture copy and at the end of each frame (no draw ever skipped);
+  //   Frame: at the end of each frame only (draws of the passes ended by an EFB -> texture copy can still be skipped);
+  //   Async: never (Aurora's own behaviour).
+  enum class PipelineWait { Sync, Frame, Async } pipelineMode = PipelineWait::Sync;
   bool xfbFilter = true;
   gcrt::gx::CopyFilterMode copyFilterMode = gcrt::gx::CopyFilterMode::Unblended;
   uint64_t filteredFrames = 0;
@@ -104,8 +108,15 @@ struct GcrtPlatform {
   // Test of the crash handler (GCRT_CRASH_TEST=read|write|abort:<frame>): deliberate fault once this frame is presented.
   std::string crashTestKind;
   uint64_t crashTestFrame = 0;
-  uint64_t pipelineStalls = 0;
-  double pipelineWait = 0.0;
+  uint64_t pipelineStalls = 0;       // waits for pipelines (all places)
+  double pipelineWait = 0.0;          // seconds
+  uint64_t pipelineStallsCopy = 0;    // of which before an EFB -> texture copy
+  double pipelineWaitCopy = 0.0;
+  uint64_t copySyncs = 0;             // Aurora caught up before an EFB -> texture copy (Sync): count and host time
+  double copySyncTime = 0.0;          // seconds spent in these flushes (cost of the Sync mode once the pipelines exist)
+  uint64_t pendingAtCopy = 0;         // EFB -> texture copies forwarded with pipelines still compiling (Frame, Async)
+  uint64_t pendingAtFrameEnd = 0;     // frames ended with pipelines still compiling (Async)
+  bool pipelineProbe = false;         // GCRT_PIPELINES_PROBE=1: count pendingAtCopy (Frame, Async)
   std::string captureDir = ".";
   uint32_t capturesWritten = 0;
   std::vector<Watch> watches;
@@ -311,6 +322,57 @@ void dsp_push_mail(void*, uint32_t mail, bool interrupt, uint32_t delay_cycles) 
 }
 void dsp_clear_mails(void*) { gcrt_native_dsp_clear_mails(); }
 
+// Makes Aurora process every GX command written so far, then waits until every pipeline requested so far is compiled.
+// Why: Aurora skips a draw whose pipeline is not compiled yet when its render thread encodes the draw's render pass,
+// and it hands a pass over at the end of the frame AND at each EFB -> texture copy (the copy ends the pass). Waiting
+// before both keeps every draw, like the console. The time waited does not exist for the console: it is removed from
+// the emulated clock, which restarts from here without catching up. Returns the time waited, in seconds.
+double wait_for_pipelines(GcrtPlatform* p, bool beforeTextureCopy) {
+  if (beforeTextureCopy) {
+    const auto t0 = std::chrono::steady_clock::now();
+    p->bridge.flush();
+    ++p->copySyncs;
+    p->copySyncTime += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  } else {
+    p->bridge.flush();
+  }
+  const double waited = gcrt::platform::host_wait_pipelines(30.0);
+  if (waited <= 0.0) {
+    return 0.0;
+  }
+  ++p->pipelineStalls;
+  p->pipelineWait += waited;
+  if (beforeTextureCopy) {
+    ++p->pipelineStallsCopy;
+    p->pipelineWaitCopy += waited;
+  }
+  gcrt_cpu_set_clock(p->g, p->g->clock);
+  p->paceHost += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(waited));
+  GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu%s)", waited * 1000.0,
+             static_cast<unsigned long long>(p->framesPresented + 1), beforeTextureCopy ? ", EFB -> texture copy" : "");
+  return waited;
+}
+
+// Bridge hook: EFB -> texture copy about to be forwarded to Aurora (end of an Aurora render pass).
+void on_texture_copy(void* user) {
+  auto* p = static_cast<GcrtPlatform*>(user);
+  if (p->pipelineMode == GcrtPlatform::PipelineWait::Sync) {
+    wait_for_pipelines(p, true);
+    return;
+  }
+  // Diagnostic only (GCRT_PIPELINES_PROBE=1): pipelines still compiling when the pass is handed over. Reading the
+  // count needs Aurora to have processed the commands written so far (a flush), which these modes do not do otherwise.
+  if (p->pipelineProbe) {
+    p->bridge.flush();
+    if (const uint32_t pending = gcrt::platform::host_pending_pipelines(); pending != 0) {
+      ++p->pendingAtCopy;
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "pipelines: %u still compiling at an EFB -> texture copy (image %llu): "
+                        "draws of the pass may be skipped", pending,
+                        static_cast<unsigned long long>(p->framesPresented + 1));
+    }
+  }
+}
+
 void open_frame(GcrtPlatform* p) {
   const int64_t t0 = p->timingLog != nullptr ? steady_us() : 0;
   p->frameOpen = gcrt::platform::host_begin_frame();
@@ -372,19 +434,12 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     if (p->timingLog != nullptr) {
       tPipe = steady_us();
     }
-    if (p->waitPipelines) {
-      const double waited = gcrt::platform::host_wait_pipelines(30.0);
-      if (waited > 0.0) {
-        ++p->pipelineStalls;
-        p->pipelineWait += waited;
-        // The time spent waiting for the host does not exist for the console: the emulated clock (real
-        // time) restarts from here, without catching up.
-        gcrt_cpu_set_clock(p->g, p->g->clock);
-        p->paceHost += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(waited));
-        GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu)", waited * 1000.0,
-                   static_cast<unsigned long long>(p->framesPresented + 1));
-      }
+    if (p->pipelineMode != GcrtPlatform::PipelineWait::Async) {
+      wait_for_pipelines(p, false);
+    } else if (const uint32_t pending = gcrt::platform::host_pending_pipelines(); pending != 0) {
+      ++p->pendingAtFrameEnd;
+      GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %u still compiling at the end of image %llu: draws may be skipped",
+                 pending, static_cast<unsigned long long>(p->framesPresented + 1));
     }
     if (p->timingLog != nullptr) {
       tFilter = steady_us();
@@ -649,7 +704,13 @@ void configure(GcrtPlatform* p) {
     p->captureFields.push_back(std::strtoull(t.c_str(), nullptr, 0));
   }
   std::sort(p->captureFields.begin(), p->captureFields.end());
-  p->waitPipelines = env("GCRT_PIPELINES", "sync") != "async";
+  {
+    const std::string mode = env("GCRT_PIPELINES", "sync");
+    p->pipelineMode = mode == "async"   ? GcrtPlatform::PipelineWait::Async
+                      : mode == "frame" ? GcrtPlatform::PipelineWait::Frame
+                                        : GcrtPlatform::PipelineWait::Sync;
+  }
+  p->pipelineProbe = env("GCRT_PIPELINES_PROBE", "0") != "0";
   {
     // Display copy filter: unblended (default, like Dolphin), full (console) or off.
     const std::string mode = env("GCRT_COPY_FILTER", "unblended");
@@ -810,6 +871,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     gcrt::gx::BridgeHooks hooks;
     hooks.user = p;
     hooks.displayCopy = on_display_copy;
+    hooks.textureCopy = on_texture_copy;
     p->bridge.set_hooks(hooks);
     const GcrtGxSink sink = {p, gx_sink_consume, gx_sink_abort};
     gcrt_native_set_gx_sink(&sink);
@@ -843,7 +905,10 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
                     "hardware connected (language %u, RTC %s, pipelines %s, pacing: %s)",
                     static_cast<unsigned>(std::strtoul(env("GCRT_LANGUAGE", "0").c_str(), nullptr, 0)),
                     env("GCRT_RTC").empty() ? "host" : "fixed",
-                    p->waitPipelines ? "awaited" : "asynchronous", kPacing[static_cast<int>(p->pacing)]);
+                    p->pipelineMode == GcrtPlatform::PipelineWait::Sync    ? "awaited before each render pass ends"
+                    : p->pipelineMode == GcrtPlatform::PipelineWait::Frame ? "awaited at the end of each frame only"
+                                                                           : "asynchronous",
+                    kPacing[static_cast<int>(p->pacing)]);
   return p;
 }
 
@@ -888,8 +953,10 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
                     "GX: %llu commands, %llu draws, %llu vertices, %llu display lists, %llu XFB copies, %llu texture "
                     "copies, %llu unknown opcodes, %llu invalid addresses; skipped frames %llu; "
                     "captures written %u; unhandled out-of-RAM accesses: %llu; pipeline "
-                    "waits: %llu (%.2f s); filtered frames (display copy): %llu; textures read at a copy destination "
-                    "%llu, of which stale copies evicted %llu",
+                    "waits: %llu (%.2f s), of which before an EFB -> texture copy: %llu (%.2f s; %llu synchronizations "
+                    "with Aurora at these copies, %.1f ms); pipelines still "
+                    "compiling at an EFB -> texture copy: %llu, at a frame end: %llu; filtered frames (display copy): %llu; "
+                    "textures read at a copy destination %llu, of which stale copies evicted %llu",
                     static_cast<unsigned long long>(gx.commands), static_cast<unsigned long long>(gx.draws),
                     static_cast<unsigned long long>(gx.vertices), static_cast<unsigned long long>(gx.displayLists),
                     static_cast<unsigned long long>(gx.displayCopies), static_cast<unsigned long long>(gx.efbCopies),
@@ -897,6 +964,9 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
                     static_cast<unsigned long long>(p->framesSkipped), p->capturesWritten,
                     static_cast<unsigned long long>(p->g->io_unhandled),
                     static_cast<unsigned long long>(p->pipelineStalls), p->pipelineWait,
+                    static_cast<unsigned long long>(p->pipelineStallsCopy), p->pipelineWaitCopy,
+                    static_cast<unsigned long long>(p->copySyncs), p->copySyncTime * 1000.0,
+                    static_cast<unsigned long long>(p->pendingAtCopy), static_cast<unsigned long long>(p->pendingAtFrameEnd),
                     static_cast<unsigned long long>(p->filteredFrames),
                     static_cast<unsigned long long>(gx.copyTextureLoads), static_cast<unsigned long long>(gx.staleCopies));
   if (p->audio != nullptr) {

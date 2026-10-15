@@ -231,8 +231,9 @@ def main() -> int:
                         help="display copy filter: unblended (default, like Dolphin), full (console), off")
     parser.add_argument("--pacing", choices=["throttle", "host"],
                         help="pacing: cycles throttled to real time (default) or host clock")
-    parser.add_argument("--pipelines", choices=["sync", "async"],
-                        help="sync (default): no draw skipped while the pipelines compile")
+    parser.add_argument("--pipelines", choices=["sync", "frame", "async"],
+                        help="sync (default): no draw skipped while the pipelines compile; frame: wait at the end "
+                             "of each frame only (former behavior); async: Aurora's behavior (GCRT_PIPELINES)")
     parser.add_argument("--scenario", metavar="NAME|FILE",
                         help="scenario of inputs and checkpoints in presented frames "
                              "(games/<game>/scenarios/[<ID>/]<name>.scn, format: tools/scenario.py); "

@@ -61,6 +61,11 @@ struct BridgeHooks {
   void (*token)(void* user, uint16_t token, bool interrupt) = nullptr;
   // EFB -> XFB copy. The runtime ends the Aurora frame there (aurora_end_frame) and presents it.
   void (*displayCopy)(void* user, const DisplayCopyInfo& info) = nullptr;
+  // EFB -> texture copy (BP 0x52 without bit 14), called just BEFORE the copy is forwarded to Aurora (only while
+  // forwarding is on). Aurora ends its current render pass at such a copy and hands it to its render thread at once:
+  // a draw of that pass whose pipeline is still compiling at that moment is skipped. The runtime can make sure that
+  // every pipeline requested so far is ready here (see GCRT_PIPELINES in platform/gcrt_platform.h).
+  void (*textureCopy)(void* user) = nullptr;
 };
 
 struct BridgeStats {
