@@ -18,5 +18,8 @@ int main(int argc, char** argv) {
      * the game's 10 slots (6 blocks each) fit on it. Saves go to the "Saved Games" folder:
      * %USERPROFILE%\Saved Games\Chibi Robo PC\Chibi Robo\ (notes/decisions.md). */
     gcrt_native_card_set_size(16);
+    fprintf(stderr, "GAME START: Chibi-Robo! (PC port, C17, 2024-06-09)\n");
+
+    //put setup here
     return gcrt_main(argc, argv, &kChibiRobo);
 }

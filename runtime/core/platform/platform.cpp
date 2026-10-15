@@ -704,7 +704,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     const std::string window = env("GCRT_WINDOW", "normal");
     host.windowMode = window == "background" ? 1 : window == "minimized" ? 2 : 0;
   }
-  host.viewportFit = env("GCRT_VIEWPORT", "stretch") == "fit";
+  host.viewportFit = env("GCRT_VIEWPORT", "fit") == "fit";
   std::error_code ec;
   fs::create_directories(host.dataDir, ec);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s", host.dataDir.c_str());

@@ -1,6 +1,7 @@
 // Aurora host (see aurora_host.hpp).
 #include "aurora_host.hpp"
 #include "input_host.hpp"
+#include "gcrt_game_config.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 extern "C" {
@@ -31,6 +33,7 @@ bool g_initialized = false;
 uint32_t g_efbWidth = 0;
 uint32_t g_efbHeight = 0;
 GXRenderModeObj g_renderMode{};
+AuroraInfo info;
 
 void log_callback(AuroraLogLevel level, const char* module, const char* message, unsigned int) {
   if (level >= LOG_WARNING) {
@@ -78,19 +81,44 @@ bool host_init(const HostConfig& config) {
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
   }
   char* argv0 = const_cast<char*>(g_title.c_str());
-  const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
-  if (config.windowMode == 2 && info.window != nullptr) {
-    SDL_MinimizeWindow(info.window);
+  info = aurora_initialize(1, &argv0, &ac);
+  
+  if (info.window != nullptr) {
+    // Restore the OS title bar and allow user resizing (Aurora may create
+    // the window borderless / fixed-size by default).
+    SDL_SetWindowBordered(info.window, true);
+    SDL_SetWindowResizable(info.window, true);
+    if (config.windowMode == 2) {
+      SDL_MinimizeWindow(info.window);
+    }
   }
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d, %ux%u, %s", static_cast<int>(info.backend),
                     info.windowSize.fb_width, info.windowSize.fb_height,
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
-  // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
-  // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
-  if (config.renderScale > 0.0f) {
-    AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
-    VISetFrameBufferScale(config.renderScale);
+
+  // Pre-boot setup menu (ImGui). Skipped for automatic launches (windowMode != 0: unfocused or
+  // minimized window), where nobody could interact with it.
+  gcrt_game_config_load(g_dataDir.c_str());
+  if (config.windowMode == 0) {
+    if (!gcrt_game_config_run_menu(g_dataDir.c_str())) {
+      aurora_shutdown(); // window closed from the menu: abort the boot
+      return false;
+    }
+  }
+  const GcrtGameConfig* gc = gcrt_game_config();
+  if (info.window != nullptr && config.windowMode == 0) {
+    SDL_SetWindowFullscreen(info.window, gc->fullscreen);
+    if (!gc->fullscreen) {
+      SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
+    }
+  }
+
+  // Letterboxed (aspect-preserving) presentation of the EFB, scaled by the menu's render scale.
+  const float renderScale = gc->renderScale > 0.0f ? gc->renderScale : config.renderScale;
+  if (renderScale > 0.0f) {
+    AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+    VISetFrameBufferScale(renderScale);
   }
   // Aurora's PAD: opening of SDL gamepads, port assignment, rumble. The mappings
   // (keyboard, buttons, axes, dead zones) come from controls.ini (input_host.cpp), not from Aurora.
@@ -118,8 +146,18 @@ bool host_poll_events() {
     if (ev->type == AURORA_EXIT) {
       keepRunning = false;
     }
+      switch (ev->type) {
+      case AURORA_WINDOW_RESIZED:
+        info.windowSize = ev->windowSize;
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window Changed: backend %d, %ux%u", static_cast<int>(info.backend),
+                    info.windowSize.fb_width, info.windowSize.fb_height);
+        break;
+      default:
+        break;
+      }
     ++ev;
-  }
+    
+    }
   return keepRunning;
 }
 

@@ -24,8 +24,8 @@ struct HostConfig {
   bool viewportFit = false;
   std::string dataDir;   // Aurora's userPath / cachePath (pipeline caches; the gamepad mappings
                          // are in the user folder, gcrt_user_dir.h)
-  uint32_t width = 640;  // initial window size
-  uint32_t height = 480;
+  uint32_t width = 1920;  // initial window size
+  uint32_t height = 1080; // initial window size
 };
 
 bool host_init(const HostConfig& config);
