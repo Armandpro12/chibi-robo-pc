@@ -128,6 +128,23 @@ folder is known. Only the 5 most recent reports are kept. A report has three fil
 `GCRT_CRASH_DIR` chooses another folder. For developers, `tools/crash_inspect.py <report.dmp>` decodes the faulting
 instruction of a minidump and checks whether it explains the fault (`--help` lists its verdicts and exit codes).
 
+### Starting in a chosen stage (testing)
+
+To reproduce a report somewhere in the game, `tools/run.py --stage <name|number>` starts in a chosen stage (both
+versions). When the game loads a save, the stage stored in the save is replaced once; the rest of the save
+(counters, story progress) is restored as usual, and later stage changes work normally. A save must be loaded,
+for example:
+
+```
+py -3 tools/run.py chibi-robo --version GGTE01 --stage backyard --user-seed FOLDER_WITH_A_SAVE --scenario FILE.scn
+```
+
+`--stage debug` opens the developers' debug scene: walk up to a character and press A for a menu of story points.
+Chibi-Robo starts at the stage's own starting point (checked on the backyard and the debug scene). If no save is
+restored during the run, `--stage` has no effect and `tools/run.py` prints a warning. Stage names and addresses are
+in `games/chibi-robo/game.toml`
+(`[stage]`). Without `--stage`, nothing changes.
+
 ## Repository layout
 
 - `runtime/core/` — generic GameCube runtime, reusable for other games: native replacements of the SDK
@@ -195,6 +212,8 @@ line.
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
 - [cbr_decomp](https://github.com/eavpsp/cbr_decomp) — function names in `games/chibi-robo/symbols/` come from its
   `decomp_dtk_main` folder (CC0 1.0). Thanks to its author for the groundwork.
+- [unplug](https://github.com/adierking/unplug) (MIT) — the stage numbers in `games/chibi-robo/game.toml`
+  (`[stage.names]`), and the reference for the disc and stage formats.
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) (Apache-2.0) — binary analysis.
 - [LLVM/clang](https://github.com/llvm/llvm-project) (Apache-2.0 with LLVM exception),
   [Ninja](https://github.com/ninja-build/ninja) (Apache-2.0).
