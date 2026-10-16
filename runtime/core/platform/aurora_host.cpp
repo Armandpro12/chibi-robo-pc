@@ -92,25 +92,32 @@ bool host_init(const HostConfig& config) {
    float renderScale = config.renderScale;
   gcrt_game_config_load();
   if (config.windowMode == 0) {
-    if (!gcrt_game_config_run_menu(g_dataDir.c_str(), g_title.c_str())) {
+    if (!gcrt_game_config_run_menu(g_title.c_str())) {
       aurora_shutdown(); // window closed from the menu: abort the boot
       return false;
     }
   }
   const GcrtGameConfig* gc = gcrt_game_config();
+  float renderScale = config.renderScale;
+  if (config.windowMode == 0) { // direct launch only: automated runs keep their settings
+  gcrt_game_config_load();
+  if (!gcrt_game_config_run_menu(g_title.c_str())) {
+    aurora_shutdown(); // window closed from the menu: abort the boot
+    return false;
+  }
+  const GcrtGameConfig* gc = gcrt_game_config();
   renderScale = gc->renderScale;
-  if (info.window != nullptr && config.windowMode == 0) {
+  if (info.window != nullptr) {
     SDL_SetWindowFullscreen(info.window, gc->fullscreen);
     if (!gc->fullscreen) {
       SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
     }
   }
-  // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
- 
-  if (renderScale > 0.0f) {
-    AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
-    VISetFrameBufferScale(config.renderScale);
-  }
+}
+if (renderScale > 0.0f) {
+  AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
+  VISetFrameBufferScale(renderScale);
+}
   // Aurora's PAD: opening of SDL gamepads, port assignment, rumble. The mappings
   // (keyboard, buttons, axes, dead zones) come from controls.ini (input_host.cpp), not from Aurora.
   PADInit();

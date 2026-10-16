@@ -42,7 +42,7 @@ void gcrt_game_config_load() {
   }
 }
 
-bool gcrt_game_config_run_menu(const char* dataDir, const char* title) {
+bool gcrt_game_config_run_menu(const char* title) {
   static const struct { const char* label; int w, h; } kSizes[] = {
       {"960x720 (4:3)", 960, 720},
       {"1280x960 (4:3)", 1280, 960},

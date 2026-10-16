@@ -17,12 +17,12 @@ typedef struct GcrtGameConfig {
  * until the menu has run or the saved file has been loaded. */
 const GcrtGameConfig* gcrt_game_config(void);
 
-/* Loads <dataDir>/game_config.ini into the config (missing file = defaults). */
-void gcrt_game_config_load();
+/* Loads game_config.ini into the config (missing file = defaults). */
+void gcrt_game_config_load(void);
 
 /* Shows the ImGui setup menu (blocks until "Start game"). Returns false if the
  * window was closed. Must be called after aurora_initialize. */
-bool gcrt_game_config_run_menu(const char* dataDir, const char* title);
+bool gcrt_game_config_run_menu(const char* title);
 
 #ifdef __cplusplus
 }
