@@ -66,8 +66,8 @@ bool host_init(const HostConfig& config) {
   ac.cachePath = g_dataDir.c_str();
   ac.logCallback = log_callback;
   ac.logLevel = LOG_INFO;
- // ac.windowWidth = config.width;
-  //ac.windowHeight = config.height;
+  ac.windowWidth = config.width;
+  ac.windowHeight = config.height;
   ac.vsync = false; // pacing comes from the emulated VI (real time), not from vertical sync
   ac.mem1Size = 0;  // guest memory belongs to the runtime
   ac.mem2Size = 0;
@@ -87,8 +87,8 @@ bool host_init(const HostConfig& config) {
                     info.windowSize.fb_width, info.windowSize.fb_height,
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
-  
-  gcrt_game_config_load(g_dataDir.c_str());
+  float renderScale = config.renderScale;
+  gcrt_game_config_load();
   if (config.windowMode == 0) {
     if (!gcrt_game_config_run_menu(g_dataDir.c_str(), g_title.c_str())) {
       aurora_shutdown(); // window closed from the menu: abort the boot
@@ -96,8 +96,7 @@ bool host_init(const HostConfig& config) {
     }
   }
   const GcrtGameConfig* gc = gcrt_game_config();
-  ac.windowWidth = gc->windowWidth;
-  ac.windowHeight = gc->windowHeight;
+  renderScale = gc->renderScale;
   if (info.window != nullptr && config.windowMode == 0) {
     SDL_SetWindowFullscreen(info.window, gc->fullscreen);
     if (!gc->fullscreen) {
@@ -105,7 +104,7 @@ bool host_init(const HostConfig& config) {
     }
   }
   // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
- const float renderScale = gc->renderScale > 0.0f ? gc->renderScale : config.renderScale;
+ 
   if (renderScale > 0.0f) {
     AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
     VISetFrameBufferScale(renderScale);

@@ -27,8 +27,8 @@ extern "C" {
 
 const GcrtGameConfig* gcrt_game_config(void) { return &g_cfg; }
 
-void gcrt_game_config_load(const char* dataDir) {
-  std::ifstream f(path_for(dataDir));
+void gcrt_game_config_load() {
+  std::ifstream f(path_for(gcrt_user_dir()));
   std::string line;
   while (std::getline(f, line)) {
     auto eq = line.find('=');
