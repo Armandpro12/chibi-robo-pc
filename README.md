@@ -85,7 +85,8 @@ speakers).
 ### Setup menu
 
 A direct launch opens a small setup menu first: window size, fullscreen and render scale (Enter or "Start game"
-starts the game; launches by the project's tools never show it, see `GCRT_SETUP_MENU`). The choices are
+starts the game; launches by the project's tools never show it; `GCRT_SETUP_MENU=0` disables it, `=1` forces
+it). The choices are
 saved in `game_config.ini` in the same folder as `controls.ini` (see below). Tick "Skip this menu next time"
 to start the game directly; hold Shift while the game starts to show the menu again, or set `skipMenu=0` in
 `game_config.ini`. Values outside the menu's choices fall back to the defaults.
