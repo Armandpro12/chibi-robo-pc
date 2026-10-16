@@ -125,6 +125,10 @@ def apply_patches(repo: Path, patch_dir: Path, name: str) -> set[Path] | None:
     patches = sorted(patch_dir.glob("*.patch"))
     if not patches or not git:
         return None
+    if not (repo / ".git").exists():
+        # Inside another repository (e.g. a copy under build/), `git apply` would only look at paths below the
+        # current folder and report every patch as already applied.
+        raise SystemExit(f"{repo} is not a Git checkout: clone it with Git so that the {name} patches can be applied.")
     touched: set[Path] = set()
     for patch in patches:
         for line in patch.read_text(encoding="utf-8").splitlines():
