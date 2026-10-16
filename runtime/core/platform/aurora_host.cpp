@@ -90,7 +90,7 @@ bool host_init(const HostConfig& config) {
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
   // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
   float renderScale = config.renderScale;
-  if (config.windowMode == 0) { // direct launch only: automated runs keep their settings
+  if (config.setupMenu) { // a player's direct launch only: automated runs keep their settings
     // Setup menu (gcrt_game_config.h): window size, fullscreen and render scale, saved in the user folder.
     gcrt_game_config_load();
     if (!gcrt_game_config_run_menu(g_title.c_str())) {
