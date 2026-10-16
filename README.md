@@ -104,6 +104,21 @@ Gamepads use Aurora's mappings per controller family (Xbox, PlayStation, Switch,
 scenarios and writes a local profile into `build/pgo/`. Later builds use it automatically while it matches the
 code (about 20 % faster). Profiles are never committed.
 
+### Crash reports
+
+If the game crashes, it writes a report into the `crashes` folder of the user folder
+(`%APPDATA%\Chibi Robo PC\Chibi Robo\crashes\`), or into `%TEMP%\gcrt-crashes` if the crash happens before that
+folder is known. Only the 5 most recent reports are kept. A report has three files:
+
+- `crash-<date>-<time>-<pid>.txt`: a text summary (exception, registers, call stacks, executable and processor). It
+  names files by their file name only and replaces your user-profile folder with `%USERPROFILE%`. **This is the only
+  file you may share**, for example in a public issue.
+- `crash-<date>-<time>-<pid>.dmp` (minidump) and `crash-<date>-<time>-<pid>-guest-ram.bin` (game memory): they
+  contain game data and local paths. **Never publish them**; if a developer asks for them, send them privately.
+
+`GCRT_CRASH_DIR` chooses another folder. For developers, `tools/crash_inspect.py <report.dmp>` decodes the faulting
+instruction of a minidump and checks whether it explains the fault (`--help` lists its verdicts and exit codes).
+
 ## Repository layout
 
 - `runtime/core/` — generic GameCube runtime, reusable for other games: native replacements of the SDK

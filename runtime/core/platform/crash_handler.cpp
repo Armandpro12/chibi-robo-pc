@@ -20,7 +20,9 @@ extern "C" {
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <dbghelp.h>
+#include <intrin.h>
 #include <psapi.h>
 #include <csignal>
 
@@ -61,6 +63,98 @@ void append_text(void* /*sink*/, const char* text) { out("%s", text); }
 bool env_set(const wchar_t* name, wchar_t* buf, DWORD size) {
   const DWORD n = GetEnvironmentVariableW(name, buf, size);
   return n > 0 && n < size;
+}
+
+// --- Privacy of the text report --------------------------------------------------------------------------------------
+// The .txt is the file players share: it must not reveal the Windows user name. The report already writes file names
+// only (executable, host modules); as a second barrier, every occurrence of the user-profile folder (USERPROFILE, long
+// and 8.3 short forms) left in the text is replaced by the literal "%USERPROFILE%" before the file is written. The
+// prefixes are prepared at installation, so that nothing is allocated after the crash.
+constexpr const char kProfileToken[] = "%USERPROFILE%";
+char g_profile[2][MAX_PATH * 4] = {}; // UTF-8, without a trailing separator; empty if unknown
+char g_clean[kReportSize];             // scrubbed copy of g_report
+size_t g_clean_len = 0;
+
+void prepare_profile_prefixes() {
+  wchar_t buf[MAX_PATH * 2];
+  wchar_t short_buf[MAX_PATH * 2];
+  if (!env_set(L"USERPROFILE", buf, MAX_PATH * 2)) {
+    return;
+  }
+  size_t n = wcslen(buf);
+  while (n > 0 && (buf[n - 1] == L'\\' || buf[n - 1] == L'/')) {
+    buf[--n] = 0;
+  }
+  if (n < 4) {
+    return; // a bare drive ("C:"): replacing it would mangle every path without hiding anything
+  }
+  if (WideCharToMultiByte(CP_UTF8, 0, buf, -1, g_profile[0], sizeof(g_profile[0]), nullptr, nullptr) == 0) {
+    g_profile[0][0] = 0;
+  }
+  const DWORD s = GetShortPathNameW(buf, short_buf, MAX_PATH * 2);
+  if (s > 0 && s < MAX_PATH * 2 && _wcsicmp(short_buf, buf) != 0 &&
+      WideCharToMultiByte(CP_UTF8, 0, short_buf, -1, g_profile[1], sizeof(g_profile[1]), nullptr, nullptr) == 0) {
+    g_profile[1][0] = 0;
+  }
+}
+
+// Path characters compared as Windows does for ASCII: case-insensitive, '\' and '/' equivalent.
+bool same_path_char(char a, char b) {
+  if ((a == '\\' || a == '/') && (b == '\\' || b == '/')) {
+    return true;
+  }
+  if (a >= 'A' && a <= 'Z') {
+    a = static_cast<char>(a - 'A' + 'a');
+  }
+  if (b >= 'A' && b <= 'Z') {
+    b = static_cast<char>(b - 'A' + 'a');
+  }
+  return a == b;
+}
+
+// Length of `prefix` if `text` starts with it and the match ends at a path boundary (so that "C:\Users\ann" does not
+// match inside "C:\Users\anne"), 0 otherwise.
+size_t profile_match(const char* text, size_t avail, const char* prefix) {
+  size_t i = 0;
+  for (; prefix[i] != 0; i++) {
+    if (i >= avail || !same_path_char(text[i], prefix[i])) {
+      return 0;
+    }
+  }
+  if (i == 0) {
+    return 0;
+  }
+  if (i < avail) {
+    const unsigned char next = static_cast<unsigned char>(text[i]);
+    if (next >= 0x80 || (next >= '0' && next <= '9') || (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') ||
+        next == '_' || next == '-' || next == '.' || next == '~') {
+      return 0;
+    }
+  }
+  return i;
+}
+
+void scrub_report() {
+  g_clean_len = 0;
+  size_t i = 0;
+  while (i < g_report_len && g_clean_len < kReportSize - 1) {
+    size_t matched = 0;
+    for (const char* prefix : g_profile) {
+      matched = profile_match(g_report + i, g_report_len - i, prefix);
+      if (matched != 0) {
+        break;
+      }
+    }
+    if (matched != 0) {
+      for (const char* t = kProfileToken; *t != 0 && g_clean_len < kReportSize - 1; t++) {
+        g_clean[g_clean_len++] = *t;
+      }
+      i += matched;
+    } else {
+      g_clean[g_clean_len++] = g_report[i++];
+    }
+  }
+  g_clean[g_clean_len] = 0;
 }
 
 void set_dir(const wchar_t* dir) {
@@ -151,6 +245,124 @@ void host_symbol(HANDLE process, DWORD64 address, char* buf, size_t size) {
   } else {
     std::snprintf(buf, size, "%s", where);
   }
+}
+
+// --- Build and machine identification ----------------------------------------------------------------------------
+// Commit of the source tree, written at every build by cmake/GcrtBuildInfo.cmake ("unknown" without Git, "-dirty"
+// suffix when tracked files have uncommitted changes).
+extern "C" const char gcrt_build_commit[];
+
+// First 12 hex digits of the SHA-1 of a file (BCrypt). Identifies the exact executable, hence the meaning of the host
+// offsets of the report, even when several builds of the same commit exist.
+bool file_sha1_short(const wchar_t* path, char* hex, size_t hex_size) {
+  static unsigned char buf[64 * 1024];
+  HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  BCRYPT_ALG_HANDLE alg = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  bool ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA1_ALGORITHM, nullptr, 0) >= 0 &&
+            BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+  while (ok) {
+    DWORD n = 0;
+    if (!ReadFile(f, buf, sizeof(buf), &n, nullptr)) {
+      ok = false;
+    } else if (n == 0) {
+      break;
+    } else {
+      ok = BCryptHashData(hash, buf, n, 0) >= 0;
+    }
+  }
+  unsigned char digest[20];
+  ok = ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) >= 0;
+  if (hash != nullptr) {
+    BCryptDestroyHash(hash);
+  }
+  if (alg != nullptr) {
+    BCryptCloseAlgorithmProvider(alg, 0);
+  }
+  CloseHandle(f);
+  if (!ok || hex_size < 13) {
+    return false;
+  }
+  for (size_t i = 0; i < 6; i++) {
+    std::snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+  }
+  return true;
+}
+
+// Executable (file name, SHA-1, PE time stamp and image size, build commit) and processor: what is needed to find the
+// exact build again, and to tell a software fault from an unstable machine. Only the file name is written, never the
+// folder: the .txt is the file players share, and a folder may hold their user name.
+void report_build_and_machine() {
+  wchar_t wpath[MAX_PATH * 2] = L"";
+  char name_utf8[MAX_PATH * 4] = "?";
+  const DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH * 2);
+  const bool have_path = len > 0 && len < MAX_PATH * 2;
+  if (have_path) {
+    const wchar_t* file = wpath;
+    for (const wchar_t* c = wpath; *c != 0; c++) {
+      if (*c == L'\\' || *c == L'/') {
+        file = c + 1;
+      }
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, name_utf8, sizeof(name_utf8), nullptr, nullptr) == 0) {
+      std::snprintf(name_utf8, sizeof(name_utf8), "?");
+    }
+  }
+  out("executable %s\n", name_utf8);
+  char sha1[16] = "?";
+  if (!have_path || !file_sha1_short(wpath, sha1, sizeof(sha1))) {
+    std::snprintf(sha1, sizeof(sha1), "?");
+  }
+  const auto* image = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
+  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(image + dos->e_lfanew);
+  out("executable sha1 %s, PE time stamp 0x%08lX, image size 0x%lX, build commit %s\n", sha1,
+      static_cast<unsigned long>(nt->FileHeader.TimeDateStamp),
+      static_cast<unsigned long>(nt->OptionalHeader.SizeOfImage), gcrt_build_commit);
+  int regs[4] = {};
+  char brand[49] = "";
+  __cpuid(regs, static_cast<int>(0x80000000u));
+  if (static_cast<unsigned>(regs[0]) >= 0x80000004u) {
+    for (int i = 0; i < 3; i++) {
+      __cpuid(regs, static_cast<int>(0x80000002u + static_cast<unsigned>(i)));
+      std::memcpy(brand + 16 * i, regs, sizeof(regs));
+    }
+  }
+  brand[48] = 0;
+  const char* name = brand;
+  while (*name == ' ') {
+    name++;
+  }
+  __cpuid(regs, 1);
+  out("cpu %s, signature 0x%08X, %lu logical processors\n", *name ? name : "?", static_cast<unsigned>(regs[0]),
+      static_cast<unsigned long>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+}
+
+// Bytes around the faulting instruction, read without risk of a second fault (ReadProcessMemory, by 8-byte pieces):
+// the instruction can then be decoded from the report alone, whatever the executable. tools/crash_inspect.py decodes
+// it from the minidump and checks whether it can fault with the registers of the report.
+void report_code_bytes(DWORD64 rip) {
+  constexpr int kBefore = 32, kAfter = 32, kPiece = 8;
+  out("code bytes around rip (rip-%d .. rip+%d, | = rip, ?? = unreadable):\n ", kBefore, kAfter);
+  for (int off = -kBefore; off < kAfter; off += kPiece) {
+    unsigned char piece[kPiece];
+    SIZE_T got = 0;
+    const bool ok = ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(rip + off), piece, kPiece, &got) &&
+                    got == kPiece;
+    out("%s", off == 0 ? " | " : " ");
+    for (int i = 0; i < kPiece; i++) {
+      if (ok) {
+        out("%02X", piece[i]);
+      } else {
+        out("??");
+      }
+    }
+  }
+  out("\n");
 }
 
 // --- Guest memory and names ---------------------------------------------------------------------------------------
@@ -322,9 +534,11 @@ DWORD WINAPI report_thread(LPVOID param) {
     out("%s of address 0x%016llX%s\n", kind == 0 ? "read" : kind == 1 ? "write" : kind == 8 ? "execution" : "access",
         static_cast<unsigned long long>(rec->ExceptionInformation[1]),
         rec->ExceptionInformation[1] == ~static_cast<ULONG_PTR>(0)
-            ? " (Windows gives -1 for a general protection fault: non-canonical pointer or misaligned SSE access)"
+            ? " (Windows gives -1 for a general protection fault: non-canonical pointer or misaligned SSE access;"
+              " decode the instruction with tools/crash_inspect.py)"
             : "");
   }
+  report_build_and_machine();
   char tname[128];
   thread_name(in->thread, tname, sizeof(tname));
   out("thread %lu \"%s\"%s\n", in->thread, tname, in->thread == g_game_thread ? " (game thread)" : "");
@@ -335,7 +549,8 @@ DWORD WINAPI report_thread(LPVOID param) {
     out("rax %016llX rbx %016llX rcx %016llX rdx %016llX\n", ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
     out("rsi %016llX rdi %016llX r8  %016llX r9  %016llX\n", ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9);
     out("r10 %016llX r11 %016llX r12 %016llX r13 %016llX\n", ctx->R10, ctx->R11, ctx->R12, ctx->R13);
-    out("r14 %016llX r15 %016llX\n", ctx->R14, ctx->R15);
+    out("r14 %016llX r15 %016llX eflags %08lX\n", ctx->R14, ctx->R15, static_cast<unsigned long>(ctx->EFlags));
+    report_code_bytes(ctx->Rip);
     // Host call stack of the faulting thread.
     out("host call stack:\n");
     CONTEXT walk = *ctx;
@@ -391,9 +606,10 @@ DWORD WINAPI report_thread(LPVOID param) {
     write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
     out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
   }
+  scrub_report();
   swprintf_s(path, L"%s.txt", in->stem);
-  write_file(path, g_report, g_report_len);
-  std::fwrite(g_report, 1, g_report_len, stderr);
+  write_file(path, g_clean, g_clean_len);
+  std::fwrite(g_clean, 1, g_clean_len, stderr);
   char where_files[MAX_PATH * 2];
   WideCharToMultiByte(CP_UTF8, 0, in->stem, -1, where_files, sizeof(where_files), nullptr, nullptr);
   std::fprintf(stderr, "gcrt: crash report written: %s.txt (.dmp, -guest-ram.bin)\n", where_files);
@@ -443,6 +659,7 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   if (env_set(L"GCRT_CRASH_HANDLER", buf, MAX_PATH) && buf[0] == L'0') {
     return;
   }
+  prepare_profile_prefixes();
   if (env_set(L"GCRT_CRASH_DIR", buf, MAX_PATH * 2) || env_set(L"GCRT_CAPTURE_DIR", buf, MAX_PATH * 2)) {
     set_dir(buf);
     g_dir_from_env = true;

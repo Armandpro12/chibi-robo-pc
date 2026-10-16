@@ -2,7 +2,7 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-15.**
+**Last update: 2026-10-16.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
@@ -147,8 +147,12 @@ and assets are read from the player's files.
 
 - Player reports with late saves (US version):
   - **crashes** after a few minutes to 45 minutes of play (access violations). Not reproduced yet in scripted
-    sessions of up to 50 minutes; the new crash handler writes a full report to the user folder (`crashes/`) to
-    locate them;
+    sessions of up to 50 minutes. In the first full crash report, the checks of `tools/crash_inspect.py` find no
+    cause in the faulting instruction (a valid write that had succeeded at the same address four instructions
+    earlier). This suggests, as a hypothesis only, a fault outside the program; more reports are needed before
+    drawing any conclusion. Crash reports now identify the exact executable (file name, SHA-1, build commit), the
+    processor and the faulting code bytes, without any local path, and `tools/crash_inspect.py` checks whether a
+    fault is explained by its instruction;
   - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
     a texture). Dolphin does not show them; the cause is under investigation;
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays

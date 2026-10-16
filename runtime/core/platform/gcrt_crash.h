@@ -15,8 +15,10 @@
  * Folder: GCRT_CRASH_DIR, otherwise GCRT_CAPTURE_DIR (automated runs: run folder), otherwise the default given by the
  * platform (<user folder>/crashes/), otherwise the system temporary folder (%TEMP%\gcrt-crashes), never the current
  * folder. Only the 5 most recent reports are kept (older ones are deleted at startup when the folder is chosen).
- * The guest memory file holds game data and the minidump holds local paths: they stay on the user's machine and must
- * not be attached to public issues. GCRT_CRASH_HANDLER=0 disables the handler
+ * Only the .txt may be shared: it names the executable and the host modules by their file name only, and any
+ * user-profile folder left in it is replaced by the literal %USERPROFILE%, so that it does not reveal the Windows user
+ * name. The guest memory file holds game data and the minidump holds local paths: they stay on the user's machine and
+ * must not be attached to public issues. GCRT_CRASH_HANDLER=0 disables the handler
  * (to let a debugger or Windows Error Reporting see the exception first). Windows only; elsewhere the functions do
  * nothing.
  */

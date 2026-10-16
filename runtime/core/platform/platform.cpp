@@ -512,7 +512,8 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
   if (kind == "abort") {
     std::abort();
   }
-  volatile uintptr_t bad = kind == "write" ? 0 : ~static_cast<uintptr_t>(0) - 7u;
+  // 0x8000000000000000 is non-canonical on x86-64 (bits 63..47 differ): a general protection fault, as described.
+  volatile uintptr_t bad = kind == "write" ? 0 : static_cast<uintptr_t>(1) << (sizeof(uintptr_t) * 8 - 1);
   if (kind == "write") {
     *reinterpret_cast<volatile int*>(bad) = 1;
   } else {

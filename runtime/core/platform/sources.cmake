@@ -33,6 +33,19 @@ target_sources(gcrt PRIVATE
 # to the generated code; linking, however, does follow (static library).
 target_link_libraries(gcrt PRIVATE aurora::core aurora::gx aurora::vi aurora::pad)
 target_compile_features(gcrt PRIVATE cxx_std_20)
+if(WIN32)
+  target_link_libraries(gcrt PRIVATE bcrypt) # SHA-1 of the executable in crash reports (crash_handler.cpp)
+endif()
+
+# Build identification printed by crash reports: commit of the source tree (cmake/GcrtBuildInfo.cmake). Written once at
+# configuration (the file exists before the first build), then checked at every build; rewritten only when it changes.
+set(GCRT_BUILD_INFO_C "${CMAKE_BINARY_DIR}/gcrt_build_info.c")
+set(GCRT_BUILD_INFO_CMD "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}" "-DOUTPUT=${GCRT_BUILD_INFO_C}"
+    -P "${GCRT_CORE_DIR}/cmake/GcrtBuildInfo.cmake")
+execute_process(COMMAND ${GCRT_BUILD_INFO_CMD})
+add_custom_target(gcrt_build_info COMMAND ${GCRT_BUILD_INFO_CMD} BYPRODUCTS "${GCRT_BUILD_INFO_C}" VERBATIM)
+add_dependencies(gcrt gcrt_build_info)
+target_sources(gcrt PRIVATE "${GCRT_BUILD_INFO_C}")
 
 include("${GCRT_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
 # Called by gcrt_add_recompiled_executable (cmake/GcrtRecomp.cmake): Aurora's DLLs (SDL3, Dawn,
