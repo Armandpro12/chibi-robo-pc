@@ -89,14 +89,6 @@ bool host_init(const HostConfig& config) {
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
   // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
-   float renderScale = config.renderScale;
-  gcrt_game_config_load();
-  if (config.windowMode == 0) {
-    if (!gcrt_game_config_run_menu(g_title.c_str())) {
-      aurora_shutdown(); // window closed from the menu: abort the boot
-      return false;
-    }
-  }
   const GcrtGameConfig* gc = gcrt_game_config();
   float renderScale = config.renderScale;
   if (config.windowMode == 0) { // direct launch only: automated runs keep their settings
