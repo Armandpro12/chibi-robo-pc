@@ -93,9 +93,11 @@ static bool hle_halt(GcrtCpu* g, u32 address) {
 
 /* Diagnostic and tooling (GCRT_FORCE_ARG="ITEM[;ITEM...]", at most FORCE_ARG_MAX items): on entry into a function,
  * before its original code runs, a register or a 32-bit word of guest memory receives a value. Item syntax:
- *   ADDRESS:rN=VALUE[#COUNT]          register rN receives VALUE
- *   ADDRESS:[rN+OFFSET]=VALUE[#COUNT] the big-endian word at rN+OFFSET (rN read on entry; "-" also accepted)
- *   ADDRESS:[ABSOLUTE]=VALUE[#COUNT]  the big-endian word at a fixed guest address
+ *   ADDRESS:TARGET=VALUE[#COUNT]   TARGET receives VALUE
+ *   ADDRESS:TARGET&=VALUE[#COUNT]  TARGET receives TARGET & VALUE (e.g. clear one flag: &=0xFFFFDFFF)
+ *   ADDRESS:TARGET|=VALUE[#COUNT]  TARGET receives TARGET | VALUE (set flags)
+ * with TARGET = rN (register), [rN+OFFSET] (the big-endian word at rN+OFFSET, rN read on entry; "-" also
+ * accepted) or [ABSOLUTE] (the big-endian word at a fixed guest address).
  * ADDRESS, OFFSET and ABSOLUTE are hexadecimal ("0x" optional); VALUE is decimal, or hexadecimal with "0x";
  * #COUNT applies the item to the first COUNT entries only (default: every entry).
  * Uses: make two runs comparable when the game depends on a clock value (random seed taken from OSGetTick: a
@@ -106,11 +108,13 @@ static bool hle_halt(GcrtCpu* g, u32 address) {
  * seen. Traces: one stderr line per application of a counted item; every application with GCRT_TRACE=native. */
 #define FORCE_ARG_MAX 8
 enum { FORCE_REG, FORCE_MEM_REG, FORCE_MEM_ABS };
+enum { FORCE_SET, FORCE_AND, FORCE_OR };
 static struct {
     u32 address; /* function entry */
     u32 kind;
     u32 reg;
     u32 offset; /* FORCE_MEM_REG: added to rN (modulo 2^32); FORCE_MEM_ABS: the guest address */
+    u32 op; /* FORCE_SET, FORCE_AND, FORCE_OR */
     u32 value;
     u32 limit; /* 0 = every entry */
     u32 hits;
@@ -138,28 +142,36 @@ static bool hle_force_arg(GcrtCpu* g, u32 address) {
         if (s_force[i].limit && s_force[i].hits >= s_force[i].limit)
             continue;
         s_force[i].hits++;
-        u32 target = 0, before = 0;
+        u32 target = 0, before, after;
         if (s_force[i].kind == FORCE_REG) {
             before = g->state.gpr[s_force[i].reg];
-            g->state.gpr[s_force[i].reg] = s_force[i].value;
         } else {
             target = s_force[i].kind == FORCE_MEM_REG ? g->state.gpr[s_force[i].reg] + s_force[i].offset
                                                       : s_force[i].offset;
             before = mem_read32(&g->state, target);
-            mem_write32(&g->state, target, s_force[i].value);
         }
+        after = s_force[i].op == FORCE_AND  ? before & s_force[i].value
+                : s_force[i].op == FORCE_OR ? before | s_force[i].value
+                                            : s_force[i].value;
+        if (s_force[i].kind == FORCE_REG)
+            g->state.gpr[s_force[i].reg] = after;
+        else
+            mem_write32(&g->state, target, after);
         if (s_force[i].limit || GCRT_TRACE_ON(GCRT_TRACE_NATIVE)) {
             char what[48];
             describe_force_target(i, what, sizeof(what));
             char where[24] = "";
             if (s_force[i].kind != FORCE_REG)
                 snprintf(where, sizeof(where), " (0x%08X)", (unsigned)target);
+            char count[24];
+            if (s_force[i].limit)
+                snprintf(count, sizeof(count), "%u/%u", (unsigned)s_force[i].hits, (unsigned)s_force[i].limit);
+            else
+                snprintf(count, sizeof(count), "%u", (unsigned)s_force[i].hits);
             char line[192];
             snprintf(line, sizeof(line),
-                     "GCRT_FORCE_ARG: entry %u%s%u into %08X (called from %08X): %s%s 0x%08X -> 0x%08X\n",
-                     (unsigned)s_force[i].hits, s_force[i].limit ? "/" : "",
-                     (unsigned)(s_force[i].limit ? s_force[i].limit : 0u), (unsigned)address,
-                     (unsigned)g->state.lr, what, where, (unsigned)before, (unsigned)s_force[i].value);
+                     "GCRT_FORCE_ARG: entry %s into %08X (called from %08X): %s%s 0x%08X -> 0x%08X\n", count,
+                     (unsigned)address, (unsigned)g->state.lr, what, where, (unsigned)before, (unsigned)after);
             if (s_force[i].limit)
                 fprintf(stderr, "gcrt hle: %s", line);
             GCRT_TRACE(GCRT_TRACE_NATIVE, "%s", line);
@@ -202,6 +214,11 @@ static bool parse_force_item(const char* item, unsigned slot) {
     } else {
         return false;
     }
+    u32 op = FORCE_SET;
+    if (*p == '&' || *p == '|') {
+        op = *p == '&' ? FORCE_AND : FORCE_OR;
+        p++;
+    }
     if (reg > 31 || *p != '=')
         return false;
     char* start = p + 1;
@@ -223,6 +240,7 @@ static bool parse_force_item(const char* item, unsigned slot) {
     s_force[slot].kind = kind;
     s_force[slot].reg = reg;
     s_force[slot].offset = offset;
+    s_force[slot].op = op;
     s_force[slot].value = (u32)value;
     s_force[slot].limit = (u32)limit;
     s_force[slot].hits = 0;
@@ -248,7 +266,7 @@ static void install_force_args(GcrtCpu* g) {
         }
         if (!parse_force_item(item, s_force_count)) {
             fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: invalid item \"%s\" ignored (expected ADDRESS:rN=VALUE, "
-                            "ADDRESS:[rN+OFFSET]=VALUE or ADDRESS:[ABSOLUTE]=VALUE, optionally #COUNT)\n",
+                            "ADDRESS:[rN+OFFSET]=VALUE or ADDRESS:[ABSOLUTE]=VALUE, &= or |= instead of =, optionally #COUNT)\n",
                     item);
             continue;
         }
@@ -258,8 +276,9 @@ static void install_force_args(GcrtCpu* g) {
         describe_force_target(i, what, sizeof(what));
         if (s_force[i].limit)
             snprintf(when, sizeof(when), " (first %u entries only)", (unsigned)s_force[i].limit);
-        fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: %s = 0x%08X on entry to %08X%s\n", what,
-                (unsigned)s_force[i].value, (unsigned)s_force[i].address, when);
+        static const char* const op_text[] = {"=", "&=", "|="};
+        fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: %s %s 0x%08X on entry to %08X%s\n", what,
+                op_text[s_force[i].op], (unsigned)s_force[i].value, (unsigned)s_force[i].address, when);
     }
 }
 
