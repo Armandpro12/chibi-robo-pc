@@ -65,6 +65,9 @@ bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn);
 unsigned gcrt_hle_replace(GcrtCpu* g, const char* sdk_name, GcrtHleFn fn);
 /* All the addresses recognized for `name` (returns their number, at most `max` written). */
 unsigned gcrt_hle_find_all(const char* name, u32* out, unsigned max);
+/* SDK function recognized by signature that contains `address` (its catalog name), NULL if none; `start` receives
+ * its first address. Diagnostics (crash report). */
+const char* gcrt_hle_name_at(u32 address, u32* start);
 /* Range [lo, hi) covered by the functions of library `prefix` (names "prefix..." or "__prefix...")
  * recognized exactly once. */
 bool gcrt_hle_library_range(const char* prefix, u32* lo, u32* hi);

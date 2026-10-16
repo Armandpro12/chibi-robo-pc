@@ -122,7 +122,6 @@ void gcrt_native_card_set_size(unsigned size_mbit) {
     switch (size_mbit) {
     case 4: case 8: case 16: case 32: case 64: case 128:
         s_card.size_mbit = size_mbit;
-        
         break;
     default:
         fprintf(stderr, "gcrt: card size %u Mbit refused (4, 8, 16, 32, 64 or 128)\n", size_mbit);

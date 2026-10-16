@@ -28,6 +28,8 @@
 
 extern "C" {
 #include "../hle/gcrt_native.h"
+#include "gcrt_crash.h"
+#include "gcrt_user_dir.h"
 #include "trace.h"
 }
 
@@ -49,6 +51,8 @@ struct FrameInput {
   uint64_t count;
   uint16_t buttons;
   bool applied;
+  // Sticks pushed all the way (SUP, SDOWN, SLEFT, SRIGHT: main stick; CUP, CDOWN, CLEFT, CRIGHT: C-stick), 0 = untouched.
+  int8_t stickX, stickY, substickX, substickY;
 };
 
 struct Watch {
@@ -91,14 +95,28 @@ struct GcrtPlatform {
   size_t nextCaptureFrame = 0;
   std::vector<uint64_t> captureFields; // VI field numbers
   size_t nextCaptureField = 0;
-  bool waitPipelines = true;
+  // GCRT_PIPELINES (see gcrt_platform.h): when the game thread waits for Aurora's pipeline compilations.
+  //   Sync : before each EFB -> texture copy and at the end of each frame (no draw ever skipped);
+  //   Frame: at the end of each frame only (draws of the passes ended by an EFB -> texture copy can still be skipped);
+  //   Async: never (Aurora's own behaviour).
+  enum class PipelineWait { Sync, Frame, Async } pipelineMode = PipelineWait::Sync;
   bool xfbFilter = true;
   gcrt::gx::CopyFilterMode copyFilterMode = gcrt::gx::CopyFilterMode::Unblended;
   uint64_t filteredFrames = 0;
   double stopAt = 0.0; // stop requested at this emulated time (0: never)
   uint64_t stopFrame = 0; // stop requested when this frame is presented (GCRT_STOP_FRAME, 0: never)
-  uint64_t pipelineStalls = 0;
-  double pipelineWait = 0.0;
+  // Test of the crash handler (GCRT_CRASH_TEST=read|write|abort:<frame>): deliberate fault once this frame is presented.
+  std::string crashTestKind;
+  uint64_t crashTestFrame = 0;
+  uint64_t pipelineStalls = 0;       // waits for pipelines (all places)
+  double pipelineWait = 0.0;          // seconds
+  uint64_t pipelineStallsCopy = 0;    // of which before an EFB -> texture copy
+  double pipelineWaitCopy = 0.0;
+  uint64_t copySyncs = 0;             // Aurora caught up before an EFB -> texture copy (Sync): count and host time
+  double copySyncTime = 0.0;          // seconds spent in these flushes (cost of the Sync mode once the pipelines exist)
+  uint64_t pendingAtCopy = 0;         // EFB -> texture copies forwarded with pipelines still compiling (Frame, Async)
+  uint64_t pendingAtFrameEnd = 0;     // frames ended with pipelines still compiling (Async)
+  bool pipelineProbe = false;         // GCRT_PIPELINES_PROBE=1: count pendingAtCopy (Frame, Async)
   std::string captureDir = ".";
   uint32_t capturesWritten = 0;
   std::vector<Watch> watches;
@@ -125,6 +143,7 @@ struct GcrtPlatform {
 
 namespace {
 GcrtPlatform* g_platform = nullptr;
+[[noreturn]] void crash_test(const std::string& kind);
 
 double emulated_seconds(const GcrtPlatform* p) {
   return static_cast<double>(gcrt_cpu_ticks(p->g)) / static_cast<double>(GCRT_TB_HZ);
@@ -176,6 +195,30 @@ std::vector<std::string> split(const std::string& s, const char* seps) {
   return out;
 }
 
+// Stick directions of the frame-scripted inputs (same names as tools/make_dtm.py for the main stick).
+bool is_stick_name(const std::string& name) {
+  static const char* const kNames[] = {"SUP", "SDOWN", "SLEFT", "SRIGHT", "CUP", "CDOWN", "CLEFT", "CRIGHT"};
+  for (const char* n : kNames) {
+    if (name == n) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void parse_sticks(const std::string& spec, FrameInput& f) {
+  for (const auto& name : split(spec, "+")) {
+    if (name == "SUP") f.stickY = 127;
+    if (name == "SDOWN") f.stickY = -127;
+    if (name == "SLEFT") f.stickX = -127;
+    if (name == "SRIGHT") f.stickX = 127;
+    if (name == "CUP") f.substickY = 127;
+    if (name == "CDOWN") f.substickY = -127;
+    if (name == "CLEFT") f.substickX = -127;
+    if (name == "CRIGHT") f.substickX = 127;
+  }
+}
+
 uint16_t parse_buttons(const std::string& spec) {
   static const struct {
     const char* name;
@@ -192,7 +235,7 @@ uint16_t parse_buttons(const std::string& spec) {
         found = true;
       }
     }
-    if (!found) {
+    if (!found && !is_stick_name(name)) {
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_INPUT: unknown button '%s' ignored", name.c_str());
     }
   }
@@ -226,6 +269,10 @@ bool PlatformInput::read_pad(int port, PadState& out) {
       auto& f = frameScript[i];
       if (reading >= f.first && reading < f.first + f.count) {
         cache[0].buttons |= f.buttons;
+        if (f.stickX != 0) cache[0].stickX = f.stickX;
+        if (f.stickY != 0) cache[0].stickY = f.stickY;
+        if (f.substickX != 0) cache[0].substickX = f.substickX;
+        if (f.substickY != 0) cache[0].substickY = f.substickY;
         connected[0] = true;
         if (!f.applied) {
           f.applied = true;
@@ -274,6 +321,57 @@ void dsp_push_mail(void*, uint32_t mail, bool interrupt, uint32_t delay_cycles) 
   gcrt_native_dsp_push_mail(mail, interrupt, delay_cycles);
 }
 void dsp_clear_mails(void*) { gcrt_native_dsp_clear_mails(); }
+
+// Makes Aurora process every GX command written so far, then waits until every pipeline requested so far is compiled.
+// Why: Aurora skips a draw whose pipeline is not compiled yet when its render thread encodes the draw's render pass,
+// and it hands a pass over at the end of the frame AND at each EFB -> texture copy (the copy ends the pass). Waiting
+// before both keeps every draw, like the console. The time waited does not exist for the console: it is removed from
+// the emulated clock, which restarts from here without catching up. Returns the time waited, in seconds.
+double wait_for_pipelines(GcrtPlatform* p, bool beforeTextureCopy) {
+  if (beforeTextureCopy) {
+    const auto t0 = std::chrono::steady_clock::now();
+    p->bridge.flush();
+    ++p->copySyncs;
+    p->copySyncTime += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  } else {
+    p->bridge.flush();
+  }
+  const double waited = gcrt::platform::host_wait_pipelines(30.0);
+  if (waited <= 0.0) {
+    return 0.0;
+  }
+  ++p->pipelineStalls;
+  p->pipelineWait += waited;
+  if (beforeTextureCopy) {
+    ++p->pipelineStallsCopy;
+    p->pipelineWaitCopy += waited;
+  }
+  gcrt_cpu_set_clock(p->g, p->g->clock);
+  p->paceHost += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(waited));
+  GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu%s)", waited * 1000.0,
+             static_cast<unsigned long long>(p->framesPresented + 1), beforeTextureCopy ? ", EFB -> texture copy" : "");
+  return waited;
+}
+
+// Bridge hook: EFB -> texture copy about to be forwarded to Aurora (end of an Aurora render pass).
+void on_texture_copy(void* user) {
+  auto* p = static_cast<GcrtPlatform*>(user);
+  if (p->pipelineMode == GcrtPlatform::PipelineWait::Sync) {
+    wait_for_pipelines(p, true);
+    return;
+  }
+  // Diagnostic only (GCRT_PIPELINES_PROBE=1): pipelines still compiling when the pass is handed over. Reading the
+  // count needs Aurora to have processed the commands written so far (a flush), which these modes do not do otherwise.
+  if (p->pipelineProbe) {
+    p->bridge.flush();
+    if (const uint32_t pending = gcrt::platform::host_pending_pipelines(); pending != 0) {
+      ++p->pendingAtCopy;
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "pipelines: %u still compiling at an EFB -> texture copy (image %llu): "
+                        "draws of the pass may be skipped", pending,
+                        static_cast<unsigned long long>(p->framesPresented + 1));
+    }
+  }
+}
 
 void open_frame(GcrtPlatform* p) {
   const int64_t t0 = p->timingLog != nullptr ? steady_us() : 0;
@@ -336,19 +434,12 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     if (p->timingLog != nullptr) {
       tPipe = steady_us();
     }
-    if (p->waitPipelines) {
-      const double waited = gcrt::platform::host_wait_pipelines(30.0);
-      if (waited > 0.0) {
-        ++p->pipelineStalls;
-        p->pipelineWait += waited;
-        // The time spent waiting for the host does not exist for the console: the emulated clock (real
-        // time) restarts from here, without catching up.
-        gcrt_cpu_set_clock(p->g, p->g->clock);
-        p->paceHost += std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(waited));
-        GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu)", waited * 1000.0,
-                   static_cast<unsigned long long>(p->framesPresented + 1));
-      }
+    if (p->pipelineMode != GcrtPlatform::PipelineWait::Async) {
+      wait_for_pipelines(p, false);
+    } else if (const uint32_t pending = gcrt::platform::host_pending_pipelines(); pending != 0) {
+      ++p->pendingAtFrameEnd;
+      GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %u still compiling at the end of image %llu: draws may be skipped",
+                 pending, static_cast<unsigned long long>(p->framesPresented + 1));
     }
     if (p->timingLog != nullptr) {
       tFilter = steady_us();
@@ -405,10 +496,29 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
       gcrt_cpu_request_stop(p->g);
     }
     p->capturesWritten += static_cast<uint32_t>(gcrt::gx::poll_efb_captures());
+    if (p->crashTestFrame > 0 && p->framesPresented >= p->crashTestFrame) {
+      crash_test(p->crashTestKind);
+    }
   } else {
     ++p->framesSkipped;
   }
   open_frame(p);
+}
+
+// Deliberate fault (test of the crash handler, GCRT_CRASH_TEST): read of a non-canonical address, write to NULL or
+// abort().
+[[noreturn]] void crash_test(const std::string& kind) {
+  std::fflush(nullptr);
+  if (kind == "abort") {
+    std::abort();
+  }
+  volatile uintptr_t bad = kind == "write" ? 0 : ~static_cast<uintptr_t>(0) - 7u;
+  if (kind == "write") {
+    *reinterpret_cast<volatile int*>(bad) = 1;
+  } else {
+    (void)*reinterpret_cast<volatile int*>(bad);
+  }
+  std::abort();
 }
 
 void report(GcrtPlatform* p, const char* label) {
@@ -449,6 +559,29 @@ void report(GcrtPlatform* p, const char* label) {
   const uint64_t total = gcrt_hw_count_total(p->g);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "hardware accesses (0xCC00xxxx) %s: total %llu; %s", label,
                     static_cast<unsigned long long>(total), gcrt_hw_count_summary(p->g, hw, sizeof(hw)));
+  // Process memory (diagnostic of leaks over long sessions; platform/gcrt_crash.h).
+  u64 workingSet = 0, privateBytes = 0;
+  u32 handles = 0;
+  if (gcrt_process_memory(&workingSet, &privateBytes, &handles)) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "process memory %s: working set %.1f MiB, private %.1f MiB, handles %u",
+                      label, static_cast<double>(workingSet) / 1048576.0, static_cast<double>(privateBytes) / 1048576.0,
+                      handles);
+  }
+}
+
+// Lines added to a crash report (platform/gcrt_crash.h): where the game was.
+void crash_context(void* user, GcrtCrashAppend append, void* sink) {
+  auto* p = static_cast<GcrtPlatform*>(user);
+  char line[512];
+  std::snprintf(line, sizeof(line),
+                "guest time %.3f s, host time %.1f s; frames presented %llu (skipped %llu), VI fields %llu; "
+                "pipeline waits %llu (%.3f s); last display copy %ux%u\n",
+                emulated_seconds(p),
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - p->hostStart).count(),
+                static_cast<unsigned long long>(p->framesPresented), static_cast<unsigned long long>(p->framesSkipped),
+                static_cast<unsigned long long>(vi_fields(p)), static_cast<unsigned long long>(p->pipelineStalls),
+                p->pipelineWait, p->efbWidth, p->efbHeight);
+  append(sink, line);
 }
 
 // Controller inputs for the native replacements (hle/native_pad.c): keyboard, SDL gamepads, inputs
@@ -571,7 +704,13 @@ void configure(GcrtPlatform* p) {
     p->captureFields.push_back(std::strtoull(t.c_str(), nullptr, 0));
   }
   std::sort(p->captureFields.begin(), p->captureFields.end());
-  p->waitPipelines = env("GCRT_PIPELINES", "sync") != "async";
+  {
+    const std::string mode = env("GCRT_PIPELINES", "sync");
+    p->pipelineMode = mode == "async"   ? GcrtPlatform::PipelineWait::Async
+                      : mode == "frame" ? GcrtPlatform::PipelineWait::Frame
+                                        : GcrtPlatform::PipelineWait::Sync;
+  }
+  p->pipelineProbe = env("GCRT_PIPELINES_PROBE", "0") != "0";
   {
     // Display copy filter: unblended (default, like Dolphin), full (console) or off.
     const std::string mode = env("GCRT_COPY_FILTER", "unblended");
@@ -594,6 +733,12 @@ void configure(GcrtPlatform* p) {
                       s.duration);
   }
   p->stopFrame = std::strtoull(env("GCRT_STOP_FRAME", "0").c_str(), nullptr, 0);
+  if (const auto parts = split(env("GCRT_CRASH_TEST"), ":"); parts.size() == 2) {
+    p->crashTestKind = parts[0];
+    p->crashTestFrame = std::strtoull(parts[1].c_str(), nullptr, 0);
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: deliberate %s fault at frame %llu", parts[0].c_str(),
+                      static_cast<unsigned long long>(p->crashTestFrame));
+  }
   for (const auto& item : split(env("GCRT_INPUT_FRAMES"), ";")) {
     const auto parts = split(item, ":");
     if (parts.size() < 2) {
@@ -602,6 +747,7 @@ void configure(GcrtPlatform* p) {
     FrameInput f{};
     f.first = std::strtoull(parts[0].c_str(), nullptr, 0);
     f.buttons = parse_buttons(parts[1]);
+    parse_sticks(parts[1], f);
     f.count = parts.size() > 2 ? std::strtoull(parts[2].c_str(), nullptr, 0) : 10;
     p->input.frameScript.push_back(f);
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "frame-scripted input: frame %llu, buttons %04X, %llu frames",
@@ -704,7 +850,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     const std::string window = env("GCRT_WINDOW", "normal");
     host.windowMode = window == "background" ? 1 : window == "minimized" ? 2 : 0;
   }
-  host.viewportFit = env("GCRT_VIEWPORT", "fit") == "fit";
+  host.viewportFit = env("GCRT_VIEWPORT", "stretch") == "fit";
   std::error_code ec;
   fs::create_directories(host.dataDir, ec);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s", host.dataDir.c_str());
@@ -713,6 +859,11 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     fs::create_directories(p->captureDir, ec);
   }
   gcrt::platform::host_init(host);
+  // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
+  if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
+    gcrt_crash_handler_set_default_dir((std::string(userDir) + "crashes").c_str());
+  }
+  gcrt_crash_handler_set_context(crash_context, p);
   // GX command processor (bridge to Aurora): end of frame at the display copy; the stream comes from native drawing.
   p->bridge.set_guest_memory(g->state.ram, std::min<uint32_t>(g->state.ram_size, GCRT_MEM1_SIZE));
   p->bridge.reset();
@@ -720,6 +871,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     gcrt::gx::BridgeHooks hooks;
     hooks.user = p;
     hooks.displayCopy = on_display_copy;
+    hooks.textureCopy = on_texture_copy;
     p->bridge.set_hooks(hooks);
     const GcrtGxSink sink = {p, gx_sink_consume, gx_sink_abort};
     gcrt_native_set_gx_sink(&sink);
@@ -753,7 +905,10 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
                     "hardware connected (language %u, RTC %s, pipelines %s, pacing: %s)",
                     static_cast<unsigned>(std::strtoul(env("GCRT_LANGUAGE", "0").c_str(), nullptr, 0)),
                     env("GCRT_RTC").empty() ? "host" : "fixed",
-                    p->waitPipelines ? "awaited" : "asynchronous", kPacing[static_cast<int>(p->pacing)]);
+                    p->pipelineMode == GcrtPlatform::PipelineWait::Sync    ? "awaited before each render pass ends"
+                    : p->pipelineMode == GcrtPlatform::PipelineWait::Frame ? "awaited at the end of each frame only"
+                                                                           : "asynchronous",
+                    kPacing[static_cast<int>(p->pacing)]);
   return p;
 }
 
@@ -798,7 +953,10 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
                     "GX: %llu commands, %llu draws, %llu vertices, %llu display lists, %llu XFB copies, %llu texture "
                     "copies, %llu unknown opcodes, %llu invalid addresses; skipped frames %llu; "
                     "captures written %u; unhandled out-of-RAM accesses: %llu; pipeline "
-                    "waits: %llu (%.2f s); filtered frames (display copy): %llu",
+                    "waits: %llu (%.2f s), of which before an EFB -> texture copy: %llu (%.2f s; %llu synchronizations "
+                    "with Aurora at these copies, %.1f ms); pipelines still "
+                    "compiling at an EFB -> texture copy: %llu, at a frame end: %llu; filtered frames (display copy): %llu; "
+                    "textures read at a copy destination %llu, of which stale copies evicted %llu",
                     static_cast<unsigned long long>(gx.commands), static_cast<unsigned long long>(gx.draws),
                     static_cast<unsigned long long>(gx.vertices), static_cast<unsigned long long>(gx.displayLists),
                     static_cast<unsigned long long>(gx.displayCopies), static_cast<unsigned long long>(gx.efbCopies),
@@ -806,7 +964,11 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
                     static_cast<unsigned long long>(p->framesSkipped), p->capturesWritten,
                     static_cast<unsigned long long>(p->g->io_unhandled),
                     static_cast<unsigned long long>(p->pipelineStalls), p->pipelineWait,
-                    static_cast<unsigned long long>(p->filteredFrames));
+                    static_cast<unsigned long long>(p->pipelineStallsCopy), p->pipelineWaitCopy,
+                    static_cast<unsigned long long>(p->copySyncs), p->copySyncTime * 1000.0,
+                    static_cast<unsigned long long>(p->pendingAtCopy), static_cast<unsigned long long>(p->pendingAtFrameEnd),
+                    static_cast<unsigned long long>(p->filteredFrames),
+                    static_cast<unsigned long long>(gx.copyTextureLoads), static_cast<unsigned long long>(gx.staleCopies));
   if (p->audio != nullptr) {
     GcrtAudioStats st{};
     gcrt_audio_get_stats(p->audio, &st);

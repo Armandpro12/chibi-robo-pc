@@ -24,8 +24,8 @@ struct HostConfig {
   bool viewportFit = false;
   std::string dataDir;   // Aurora's userPath / cachePath (pipeline caches; the gamepad mappings
                          // are in the user folder, gcrt_user_dir.h)
-  uint32_t width = 1920;  // initial window size
-  uint32_t height = 1080; // initial window size
+  uint32_t width = 640;  // initial window size
+  uint32_t height = 480;
 };
 
 bool host_init(const HostConfig& config);
@@ -39,6 +39,8 @@ bool host_poll_events();
 // Waits until Aurora's pipeline compilation queue is empty (otherwise the draws whose
 // pipeline is not ready are skipped by Aurora). Returns the time waited in seconds.
 double host_wait_pipelines(double timeoutSeconds);
+// Pipelines requested from Aurora and not compiled yet (same statistic, without waiting).
+uint32_t host_pending_pipelines();
 // Logical size of the game's EFB (rectangle of the copy to the XFB): Aurora adjusts its rendering to it.
 void host_configure_efb(uint32_t width, uint32_t height);
 

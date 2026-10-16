@@ -16,9 +16,15 @@
  *   GCRT_CAPTURE_FRAMES numbers of the presented frames to capture (1 = first copy to the XFB)
  *   GCRT_CAPTURE_FIELDS VI field numbers: capture at the first frame presented afterwards
  *   GCRT_CAPTURE_DIR   screenshot folder (default: current folder)
- *   GCRT_PIPELINES     "sync" (default): end of frame delayed until every pipeline has been compiled
- *                      (no draw skipped, emulated clock suspended during the wait);
- *                      "async": Aurora behaviour (draws skipped while the pipeline compiles)
+ *   GCRT_PIPELINES     "sync" (default): before each EFB -> texture copy and at the end of each frame, wait until
+ *                      every pipeline requested so far has been compiled (no draw skipped: Aurora skips a draw
+ *                      whose pipeline is not ready when it hands the render pass over, which happens at both
+ *                      places; emulated clock suspended during the wait);
+ *                      "frame": wait at the end of each frame only (former behaviour: the draws of a pass ended
+ *                      by an EFB -> texture copy can still be skipped); diagnostic;
+ *                      "async": Aurora behaviour (draws skipped while the pipeline compiles); diagnostic
+ *   GCRT_PIPELINES_PROBE 1: with "frame" or "async", count and trace the EFB -> texture copies forwarded while
+ *                      pipelines are still compiling (makes Aurora catch up at each copy); default 0
  *   GCRT_PACING        "throttle" (default): emulated time = executed cycles, the host waits at each VI
  *                      field if it is ahead, a lag above GCRT_MAX_LAG (0.1 s) is dropped
  *                      (the game slows down instead of skipping time); "host": real-time clock of the
@@ -58,10 +64,17 @@
  *                      accesses" line is written to the trace at each report
  *   GCRT_FORCE_ARG     diagnostic: "ADDRESS:rN=VALUE" forces a register on entry to a function (hle)
  *   GCRT_WATCH         addresses (hex) whose passes at block start are counted (e.g. "80001234,80005678")
+ *   GCRT_GX_STALE_COPIES "evict" (default): an EFB -> texture copy whose guest memory the game has rewritten since
+ *                      is dropped and the texture is read from memory, like the console; "keep": former behavior
+ *                      (Aurora keeps binding the copy); counted in the final GX report (gx/gx_bridge.hpp)
  *   GCRT_GX_STREAM     diagnostic: fingerprint of the received GX command stream, one line per frame ("frame bytes
  *                      fnv64 draws") in this file; "1" = gx-stream.txt in GCRT_CAPTURE_DIR. GCRT_GX_STREAM_DUMP:
  *                      frames ("12,500") whose full stream is also written (<file>.<frame>.bin)
- *   GCRT_REPORT        period of the intermediate report in seconds (default 5)
+ *   GCRT_REPORT        period of the intermediate report in seconds (default 5); each report also gives the process
+ *                      memory (working set, private bytes, handles)
+ *   GCRT_CRASH_DIR, GCRT_CRASH_HANDLER: crash reports (platform/gcrt_crash.h; default folder <user folder>/crashes/,
+ *                      or GCRT_CAPTURE_DIR in automated runs); GCRT_CRASH_TEST=read|write|abort:<frame>: deliberate
+ *                      fault once that frame is presented (test of the crash handler)
  *   GCRT_TRACE, GCRT_TRACE_FILE: traces (platform/trace.h)
  */
 #ifndef GCRT_PLATFORM_H
