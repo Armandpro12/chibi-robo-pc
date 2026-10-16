@@ -168,7 +168,8 @@ bool gcrt_game_config_run_menu(const char* title) {
     }
     ImGui::Checkbox("Fullscreen", &g_cfg.fullscreen);
     ImGui::SliderFloat("Render scale", &g_cfg.renderScale, 0.5f, 4.0f, "%.2fx");
-    ImGui::Checkbox("Skip this menu next time (hold Shift at launch to show it again)", &g_cfg.skipMenu);
+    ImGui::Checkbox("Skip this menu next time", &g_cfg.skipMenu);
+    ImGui::TextDisabled("Hold Shift at launch to show it again.");
     ImGui::Separator();
     if (ImGui::Button("Start game (Enter)", ImVec2(-1, 0)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
         ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) {
