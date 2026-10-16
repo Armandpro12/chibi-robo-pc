@@ -13,7 +13,7 @@
 namespace {
 GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false};
 
-std::string path_for(const char* dir) { return std::string(dir) + "/game_config.ini"; }
+std::string path_for(const char* dir) { return std::string(dir) + "game_config.ini"; }
 
 void save(const char* dir) {
   std::ofstream f(path_for(dir));
