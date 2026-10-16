@@ -83,6 +83,26 @@ CAPABILITY_TOKENS = {
 }
 
 
+def stage_applied(stderr_log: Path, items: list[str]) -> dict[str, bool]:
+    """--stage: for each function address of the stage items, whether the executable reported an entry into it
+    ("GCRT_FORCE_ARG: entry N/M into ADDRESS" on stderr). False = the item never acted (no save restored).
+    The addresses are compared as hexadecimal numbers."""
+    text = stderr_log.read_text(encoding="utf-8", errors="replace") if stderr_log.exists() else ""
+    seen = set()
+    for line in text.splitlines():
+        if "GCRT_FORCE_ARG: entry " in line and " into " in line:
+            word = line.split(" into ", 1)[1].split()[0]
+            try:
+                seen.add(int(word, 16))
+            except ValueError:
+                pass
+    result = {}
+    for item in items:
+        address = item.split(":", 1)[0].split("@", 1)[0]
+        result[address] = int(address, 16) in seen
+    return result
+
+
 def stage_items(game_cfg: dict, version: str, choice: str) -> tuple[int, list[str]]:
     """--stage: stage number and GCRT_FORCE_ARG items, from game.toml [stage] (names, count, start.<version>)."""
     cfg = game_cfg.get("stage", {})
@@ -492,7 +512,8 @@ def main() -> int:
         "captures": sorted(p.name for p in out.glob("capture_*.png")),
         "osreport_lines": sum(1 for l in trace.splitlines() if "[osreport]" in l),
         "unhandled_lines": sum(1 for l in trace.splitlines() if "[unhandled]" in l),
-        "stage": {"choice": args.stage, "number": stage[0], "force": stage[1]} if stage else None,
+        "stage": ({"choice": args.stage, "number": stage[0], "force": stage[1],
+                   "applied": stage_applied(out / "stderr.log", stage[1])} if stage else None),
         "note": args.note,
         "summary": {"final": parsed["final"], "gx": parsed["gx"], "hw_access": parsed["hw_access"],
                     "unhandled": parsed["unhandled"], "stop_lines": parsed["stop_lines"]},
@@ -515,6 +536,10 @@ def main() -> int:
             print(f"hardware accesses: {parsed['hw_access']}")
     else:
         print(f"captures: {', '.join(summary['captures']) or 'none'}")
+    if stage and not all(summary["stage"]["applied"].values()):
+        missed = [a for a, ok in summary["stage"]["applied"].items() if not ok]
+        print(f"WARNING: --stage {args.stage} did not take effect (no entry into {', '.join(missed)}): "
+              "was a save loaded during the run?")
     # Private data folder: deleted after a successful launch (kept if it crashed, for the diagnosis).
     if private_data is not None and not args.keep_data and proc.returncode in (0, 2):
         shutil.rmtree(private_data, ignore_errors=True)
