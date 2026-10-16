@@ -51,6 +51,10 @@
  *   GCRT_COPY_FILTER   filter and gamma of the display copy: unblended (default, like Dolphin:
  *                      coefficients carried over to the current line) | full (vertical filter of the
  *                      console) | off (neither filter nor gamma)
+ *   GCRT_EFB_HEIGHT    "console" (default): Aurora's logical EFB has the console's 528 lines, the display copy's
+ *                      rectangle being the only part presented, captured and filtered (lines below it: shadow maps
+ *                      and other EFB -> texture copies); "display": the EFB has the display copy's height
+ *                      (former behaviour: a copy reaching below it is clipped, then stretched)
  *   GCRT_RTC           fixed clock: seconds since January 1st, 2000 at startup (reproducibility)
  *   GCRT_INPUT         scripted inputs of port 0: "t:BUTTONS[:duration]" separated by ";",
  *                      BUTTONS = A, B, X, Y, Z, L, R, START, UP, DOWN, LEFT, RIGHT joined by "+"

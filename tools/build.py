@@ -111,20 +111,20 @@ def rel_layout_end(log: Path) -> int:
 
 
 PATCHES = tc.ROOT / "tools" / "patches" / "dolrecomp"
+AURORA_PATCHES = tc.ROOT / "tools" / "patches" / "aurora"
 HLE_CATALOG = tc.ROOT / "runtime" / "core" / "hle" / "sdk_signatures.tsv"
 HLE_NATIVE_HOOKS = tc.ROOT / "runtime" / "core" / "hle" / "native_hooks.txt"
 REL_AUTO_ALIGN = 0x10000  # DolRecomp, src/app/pipeline.h
 TAIL_ALIGN = 32
 
 
-def ensure_dolrecomp_patches() -> None:
-    """Applies the patches of the local DolRecomp fork (tools/patches/dolrecomp/*.patch) if they are missing,
-    then rebuilds DolRecomp if a modified source is newer than the executable."""
-    repo = tc.EXTERNAL / "DolRecomp"
+def apply_patches(repo: Path, patch_dir: Path, name: str) -> set[Path] | None:
+    """Applies the patches patch_dir/*.patch to the checkout repo when they are missing (a patch that can be
+    reversed is already there). Returns the files they touch, or None without patches or without Git."""
     git = tc.find_git()
-    patches = sorted(PATCHES.glob("*.patch"))
+    patches = sorted(patch_dir.glob("*.patch"))
     if not patches or not git:
-        return
+        return None
     touched: set[Path] = set()
     for patch in patches:
         for line in patch.read_text(encoding="utf-8").splitlines():
@@ -135,10 +135,35 @@ def ensure_dolrecomp_patches() -> None:
         if applied:
             continue
         if subprocess.run([str(git), "-C", str(repo), "apply", "--check", str(patch)], capture_output=True).returncode:
-            raise SystemExit(f"Patch {patch.name} does not apply to external/DolRecomp "
+            raise SystemExit(f"Patch {patch.name} does not apply to {repo} "
                              f"(different commit or local changes?).")
-        print(f"== DolRecomp patch: {patch.name}")
+        print(f"== {name} patch: {patch.name}")
         tc.run([git, "-C", repo, "apply", patch])
+    return touched
+
+
+def aurora_dir() -> Path:
+    """Aurora sources used by the build: external/aurora, or the folder named by the GCRT_AURORA_DIR environment
+    variable (a private copy, e.g. to try a change of Aurora without touching the shared checkout)."""
+    custom = os.environ.get("GCRT_AURORA_DIR")
+    return Path(custom).resolve() if custom else tc.EXTERNAL / "aurora"
+
+
+def ensure_aurora_patches() -> None:
+    """Applies the Aurora patches (tools/patches/aurora/*.patch) to the Aurora sources of the build. Aurora is built
+    by our CMake project (runtime/core/platform/sources.cmake): Ninja recompiles the patched files."""
+    repo = aurora_dir()
+    if (repo / "CMakeLists.txt").exists():
+        apply_patches(repo, AURORA_PATCHES, "Aurora")
+
+
+def ensure_dolrecomp_patches() -> None:
+    """Applies the patches of the local DolRecomp fork (tools/patches/dolrecomp/*.patch) if they are missing,
+    then rebuilds DolRecomp if a modified source is newer than the executable."""
+    repo = tc.EXTERNAL / "DolRecomp"
+    touched = apply_patches(repo, PATCHES, "DolRecomp")
+    if touched is None:
+        return
     exe = tc.find_dolrecomp()
     if exe and all(p.stat().st_mtime <= exe.stat().st_mtime for p in touched if p.exists()):
         return
@@ -401,6 +426,7 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         "GCRT_DOL_FNV64": state["dol_fnv64"],
         "GCRT_RAM_SIZE": f"0x{host_ram_size(state):08X}",
         "DOLRECOMP_DIR": (tc.EXTERNAL / "DolRecomp").as_posix(),
+        "GCRT_AURORA_DIR": aurora_dir().as_posix(),
         # Always set: otherwise a build folder already configured with a profile goes back to its old setting.
         "GCRT_PGO": pgo[0],
         "GCRT_PGO_PROFILE": pgo[1].as_posix() if pgo[0] == "USE" and pgo[1] else "",
@@ -411,6 +437,7 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         if exe.exists():
             defs[var] = exe.as_posix()
     cmd = [cmake, "-S", tc.ROOT, "-B", build_dir, "-G", "Ninja"] + [f"-D{k}={v}" for k, v in defs.items()]
+    ensure_aurora_patches()
     print("== CMake configuration")
     t0 = time.perf_counter()
     run_logged(cmd, build_dir / "configure.log", env=env)

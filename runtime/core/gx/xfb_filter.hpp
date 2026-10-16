@@ -22,17 +22,20 @@ enum class CopyFilterMode { Full, Unblended };
 struct XfbFilterParams {
   uint8_t coefficients[7]{};
   uint8_t gamma = 0;           // 0 = 1.0; 1 = 1.7; 2 = 2.2
-  uint32_t efbHeight = 0;      // logical EFB height (console lines)
+  uint32_t efbHeight = 0;      // height of the display copy's source (console lines), at the top of the EFB
+  bool clampBottom = true;     // BP 0x52 bit 1: the line below the source's last one is that line itself
 };
 
 // Decodes the BP registers 0x53 and 0x54 (6 bits per coefficient).
-XfbFilterParams xfb_filter_params(uint32_t bp53, uint32_t bp54, uint8_t gamma, uint32_t efbHeight);
+XfbFilterParams xfb_filter_params(uint32_t bp53, uint32_t bp54, uint8_t gamma, uint32_t efbHeight,
+                                  bool clampBottom = true);
 
 // Applies the mode: Unblended moves coefficients 0, 1, 5 and 6 onto the current line.
 XfbFilterParams with_mode(XfbFilterParams params, CopyFilterMode mode);
 
-// To be called during an open Aurora frame, at the time of the display copy: replaces the
-// EFB contents with their filtered version (this is what will be presented and captured). Returns false if
+// To be called during an open Aurora frame, at the time of the display copy: replaces the displayed region of
+// the EFB with its filtered version (this is what will be presented and captured). Without clampBottom, the last
+// line reads the EFB line below the source, like Dolphin (TextureCacheBase.cpp, clamp_bottom). Returns false if
 // the filter is neutral (nothing to do) or impossible (multisampling, no active pass).
 bool apply_xfb_filter(const XfbFilterParams& params);
 

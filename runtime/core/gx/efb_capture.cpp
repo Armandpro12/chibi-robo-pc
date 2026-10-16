@@ -4,6 +4,8 @@
 #include <aurora/gfx.hpp>
 #include <webgpu/webgpu_cpp.h>
 
+#include "dolphin/vi/vi_internal.hpp" // Aurora's internal API (external/aurora/lib): displayed region of the EFB
+
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -132,9 +134,11 @@ bool request_efb_capture(const char* pngPath) {
   cap->path = pngPath;
   cap->texture = targets.colorTexture;
   cap->format = targets.colorFormat;
-  cap->width = targets.width;
-  cap->height = targets.height;
-  cap->bytesPerRow = (targets.width * 4 + 255u) & ~255u; // alignment required by WebGPU
+  // Only the displayed region (top left), when the EFB is taller than the display copy (VISetEfbSize).
+  const auto shown = aurora::vi::display_size_in({targets.width, targets.height});
+  cap->width = shown.x;
+  cap->height = shown.y;
+  cap->bytesPerRow = (cap->width * 4 + 255u) & ~255u; // alignment required by WebGPU
   const wgpu::BufferDescriptor desc{
       .label = "gcrt EFB capture readback",
       .usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst,
