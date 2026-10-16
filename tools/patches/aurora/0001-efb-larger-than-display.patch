@@ -1,0 +1,297 @@
+diff --git a/include/dolphin/vi.h b/include/dolphin/vi.h
+index 377d952..cb2ed0d 100644
+--- a/include/dolphin/vi.h
++++ b/include/dolphin/vi.h
+@@ -45,6 +45,13 @@ void VICenterWindow();
+  */
+ void VISetFrameBufferScale(float scale);
+ 
++/**
++ * Sets the logical EFB size when it is larger than the displayed region (the render mode's fbWidth x efbHeight,
++ * at the origin), like the console's 640x528 EFB behind a 640x448 display copy. The extra columns and lines are
++ * rendered and can be copied to textures, but they are never presented. 0 (the default) = the render mode size.
++ */
++void VISetEfbSize(uint32_t width, uint32_t height);
++
+ /**
+  * \brief Lock the GX framebuffer to a specific aspect ratio, without changing the native framebuffer.
+  *
+diff --git a/lib/aurora.cpp b/lib/aurora.cpp
+index 122262c..28d2727 100644
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -270,10 +270,10 @@ void end_frame() noexcept {
+   gfx::finish();
+   auto imguiDrawData = imgui::freeze();
+ 
+-  const auto& presentSource = webgpu::present_source();
++  const auto presentSize = webgpu::present_size();
+   const auto viewport = webgpu::calculate_present_viewport(webgpu::g_graphicsConfig.surfaceConfiguration.width,
+                                                            webgpu::g_graphicsConfig.surfaceConfiguration.height,
+-                                                           presentSource.size.width, presentSource.size.height);
++                                                           presentSize.width, presentSize.height);
+ 
+   wgpu::BindGroup rmlBindGroup;
+   bool rmlOverlay = false;
+diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
+index 8a3d428..6c9e65b 100644
+--- a/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -24,8 +24,9 @@ aurora::Vec2<uint32_t> scale_copy_dst(u32 logicalWidth, u32 logicalHeight) {
+     return {logicalWidth, logicalHeight};
+   }
+ 
+-  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
+-  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
++  const auto [mappedWidth, mappedHeight] = aurora::gx::logical_fb_target_size({targetWidth, targetHeight});
++  const float scaleX = static_cast<float>(mappedWidth) / static_cast<float>(logicalFbWidth);
++  const float scaleY = static_cast<float>(mappedHeight) / static_cast<float>(logicalFbHeight);
+   const auto scaledWidth = std::max<u32>(static_cast<u32>(std::lround(static_cast<float>(logicalWidth) * scaleX)), 1);
+   const auto scaledHeight = std::max<u32>(static_cast<u32>(std::lround(static_cast<float>(logicalHeight) * scaleY)), 1);
+   return {scaledWidth, scaledHeight};
+diff --git a/lib/dolphin/vi/vi.cpp b/lib/dolphin/vi/vi.cpp
+index 4c8dddc..ef6c48f 100644
+--- a/lib/dolphin/vi/vi.cpp
++++ b/lib/dolphin/vi/vi.cpp
+@@ -4,10 +4,14 @@
+ #include "aurora/math.hpp"
+ #include "vi_internal.hpp"
+ 
++#include <algorithm>
++#include <atomic>
+ #include <optional>
+ 
+ namespace aurora::vi {
+ std::optional<GXRenderModeObj> g_renderMode;
++std::atomic<uint32_t> g_efbWidth{0};
++std::atomic<uint32_t> g_efbHeight{0};
+ 
+ Vec2<uint32_t> render_mode_size() noexcept {
+   if (!g_renderMode) {
+@@ -31,6 +35,24 @@ void configure(const GXRenderModeObj* rm) noexcept {
+ Vec2<uint32_t> configured_fb_size() noexcept {
+   return render_mode_size();
+ }
++
++Vec2<uint32_t> configured_efb_size() noexcept {
++  const auto display = render_mode_size();
++  return {std::max(display.x, g_efbWidth.load(std::memory_order_acquire)),
++          std::max(display.y, g_efbHeight.load(std::memory_order_acquire))};
++}
++
++Vec2<uint32_t> display_size_in(Vec2<uint32_t> target) noexcept {
++  const auto display = render_mode_size();
++  const auto efb = configured_efb_size();
++  if (display == efb || display.x == 0 || display.y == 0) {
++    return target;
++  }
++  // Rounded down: the inverse of the rounding up that grows the frame buffer (window.cpp), so the displayed
++  // region keeps exactly the size it has without the extra lines and columns.
++  return {static_cast<uint32_t>(static_cast<uint64_t>(target.x) * display.x / efb.x),
++          static_cast<uint32_t>(static_cast<uint64_t>(target.y) * display.y / efb.y)};
++}
+ } // namespace aurora::vi
+ 
+ extern "C" {
+@@ -52,4 +74,12 @@ void VISetWindowSize(uint32_t width, uint32_t height) { aurora::window::set_wind
+ void VISetWindowPosition(uint32_t x, uint32_t y) { aurora::window::set_window_position(x, y); }
+ void VICenterWindow() { aurora::window::center_window(); }
+ void VISetFrameBufferScale(float scale) { aurora::window::set_frame_buffer_scale(scale); }
++void VISetEfbSize(uint32_t width, uint32_t height) {
++  const auto oldSize = aurora::vi::configured_efb_size();
++  aurora::vi::g_efbWidth.store(width, std::memory_order_release);
++  aurora::vi::g_efbHeight.store(height, std::memory_order_release);
++  if (aurora::vi::configured_efb_size() != oldSize) {
++    aurora::window::request_frame_buffer_resize();
++  }
++}
+ }
+diff --git a/lib/dolphin/vi/vi_internal.hpp b/lib/dolphin/vi/vi_internal.hpp
+index a711c3f..4888ede 100644
+--- a/lib/dolphin/vi/vi_internal.hpp
++++ b/lib/dolphin/vi/vi_internal.hpp
+@@ -9,4 +9,8 @@
+ namespace aurora::vi {
+ void configure(const GXRenderModeObj* rm) noexcept;
+ Vec2<uint32_t> configured_fb_size() noexcept;
++// Logical EFB: the render mode size, grown to the size set by VISetEfbSize.
++Vec2<uint32_t> configured_efb_size() noexcept;
++// Size, in pixels of a render target covering the whole logical EFB, of the displayed region (at the origin).
++Vec2<uint32_t> display_size_in(Vec2<uint32_t> target) noexcept;
+ } // namespace aurora::vi
+diff --git a/lib/gfx/depth_peek.cpp b/lib/gfx/depth_peek.cpp
+index 08f7743..b064acb 100644
+--- a/lib/gfx/depth_peek.cpp
++++ b/lib/gfx/depth_peek.cpp
+@@ -211,7 +211,7 @@ Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize) noexcept {
+     return params;
+   }
+ 
+-  const auto logicalSize = vi::configured_fb_size();
++  const auto logicalSize = vi::configured_efb_size();
+   if (logicalSize.x == 0 || logicalSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+     return params;
+   }
+@@ -357,7 +357,7 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
+     g_nextSnapshotTime = now + SnapshotInterval;
+   }
+ 
+-  const auto dstSize = vi::configured_fb_size();
++  const auto dstSize = vi::configured_efb_size();
+   if (!depthView || dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
+     return;
+   }
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 1fec701..30a9b58 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -239,6 +239,10 @@ Vec2<uint32_t> logical_fb_size() noexcept {
+   return gfx::is_offscreen() ? gfx::get_render_target_size() : vi::configured_fb_size();
+ }
+ 
++Vec2<uint32_t> logical_fb_target_size(Vec2<uint32_t> target) noexcept {
++  return gfx::is_offscreen() ? target : vi::display_size_in(target);
++}
++
+ gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept {
+   if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+     return logicalViewport;
+@@ -250,8 +254,9 @@ gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcep
+     return logicalViewport;
+   }
+ 
+-  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
+-  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
++  const auto [mappedWidth, mappedHeight] = logical_fb_target_size({targetWidth, targetHeight});
++  const float scaleX = static_cast<float>(mappedWidth) / static_cast<float>(logicalFbWidth);
++  const float scaleY = static_cast<float>(mappedHeight) / static_cast<float>(logicalFbHeight);
+   return {
+       .left = logicalViewport.left * scaleX,
+       .top = logicalViewport.top * scaleY,
+@@ -273,8 +278,9 @@ gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept
+     return logicalScissor;
+   }
+ 
+-  const float scaleX = static_cast<float>(targetWidth) / static_cast<float>(logicalFbWidth);
+-  const float scaleY = static_cast<float>(targetHeight) / static_cast<float>(logicalFbHeight);
++  const auto [mappedWidth, mappedHeight] = logical_fb_target_size({targetWidth, targetHeight});
++  const float scaleX = static_cast<float>(mappedWidth) / static_cast<float>(logicalFbWidth);
++  const float scaleY = static_cast<float>(mappedHeight) / static_cast<float>(logicalFbHeight);
+ 
+   const float left = static_cast<float>(logicalScissor.x) * scaleX;
+   const float top = static_cast<float>(logicalScissor.y) * scaleY;
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 9e85609..23bda18 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -442,6 +442,9 @@ void evict_copy_texture(const void* dest) noexcept;
+ void evict_texture_object(u32 texObjId) noexcept;
+ void evict_tlut_object(u32 tlutObjId) noexcept;
+ Vec2<uint32_t> logical_fb_size() noexcept;
++// Size in target pixels of the logical framebuffer (logical_fb_size): the whole target, or only its displayed
++// region when the logical EFB is larger than the display (VISetEfbSize). Sets the logical -> target scale.
++Vec2<uint32_t> logical_fb_target_size(Vec2<uint32_t> target) noexcept;
+ gfx::Viewport map_logical_viewport(const gfx::Viewport& logicalViewport) noexcept;
+ gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept;
+ void set_logical_viewport(const gfx::Viewport& viewport) noexcept;
+diff --git a/lib/webgpu/gpu.cpp b/lib/webgpu/gpu.cpp
+index b3ae6cd..e4db5c6 100644
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -23,6 +23,7 @@
+ #include "../gfx/render_worker.hpp"
+ #include "../internal.hpp"
+ #include "../window.hpp"
++#include "../dolphin/vi/vi_internal.hpp"
+ #include "gpu_prof.hpp"
+ 
+ #ifdef WEBGPU_DAWN
+@@ -60,6 +61,7 @@ static wgpu::BindGroupLayout g_ResampleBindGroupLayout;
+ static wgpu::RenderPipeline g_ResamplePipeline;
+ static wgpu::Buffer g_ResampleUniformBuffer;
+ static TextureWithSampler g_resampledFrameBuffer;
++static TextureWithSampler g_presentCrop; // displayed region of the frame buffer (VISetEfbSize)
+ 
+ static wgpu::Adapter g_adapter;
+ wgpu::Instance g_instance;
+@@ -320,6 +322,16 @@ const TextureWithSampler& present_source() noexcept {
+   return g_graphicsConfig.msaaSamples > 1 ? g_frameBufferResolved : g_frameBuffer;
+ }
+ 
++wgpu::Extent3D present_size() noexcept {
++  const auto& source = present_source();
++  const auto display = vi::display_size_in({source.size.width, source.size.height});
++  return {
++      .width = std::clamp(display.x, 1u, std::max(source.size.width, 1u)),
++      .height = std::clamp(display.y, 1u, std::max(source.size.height, 1u)),
++      .depthOrArrayLayers = 1,
++  };
++}
++
+ void set_resampler(AuroraSampler sampler) noexcept {
+   switch (sampler) {
+   case SAMPLER_AREA:
+@@ -671,7 +683,20 @@ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source) {
+ }
+ 
+ const TextureWithSampler& resample_present_source(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
+-  const auto& source = present_source();
++  const TextureWithSampler* presented = &present_source();
++  const auto cropSize = present_size();
++  if (cropSize.width != presented->size.width || cropSize.height != presented->size.height) {
++    // Logical EFB larger than the display (VISetEfbSize): only the displayed region is resampled.
++    if (!g_presentCrop.view || g_presentCrop.size.width != cropSize.width ||
++        g_presentCrop.size.height != cropSize.height || g_presentCrop.format != presented->format) {
++      g_presentCrop = create_render_texture(cropSize.width, cropSize.height, false);
++    }
++    const wgpu::TexelCopyTextureInfo src{.texture = presented->texture};
++    const wgpu::TexelCopyTextureInfo dst{.texture = g_presentCrop.texture};
++    encoder.CopyTextureToTexture(&src, &dst, &cropSize);
++    presented = &g_presentCrop;
++  }
++  const auto& source = *presented;
+   const uint32_t width = viewport_extent(viewport.width);
+   const uint32_t height = viewport_extent(viewport.height);
+   if (!g_resampledFrameBuffer.view || g_resampledFrameBuffer.size.width != width ||
+@@ -1098,6 +1123,7 @@ void shutdown() {
+   g_ResamplePipeline = {};
+   g_ResampleUniformBuffer = {};
+   g_resampledFrameBuffer = {};
++  g_presentCrop = {};
+   g_frameBuffer = {};
+   g_frameBufferResolved = {};
+   g_depthBuffer = {};
+diff --git a/lib/webgpu/gpu.hpp b/lib/webgpu/gpu.hpp
+index a1ce5c0..c1d011f 100644
+--- a/lib/webgpu/gpu.hpp
++++ b/lib/webgpu/gpu.hpp
+@@ -70,6 +70,8 @@ void resize_swapchain(uint32_t width, uint32_t height, uint32_t nativeWidth, uin
+ TextureWithSampler create_render_texture(uint32_t width, uint32_t height, bool multisampled);
+ bool enable_normal_buffer();
+ const TextureWithSampler& present_source() noexcept;
++// Presented part of present_source(): its displayed region (the whole texture unless VISetEfbSize grew the EFB).
++wgpu::Extent3D present_size() noexcept;
+ wgpu::BindGroup create_copy_bind_group(const TextureWithSampler& source);
+ void set_resampler(AuroraSampler sampler) noexcept;
+ AuroraSampler get_resampler() noexcept;
+diff --git a/lib/window.cpp b/lib/window.cpp
+index cf84de3..5568ed1 100644
+--- a/lib/window.cpp
++++ b/lib/window.cpp
+@@ -496,6 +496,16 @@ AuroraWindowSize get_window_size() {
+       fb_h = fitH;
+     }
+   }
++  {
++    // Logical EFB larger than the displayed region (VISetEfbSize): the frame buffer grows by the same ratio,
++    // rounded up; vi::display_size_in() gives back the displayed region (fb_w x fb_h above).
++    const auto [displayW, displayH] = vi::configured_fb_size();
++    const auto [efbW, efbH] = vi::configured_efb_size();
++    if (displayW > 0 && displayH > 0) {
++      fb_w = static_cast<int>((static_cast<uint64_t>(fb_w) * efbW + displayW - 1) / displayW);
++      fb_h = static_cast<int>((static_cast<uint64_t>(fb_h) * efbH + displayH - 1) / displayH);
++    }
++  }
+ 
+   const float scale = SDL_GetWindowDisplayScale(g_window);
+   return {

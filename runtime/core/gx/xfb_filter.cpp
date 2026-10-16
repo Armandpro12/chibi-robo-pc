@@ -16,7 +16,8 @@
 #include <aurora/gfx.hpp>
 #include <webgpu/webgpu_cpp.h>
 
-#include "webgpu/gpu.hpp" // Aurora's internal API (external/aurora/lib): EFB texture
+#include "dolphin/vi/vi_internal.hpp" // Aurora's internal API (external/aurora/lib): displayed region of the EFB
+#include "webgpu/gpu.hpp"               // Aurora's internal API (external/aurora/lib): EFB texture
 
 #include <cmath>
 #include <cstring>
@@ -33,7 +34,7 @@ namespace {
 constexpr const char* kShader = R"(
 struct Params {
   coef: vec4<f32>,   // x: line above, y: current line, z: line below (out of 64)
-  misc: vec4<f32>,   // x: 1/gamma, y: step in target lines for one EFB line
+  misc: vec4<f32>,   // x: 1/gamma, y: step in target lines for one EFB line, z: last target line read
 };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> p: Params;
@@ -54,7 +55,7 @@ fn fs_main(@builtin(position) fragPos: vec4<f32>) -> @location(0) vec4<f32> {
   let step = max(1, i32(round(p.misc.y)));
   let a = round(textureLoad(src, vec2<i32>(x, clamp(y - step, 0, dims.y - 1)), 0) * 255.0);
   let b = round(textureLoad(src, vec2<i32>(x, y), 0) * 255.0);
-  let c = round(textureLoad(src, vec2<i32>(x, clamp(y + step, 0, dims.y - 1)), 0) * 255.0);
+  let c = round(textureLoad(src, vec2<i32>(x, clamp(y + step, 0, min(i32(p.misc.z), dims.y - 1))), 0) * 255.0);
   var rgb = floor((a.rgb * p.coef.x + b.rgb * p.coef.y + c.rgb * p.coef.z) / 64.0);
   rgb = min(rgb, vec3<f32>(255.0));
   if (p.misc.x != 1.0) {
@@ -73,6 +74,8 @@ struct Pending {
   uint64_t id;
   wgpu::TextureView source;
   wgpu::Buffer uniform;
+  uint32_t width = 0; // displayed region of the EFB (target pixels): the only part written
+  uint32_t height = 0;
 };
 
 std::mutex g_mutex;
@@ -129,6 +132,7 @@ void encode(const aurora::gfx::EncoderTaskContext& ctx, const wgpu::CommandEncod
   const auto pass = cmd.BeginRenderPass(&passDesc);
   pass.SetPipeline(g_pipeline);
   pass.SetBindGroup(0, bindGroup, 0, nullptr);
+  pass.SetScissorRect(0, 0, job.width, job.height);
   pass.Draw(3);
   pass.End();
 }
@@ -183,7 +187,8 @@ bool initialize() {
 }
 } // namespace
 
-XfbFilterParams xfb_filter_params(uint32_t bp53, uint32_t bp54, uint8_t gamma, uint32_t efbHeight) {
+XfbFilterParams xfb_filter_params(uint32_t bp53, uint32_t bp54, uint8_t gamma, uint32_t efbHeight,
+                                  bool clampBottom) {
   XfbFilterParams p;
   for (int i = 0; i < 4; ++i) {
     p.coefficients[i] = static_cast<uint8_t>((bp53 >> (6 * i)) & 0x3Fu);
@@ -193,6 +198,7 @@ XfbFilterParams xfb_filter_params(uint32_t bp53, uint32_t bp54, uint8_t gamma, u
   }
   p.gamma = gamma;
   p.efbHeight = efbHeight;
+  p.clampBottom = clampBottom;
   return p;
 }
 
@@ -225,12 +231,16 @@ bool apply_xfb_filter(const XfbFilterParams& in) {
   if (!aurora::gfx::resolve_pass({.color = true}, targets) || !targets.color) {
     return false;
   }
+  // Displayed region (the whole EFB unless it is taller than the display copy, VISetEfbSize): the source of the
+  // display copy, at the top left.
+  const auto shown = aurora::vi::display_size_in({targets.width, targets.height});
   Params params{};
   params.coef[0] = top;
   params.coef[1] = mid;
   params.coef[2] = bottom;
   params.misc[0] = gammaRcp;
-  params.misc[1] = in.efbHeight != 0 ? static_cast<float>(targets.height) / static_cast<float>(in.efbHeight) : 1.0f;
+  params.misc[1] = in.efbHeight != 0 ? static_cast<float>(shown.y) / static_cast<float>(in.efbHeight) : 1.0f;
+  params.misc[2] = static_cast<float>((in.clampBottom ? shown.y : targets.height) - 1u);
   const wgpu::BufferDescriptor bufDesc{
       .label = "gcrt XFB filter",
       .usage = wgpu::BufferUsage::Uniform,
@@ -244,7 +254,7 @@ bool apply_xfb_filter(const XfbFilterParams& in) {
   {
     std::lock_guard lock{g_mutex};
     id = g_nextId++;
-    g_pending.push_back({id, targets.color, std::move(buffer)});
+    g_pending.push_back({id, targets.color, std::move(buffer), shown.x, shown.y});
   }
   if (!aurora::gfx::push_encoder_task(g_task, &id, sizeof(id))) {
     std::lock_guard lock{g_mutex};

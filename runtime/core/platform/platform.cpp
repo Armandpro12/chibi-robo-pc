@@ -38,6 +38,11 @@ namespace fs = std::filesystem;
 namespace {
 using gcrt::platform::PadState;
 
+// Height of the console's EFB in lines (Dolphin, Source/Core/VideoCommon/VideoCommon.h: EFB_HEIGHT = 528). The
+// display copy usually reads fewer lines (448 or 480); the game can still draw below them and copy that area to a
+// texture, so Aurora's logical EFB gets this height (GCRT_EFB_HEIGHT, notes/runtime.md).
+constexpr uint32_t kConsoleEfbLines = 528;
+
 struct ScriptedInput {
   double start;
   double duration;
@@ -89,6 +94,7 @@ struct GcrtPlatform {
   uint64_t framesSkipped = 0;
   uint32_t efbWidth = 0;
   uint32_t efbHeight = 0;
+  uint32_t efbLines = kConsoleEfbLines; // GCRT_EFB_HEIGHT: 0 = the display copy's height
   std::vector<double> captureTimes;
   size_t nextCapture = 0;
   std::vector<uint64_t> captureFrames; // numbers of the presented frames (1 = first)
@@ -422,7 +428,7 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
   if (info.srcWidth != p->efbWidth || info.srcHeight != p->efbHeight) {
     p->efbWidth = info.srcWidth;
     p->efbHeight = info.srcHeight;
-    gcrt::platform::host_configure_efb(info.srcWidth, info.srcHeight);
+    gcrt::platform::host_configure_efb(info.srcWidth, info.srcHeight, p->efbLines);
   }
   const double now = emulated_seconds(p);
   if (p->frameOpen) {
@@ -448,7 +454,8 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     // copy clears the EFB: otherwise the filtered content would stay in the EFB for the next frame.
     if (p->xfbFilter && info.clear &&
         gcrt::gx::apply_xfb_filter(gcrt::gx::with_mode(
-            gcrt::gx::xfb_filter_params(info.copyFilter0, info.copyFilter1, info.gamma, info.srcHeight),
+            gcrt::gx::xfb_filter_params(info.copyFilter0, info.copyFilter1, info.gamma, info.srcHeight,
+                                        (info.clamp & 2u) != 0),
             p->copyFilterMode))) {
       ++p->filteredFrames;
     }
@@ -712,6 +719,8 @@ void configure(GcrtPlatform* p) {
                                         : GcrtPlatform::PipelineWait::Sync;
   }
   p->pipelineProbe = env("GCRT_PIPELINES_PROBE", "0") != "0";
+  // EFB height: the console's 528 lines (default), or the display copy's height (former behaviour, diagnostic).
+  p->efbLines = env("GCRT_EFB_HEIGHT", "console") == "display" ? 0u : kConsoleEfbLines;
   {
     // Display copy filter: unblended (default, like Dolphin), full (console) or off.
     const std::string mode = env("GCRT_COPY_FILTER", "unblended");

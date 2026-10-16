@@ -45,8 +45,11 @@ bool host_poll_events();
 double host_wait_pipelines(double timeoutSeconds);
 // Pipelines requested from Aurora and not compiled yet (same statistic, without waiting).
 uint32_t host_pending_pipelines();
-// Logical size of the game's EFB (rectangle of the copy to the XFB): Aurora adjusts its rendering to it.
-void host_configure_efb(uint32_t width, uint32_t height);
+// Logical size of the game's EFB: width x height is the rectangle of the copy to the XFB (the displayed region,
+// Aurora adjusts its rendering to it); efbLines, if larger than height, is the EFB's real height: the lines
+// below the displayed region are rendered and can be copied to textures, but are not presented
+// (VISetEfbSize, Aurora patch in tools/patches/aurora). 0 = the displayed height (former behaviour).
+void host_configure_efb(uint32_t width, uint32_t height, uint32_t efbLines);
 
 // Reads the 4 controllers: keyboard on its port (1 by default), SDL gamepads assigned by Aurora, translated
 // by the mappings of controls.ini (input_host.hpp).

@@ -163,8 +163,8 @@ more permissive terms:
 | `games/chibi-robo/symbols/` (symbol maps: names and addresses) | [CC0 1.0](LICENSES/CC0-1.0.txt) (public domain dedication) |
 | `runtime/core/hle/sdk_signatures.tsv` (SDK function signatures: names, sizes, CRC-32 of the masked code, and the first masked instruction word as a lookup key) | [CC0 1.0](LICENSES/CC0-1.0.txt) |
 | `games/chibi-robo/RESEARCH.md` (what we learned about the game) | [CC0 1.0](LICENSES/CC0-1.0.txt) |
-| `tools/`, except `tools/patches/` and `tools/ghidra/hw_inventory.py` | GPL-3.0 **or** [MIT](LICENSES/MIT.txt), at your choice |
-| `tools/patches/` (patches to DolRecomp) | GPL-3.0 only |
+| `tools/`, except `tools/patches/dolrecomp/` and `tools/ghidra/hw_inventory.py` (this includes the Aurora patches in `tools/patches/aurora/`) | GPL-3.0 **or** [MIT](LICENSES/MIT.txt), at your choice |
+| `tools/patches/dolrecomp/` (patches to DolRecomp) | GPL-3.0 only |
 | `tools/ghidra/hw_inventory.py` (its hardware register names come from Dolphin's headers) | GPL-3.0 only |
 | Everything else, including `runtime/` (part of it is derived from Dolphin, GPL-2.0-or-later) | GPL-3.0 |
 
@@ -187,7 +187,9 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses).
+  dependencies (Dawn, SDL3 and others, under their own licenses). A small patch, which lets the render target be
+  taller than the displayed image (the console's 528-line EFB), is kept in `tools/patches/aurora/` and applied by
+  `tools/build.py`.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.

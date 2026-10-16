@@ -31,6 +31,7 @@ std::string g_dataDir;
 bool g_initialized = false;
 uint32_t g_efbWidth = 0;
 uint32_t g_efbHeight = 0;
+uint32_t g_efbLines = 0;
 GXRenderModeObj g_renderMode{};
 
 void log_callback(AuroraLogLevel level, const char* module, const char* message, unsigned int) {
@@ -164,18 +165,22 @@ uint32_t host_pending_pipelines() {
   return std::atomic_ref<uint32_t>(queued).load(std::memory_order_acquire);
 }
 
-void host_configure_efb(uint32_t width, uint32_t height) {
-  if (width == g_efbWidth && height == g_efbHeight) {
+void host_configure_efb(uint32_t width, uint32_t height, uint32_t efbLines) {
+  const uint32_t lines = efbLines > height ? efbLines : height;
+  if (width == g_efbWidth && height == g_efbHeight && lines == g_efbLines) {
     return;
   }
   g_efbWidth = width;
   g_efbHeight = height;
+  g_efbLines = lines;
   g_renderMode = GXNtsc480IntDf;
   g_renderMode.fbWidth = static_cast<u16>(width);
   g_renderMode.efbHeight = static_cast<u16>(height);
   g_renderMode.xfbHeight = static_cast<u16>(height);
+  // Taller EFB first: Aurora resizes its frame buffer once for both changes (at the next window event poll).
+  VISetEfbSize(lines > height ? width : 0, lines > height ? lines : 0);
   VIConfigure(&g_renderMode);
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "game EFB: %ux%u", width, height);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "game EFB: %ux%u displayed, %ux%u rendered", width, height, width, lines);
 }
 
 void host_read_pads(PadState out[4], bool connected[4]) {

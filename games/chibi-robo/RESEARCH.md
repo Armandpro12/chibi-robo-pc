@@ -455,7 +455,12 @@ THPSimple and the game each add their own AI DMA callback in front of AX's.
 - In 3D gameplay (US, living room at night, frame dump of the GX stream), each frame has two EFB-to-texture copies `[verified: trace]`:
   - at the start of the frame, a few fan and strip draws, then a copy of the red channel (`GX_CTF_R8`, source 640x480, with clear); later draws of the same frame sample that destination as an `I8` 640x480 texture (22 loads in the traced frame);
   - at the end of the frame, a copy of the alpha channel (`GX_CTF_A8`, 640x448, without clear), sampled as `I8` right after.
-  The source of the red-channel copy (480 lines) is taller than the display copy (448 lines on US).
+  The source of the red-channel copy (480 lines) is taller than the display copy (448 lines on US). This red-channel
+  copy is the shadow map: an orthographic pass in a 640x480 viewport, sampled by the floors in their own draw. A
+  renderer whose EFB is only as tall as the US display copy (448 lines) cuts and stretches it, which moves the
+  shadows; the EFB must keep the console's 528 lines `[verified: GX stream, shadow positions predicted from the
+  stream's matrices and measured, comparison with Dolphin]`. On PAL the display copy already reads the full
+  640x528 EFB.
 - The CPU never reads or writes the EFB `[verified: Ghidra]`.
 
 **Synchronisation** `[verified: Ghidra + trace]`:
