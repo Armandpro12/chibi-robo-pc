@@ -20,7 +20,9 @@ extern "C" {
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <bcrypt.h>
 #include <dbghelp.h>
+#include <intrin.h>
 #include <psapi.h>
 #include <csignal>
 
@@ -151,6 +153,115 @@ void host_symbol(HANDLE process, DWORD64 address, char* buf, size_t size) {
   } else {
     std::snprintf(buf, size, "%s", where);
   }
+}
+
+// --- Build and machine identification ----------------------------------------------------------------------------
+// Commit of the source tree, written at every build by cmake/GcrtBuildInfo.cmake ("unknown" without Git, "-dirty"
+// suffix when tracked files have uncommitted changes).
+extern "C" const char gcrt_build_commit[];
+
+// First 12 hex digits of the SHA-1 of a file (BCrypt). Identifies the exact executable, hence the meaning of the host
+// offsets of the report, even when several builds of the same commit exist.
+bool file_sha1_short(const wchar_t* path, char* hex, size_t hex_size) {
+  static unsigned char buf[64 * 1024];
+  HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (f == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  BCRYPT_ALG_HANDLE alg = nullptr;
+  BCRYPT_HASH_HANDLE hash = nullptr;
+  bool ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA1_ALGORITHM, nullptr, 0) >= 0 &&
+            BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+  while (ok) {
+    DWORD n = 0;
+    if (!ReadFile(f, buf, sizeof(buf), &n, nullptr)) {
+      ok = false;
+    } else if (n == 0) {
+      break;
+    } else {
+      ok = BCryptHashData(hash, buf, n, 0) >= 0;
+    }
+  }
+  unsigned char digest[20];
+  ok = ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) >= 0;
+  if (hash != nullptr) {
+    BCryptDestroyHash(hash);
+  }
+  if (alg != nullptr) {
+    BCryptCloseAlgorithmProvider(alg, 0);
+  }
+  CloseHandle(f);
+  if (!ok || hex_size < 13) {
+    return false;
+  }
+  for (size_t i = 0; i < 6; i++) {
+    std::snprintf(hex + 2 * i, 3, "%02x", digest[i]);
+  }
+  return true;
+}
+
+// Executable (path, SHA-1, PE time stamp and image size, build commit) and processor: what is needed to find the exact
+// build again, and to tell a software fault from an unstable machine.
+void report_build_and_machine() {
+  wchar_t wpath[MAX_PATH * 2] = L"";
+  char path[MAX_PATH * 4] = "?";
+  const DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH * 2);
+  const bool have_path = len > 0 && len < MAX_PATH * 2;
+  if (have_path) {
+    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, sizeof(path), nullptr, nullptr);
+  }
+  out("executable %s\n", path);
+  char sha1[16] = "?";
+  if (!have_path || !file_sha1_short(wpath, sha1, sizeof(sha1))) {
+    std::snprintf(sha1, sizeof(sha1), "?");
+  }
+  const auto* image = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
+  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(image + dos->e_lfanew);
+  out("executable sha1 %s, PE time stamp 0x%08lX, image size 0x%lX, build commit %s\n", sha1,
+      static_cast<unsigned long>(nt->FileHeader.TimeDateStamp),
+      static_cast<unsigned long>(nt->OptionalHeader.SizeOfImage), gcrt_build_commit);
+  int regs[4] = {};
+  char brand[49] = "";
+  __cpuid(regs, static_cast<int>(0x80000000u));
+  if (static_cast<unsigned>(regs[0]) >= 0x80000004u) {
+    for (int i = 0; i < 3; i++) {
+      __cpuid(regs, static_cast<int>(0x80000002u + static_cast<unsigned>(i)));
+      std::memcpy(brand + 16 * i, regs, sizeof(regs));
+    }
+  }
+  brand[48] = 0;
+  const char* name = brand;
+  while (*name == ' ') {
+    name++;
+  }
+  __cpuid(regs, 1);
+  out("cpu %s, signature 0x%08X, %lu logical processors\n", *name ? name : "?", static_cast<unsigned>(regs[0]),
+      static_cast<unsigned long>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+}
+
+// Bytes around the faulting instruction, read without risk of a second fault (ReadProcessMemory, by 8-byte pieces):
+// the instruction can then be decoded from the report alone, whatever the executable. tools/crash_inspect.py decodes
+// it from the minidump and checks whether it can fault with the registers of the report.
+void report_code_bytes(DWORD64 rip) {
+  constexpr int kBefore = 32, kAfter = 32, kPiece = 8;
+  out("code bytes around rip (rip-%d .. rip+%d, | = rip, ?? = unreadable):\n ", kBefore, kAfter);
+  for (int off = -kBefore; off < kAfter; off += kPiece) {
+    unsigned char piece[kPiece];
+    SIZE_T got = 0;
+    const bool ok = ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(rip + off), piece, kPiece, &got) &&
+                    got == kPiece;
+    out("%s", off == 0 ? " | " : " ");
+    for (int i = 0; i < kPiece; i++) {
+      if (ok) {
+        out("%02X", piece[i]);
+      } else {
+        out("??");
+      }
+    }
+  }
+  out("\n");
 }
 
 // --- Guest memory and names ---------------------------------------------------------------------------------------
@@ -322,9 +433,11 @@ DWORD WINAPI report_thread(LPVOID param) {
     out("%s of address 0x%016llX%s\n", kind == 0 ? "read" : kind == 1 ? "write" : kind == 8 ? "execution" : "access",
         static_cast<unsigned long long>(rec->ExceptionInformation[1]),
         rec->ExceptionInformation[1] == ~static_cast<ULONG_PTR>(0)
-            ? " (Windows gives -1 for a general protection fault: non-canonical pointer or misaligned SSE access)"
+            ? " (Windows gives -1 for a general protection fault: non-canonical pointer or misaligned SSE access;"
+              " decode the instruction with tools/crash_inspect.py)"
             : "");
   }
+  report_build_and_machine();
   char tname[128];
   thread_name(in->thread, tname, sizeof(tname));
   out("thread %lu \"%s\"%s\n", in->thread, tname, in->thread == g_game_thread ? " (game thread)" : "");
@@ -335,7 +448,8 @@ DWORD WINAPI report_thread(LPVOID param) {
     out("rax %016llX rbx %016llX rcx %016llX rdx %016llX\n", ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
     out("rsi %016llX rdi %016llX r8  %016llX r9  %016llX\n", ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9);
     out("r10 %016llX r11 %016llX r12 %016llX r13 %016llX\n", ctx->R10, ctx->R11, ctx->R12, ctx->R13);
-    out("r14 %016llX r15 %016llX\n", ctx->R14, ctx->R15);
+    out("r14 %016llX r15 %016llX eflags %08lX\n", ctx->R14, ctx->R15, static_cast<unsigned long>(ctx->EFlags));
+    report_code_bytes(ctx->Rip);
     // Host call stack of the faulting thread.
     out("host call stack:\n");
     CONTEXT walk = *ctx;

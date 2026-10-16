@@ -147,8 +147,11 @@ and assets are read from the player's files.
 
 - Player reports with late saves (US version):
   - **crashes** after a few minutes to 45 minutes of play (access violations). Not reproduced yet in scripted
-    sessions of up to 50 minutes; the new crash handler writes a full report to the user folder (`crashes/`) to
-    locate them;
+    sessions of up to 50 minutes. The first full crash report shows a fault that the faulting instruction cannot
+    raise (a valid write that had succeeded at the same address four instructions earlier), which points to the
+    machine rather than the program; more reports are needed to confirm. Crash reports now identify the exact
+    executable (path, SHA-1, build commit), the processor and the faulting code bytes, and
+    `tools/crash_inspect.py` checks whether a fault is explained by its instruction;
   - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
     a texture). Dolphin does not show them; the cause is under investigation;
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays
