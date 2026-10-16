@@ -2,7 +2,6 @@
 
 #define IDI_CHIBIROBO 1
 
-IDI_CHIBIROBO ICON "gamecube-logo64x64.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,0,0,0
@@ -18,7 +17,7 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",      ""
-            VALUE "FileDescription",  "Chibi Robo! PC""
+            VALUE "FileDescription",  "Chibi Robo! PC"
             VALUE "FileVersion",      "1.0.0.0"
             VALUE "InternalName",     "chibi-robo"
             VALUE "OriginalFilename", "chibi-robo.exe"
