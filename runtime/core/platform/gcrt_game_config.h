@@ -22,7 +22,7 @@ void gcrt_game_config_load(const char* dataDir);
 
 /* Shows the ImGui setup menu (blocks until "Start game"). Returns false if the
  * window was closed. Must be called after aurora_initialize. */
-bool gcrt_game_config_run_menu(const char* dataDir);
+bool gcrt_game_config_run_menu(const char* dataDir, const char* title);
 
 #ifdef __cplusplus
 }

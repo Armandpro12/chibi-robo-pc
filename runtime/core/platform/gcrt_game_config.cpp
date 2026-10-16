@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include "gcrt_user_dir.h"
 
 namespace {
 GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false};
@@ -41,7 +42,7 @@ void gcrt_game_config_load(const char* dataDir) {
   }
 }
 
-bool gcrt_game_config_run_menu(const char* dataDir) {
+bool gcrt_game_config_run_menu(const char* dataDir, const char* title) {
   static const struct { const char* label; int w, h; } kSizes[] = {
       {"960x720 (4:3)", 960, 720},
       {"1280x960 (4:3)", 1280, 960},
@@ -67,7 +68,7 @@ bool gcrt_game_config_run_menu(const char* dataDir) {
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(420, 0));
-    ImGui::Begin("Chibi-Robo PC - Setup", nullptr,
+    ImGui::Begin(title, nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize);
     if (ImGui::BeginCombo("Window size", kSizes[sel].label)) {
       for (int i = 0; i < 4; ++i)
@@ -84,7 +85,7 @@ bool gcrt_game_config_run_menu(const char* dataDir) {
   }
   g_cfg.windowWidth  = kSizes[sel].w;
   g_cfg.windowHeight = kSizes[sel].h;
-  save(dataDir);
+  save(gcrt_user_dir());
   return true;
 }
 

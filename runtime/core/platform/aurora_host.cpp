@@ -88,22 +88,23 @@ bool host_init(const HostConfig& config) {
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
   
-    gcrt_game_config_load(g_dataDir.c_str());
+  gcrt_game_config_load(g_dataDir.c_str());
   if (config.windowMode == 0) {
-    if (!gcrt_game_config_run_menu(g_dataDir.c_str())) {
+    if (!gcrt_game_config_run_menu(g_dataDir.c_str(), g_title.c_str())) {
       aurora_shutdown(); // window closed from the menu: abort the boot
       return false;
     }
   }
   const GcrtGameConfig* gc = gcrt_game_config();
+  ac.windowWidth = gc->windowWidth;
+  ac.windowHeight = gc->windowHeight;
   if (info.window != nullptr && config.windowMode == 0) {
     SDL_SetWindowFullscreen(info.window, gc->fullscreen);
     if (!gc->fullscreen) {
       SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
     }
   }
-  ac.windowWidth = gc->windowWidth;
-  ac.windowHeight = gc->windowHeight;// a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
+  // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
  const float renderScale = gc->renderScale > 0.0f ? gc->renderScale : config.renderScale;
   if (renderScale > 0.0f) {
     AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
