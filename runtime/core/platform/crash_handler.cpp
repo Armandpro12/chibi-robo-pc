@@ -65,6 +65,98 @@ bool env_set(const wchar_t* name, wchar_t* buf, DWORD size) {
   return n > 0 && n < size;
 }
 
+// --- Privacy of the text report --------------------------------------------------------------------------------------
+// The .txt is the file players share: it must not reveal the Windows user name. The report already writes file names
+// only (executable, host modules); as a second barrier, every occurrence of the user-profile folder (USERPROFILE, long
+// and 8.3 short forms) left in the text is replaced by the literal "%USERPROFILE%" before the file is written. The
+// prefixes are prepared at installation, so that nothing is allocated after the crash.
+constexpr const char kProfileToken[] = "%USERPROFILE%";
+char g_profile[2][MAX_PATH * 4] = {}; // UTF-8, without a trailing separator; empty if unknown
+char g_clean[kReportSize];             // scrubbed copy of g_report
+size_t g_clean_len = 0;
+
+void prepare_profile_prefixes() {
+  wchar_t buf[MAX_PATH * 2];
+  wchar_t short_buf[MAX_PATH * 2];
+  if (!env_set(L"USERPROFILE", buf, MAX_PATH * 2)) {
+    return;
+  }
+  size_t n = wcslen(buf);
+  while (n > 0 && (buf[n - 1] == L'\\' || buf[n - 1] == L'/')) {
+    buf[--n] = 0;
+  }
+  if (n < 4) {
+    return; // a bare drive ("C:"): replacing it would mangle every path without hiding anything
+  }
+  if (WideCharToMultiByte(CP_UTF8, 0, buf, -1, g_profile[0], sizeof(g_profile[0]), nullptr, nullptr) == 0) {
+    g_profile[0][0] = 0;
+  }
+  const DWORD s = GetShortPathNameW(buf, short_buf, MAX_PATH * 2);
+  if (s > 0 && s < MAX_PATH * 2 && _wcsicmp(short_buf, buf) != 0 &&
+      WideCharToMultiByte(CP_UTF8, 0, short_buf, -1, g_profile[1], sizeof(g_profile[1]), nullptr, nullptr) == 0) {
+    g_profile[1][0] = 0;
+  }
+}
+
+// Path characters compared as Windows does for ASCII: case-insensitive, '\' and '/' equivalent.
+bool same_path_char(char a, char b) {
+  if ((a == '\\' || a == '/') && (b == '\\' || b == '/')) {
+    return true;
+  }
+  if (a >= 'A' && a <= 'Z') {
+    a = static_cast<char>(a - 'A' + 'a');
+  }
+  if (b >= 'A' && b <= 'Z') {
+    b = static_cast<char>(b - 'A' + 'a');
+  }
+  return a == b;
+}
+
+// Length of `prefix` if `text` starts with it and the match ends at a path boundary (so that "C:\Users\ann" does not
+// match inside "C:\Users\anne"), 0 otherwise.
+size_t profile_match(const char* text, size_t avail, const char* prefix) {
+  size_t i = 0;
+  for (; prefix[i] != 0; i++) {
+    if (i >= avail || !same_path_char(text[i], prefix[i])) {
+      return 0;
+    }
+  }
+  if (i == 0) {
+    return 0;
+  }
+  if (i < avail) {
+    const unsigned char next = static_cast<unsigned char>(text[i]);
+    if (next >= 0x80 || (next >= '0' && next <= '9') || (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') ||
+        next == '_' || next == '-' || next == '.' || next == '~') {
+      return 0;
+    }
+  }
+  return i;
+}
+
+void scrub_report() {
+  g_clean_len = 0;
+  size_t i = 0;
+  while (i < g_report_len && g_clean_len < kReportSize - 1) {
+    size_t matched = 0;
+    for (const char* prefix : g_profile) {
+      matched = profile_match(g_report + i, g_report_len - i, prefix);
+      if (matched != 0) {
+        break;
+      }
+    }
+    if (matched != 0) {
+      for (const char* t = kProfileToken; *t != 0 && g_clean_len < kReportSize - 1; t++) {
+        g_clean[g_clean_len++] = *t;
+      }
+      i += matched;
+    } else {
+      g_clean[g_clean_len++] = g_report[i++];
+    }
+  }
+  g_clean[g_clean_len] = 0;
+}
+
 void set_dir(const wchar_t* dir) {
   wcsncpy_s(g_dir, dir, _TRUNCATE);
   const size_t n = wcslen(g_dir);
@@ -201,17 +293,26 @@ bool file_sha1_short(const wchar_t* path, char* hex, size_t hex_size) {
   return true;
 }
 
-// Executable (path, SHA-1, PE time stamp and image size, build commit) and processor: what is needed to find the exact
-// build again, and to tell a software fault from an unstable machine.
+// Executable (file name, SHA-1, PE time stamp and image size, build commit) and processor: what is needed to find the
+// exact build again, and to tell a software fault from an unstable machine. Only the file name is written, never the
+// folder: the .txt is the file players share, and a folder may hold their user name.
 void report_build_and_machine() {
   wchar_t wpath[MAX_PATH * 2] = L"";
-  char path[MAX_PATH * 4] = "?";
+  char name_utf8[MAX_PATH * 4] = "?";
   const DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH * 2);
   const bool have_path = len > 0 && len < MAX_PATH * 2;
   if (have_path) {
-    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, path, sizeof(path), nullptr, nullptr);
+    const wchar_t* file = wpath;
+    for (const wchar_t* c = wpath; *c != 0; c++) {
+      if (*c == L'\\' || *c == L'/') {
+        file = c + 1;
+      }
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, name_utf8, sizeof(name_utf8), nullptr, nullptr) == 0) {
+      std::snprintf(name_utf8, sizeof(name_utf8), "?");
+    }
   }
-  out("executable %s\n", path);
+  out("executable %s\n", name_utf8);
   char sha1[16] = "?";
   if (!have_path || !file_sha1_short(wpath, sha1, sizeof(sha1))) {
     std::snprintf(sha1, sizeof(sha1), "?");
@@ -505,9 +606,10 @@ DWORD WINAPI report_thread(LPVOID param) {
     write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
     out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
   }
+  scrub_report();
   swprintf_s(path, L"%s.txt", in->stem);
-  write_file(path, g_report, g_report_len);
-  std::fwrite(g_report, 1, g_report_len, stderr);
+  write_file(path, g_clean, g_clean_len);
+  std::fwrite(g_clean, 1, g_clean_len, stderr);
   char where_files[MAX_PATH * 2];
   WideCharToMultiByte(CP_UTF8, 0, in->stem, -1, where_files, sizeof(where_files), nullptr, nullptr);
   std::fprintf(stderr, "gcrt: crash report written: %s.txt (.dmp, -guest-ram.bin)\n", where_files);
@@ -557,6 +659,7 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   if (env_set(L"GCRT_CRASH_HANDLER", buf, MAX_PATH) && buf[0] == L'0') {
     return;
   }
+  prepare_profile_prefixes();
   if (env_set(L"GCRT_CRASH_DIR", buf, MAX_PATH * 2) || env_set(L"GCRT_CAPTURE_DIR", buf, MAX_PATH * 2)) {
     set_dir(buf);
     g_dir_from_env = true;

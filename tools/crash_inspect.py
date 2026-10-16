@@ -2,6 +2,7 @@
 
 Usage:
   py -3 tools/crash_inspect.py <crash.dmp> [--find-in EXE [EXE ...]] [--window N]
+  py -3 tools/crash_inspect.py --self-test
 
 Prints:
   - system (Windows version, processor family/model/stepping, logical processors) and the faulting module (path, PE time
@@ -9,15 +10,35 @@ Prints:
   - the exception and the registers of the faulting thread;
   - the code around the faulting instruction (disassembled with Capstone if it is installed: `py -3 -m pip install
     capstone`; hex otherwise);
-  - for the faulting instruction, each memory operand with its effective address computed from the registers, and a
-    verdict: is the fault explained by the instruction (non-canonical or kernel address, misaligned access for an
-    instruction that requires alignment, address equal to the one Windows reports), or not? An unexplained general
-    protection fault on a valid instruction points outside the program (unstable machine, altered thread context).
+  - for the faulting instruction, each explicit memory operand with its effective address computed from the registers,
+    and a verdict (below);
   - with --find-in: where the same code bytes are in local executables (RVA), to map the fault onto a build that has
     symbols or a map file.
 
 Windows reports a general protection fault as an access violation (0xC0000005) of address 0xFFFFFFFFFFFFFFFF; the
 real address must be recomputed from the instruction, which this tool does.
+
+Verdicts. The tool only checks what it can compute: the explicit memory operands decoded by Capstone (non-canonical or
+kernel address, operand crossing the end of the canonical range, misaligned access for an instruction that requires
+alignment, address equal to the one Windows reports), the target of `ret` and of `jmp`/`call` through a register or a
+captured memory operand, and the stack pointer of an instruction that uses the stack implicitly.
+  - EXPLAINED / consistent: one of these checks accounts for the fault.
+  - NOT EXPLAINED: a general protection fault on an instruction with at least one explicit memory operand, all of them
+    valid, and none of the cases the tool does not check (system or privileged instruction, port I/O, segment register
+    load, state restore that checks the loaded values, implicit stack use, branch, instruction longer than 15 bytes).
+    This is a hypothesis to confirm with other reports, not a proof: it suggests a fault outside the program (unstable
+    machine, thread context altered by another component).
+  - UNDETERMINED: anything else (one of the unchecked cases, unknown operand address, no decoding, not an access
+    violation, access violation that no operand matches).
+
+Exit codes (for scripts):
+  0  explained or consistent;
+  1  usage or read error (bad arguments, unreadable file, not a minidump, no exception stream); with --self-test: a case
+     failed;
+  2  NOT EXPLAINED;
+  3  UNDETERMINED, including Capstone not installed and code bytes not captured in the dump.
+
+--self-test runs the verdict on synthetic instruction bytes (needs Capstone; exit 0 if every case passes).
 
 Minidump format: MINIDUMP_HEADER, MINIDUMP_DIRECTORY and the stream structures of minidumpapiset.h (Windows SDK).
 """
@@ -41,7 +62,32 @@ SSE_UNALIGNED_OK = {"movups", "movupd", "movdqu", "lddqu", "movsd", "movss", "mo
 VEX_ALIGNED = {"vmovaps", "vmovapd", "vmovdqa", "vmovdqa32", "vmovdqa64", "vmovntps", "vmovntpd", "vmovntdq",
                "vmovntdqa"}
 OTHER_ALIGNED = {"cmpxchg16b": 16, "fxsave": 16, "fxsave64": 16, "fxrstor": 16, "fxrstor64": 16, "xsave": 64,
-                 "xsave64": 64, "xrstor": 64, "xrstor64": 64, "xsaveopt": 64, "xsavec": 64, "xsaves": 64}
+                 "xsave64": 64, "xrstor": 64, "xrstor64": 64, "xsaveopt": 64, "xsavec": 64, "xsaves": 64,
+                 "movdir64b": 64}
+# Instructions that can raise a general protection fault for reasons the tool does not check (privilege level, port
+# I/O permission, model-specific register number, descriptor or segment loads, values loaded by a state restore,
+# far transfers). Capstone 5 puts some of them in its "privilege" or "int" groups, not all (rdmsr, in and out are in
+# none), hence this list; the groups are checked as well.
+SYSTEM_MNEMONICS = {
+    "rdmsr", "wrmsr", "rdpmc", "rdtsc", "rdtscp", "rdpid", "xgetbv", "xsetbv", "cpuid",
+    "in", "out", "ins", "insb", "insw", "insd", "outs", "outsb", "outsw", "outsd",
+    "int", "int1", "int3", "into", "iret", "iretd", "iretq", "syscall", "sysenter", "sysexit", "sysret", "sysretq",
+    "hlt", "cli", "sti", "clts", "lgdt", "lidt", "lldt", "ltr", "sgdt", "sidt", "sldt", "smsw", "str", "lmsw",
+    "invd", "wbinvd", "wbnoinvd", "invlpg", "invlpga", "invpcid", "swapgs", "rdfsbase", "rdgsbase", "wrfsbase",
+    "wrgsbase", "lar", "lsl", "verr", "verw", "monitor", "monitorx", "mwait", "mwaitx", "umonitor", "umwait",
+    "tpause", "lds", "les", "lfs", "lgs", "lss", "ljmp", "lcall", "retf", "retfq", "lret", "lretq",
+    "ldmxcsr", "vldmxcsr", "fxrstor", "fxrstor64", "xrstor", "xrstor64", "xrstors", "xrstors64",
+    "enqcmd", "enqcmds", "wrpkru", "wrssd", "wrssq", "wrussd", "wrussq", "rstorssp", "saveprevssp", "incsspd",
+    "incsspq", "setssbsy", "clrssbsy", "encls", "enclu", "enclv", "getsec", "vmcall", "vmlaunch", "vmresume",
+    "vmxoff", "vmxon", "vmptrld", "vmptrst", "vmclear", "vmread", "vmwrite", "vmfunc", "invept", "invvpid",
+}
+SEGMENT_REGS = {"es", "cs", "ss", "ds", "fs", "gs"}
+STACK_REGS = {"rsp", "esp", "sp", "spl"}
+MASK64 = 0xFFFFFFFFFFFFFFFF
+# Exit codes (see the module docstring).
+EXIT_EXPLAINED, EXIT_ERROR, EXIT_NOT_EXPLAINED, EXIT_UNDETERMINED = 0, 1, 2, 3
+STATUS_NAMES = {EXIT_EXPLAINED: "EXPLAINED or consistent", EXIT_NOT_EXPLAINED: "NOT EXPLAINED",
+                EXIT_UNDETERMINED: "UNDETERMINED"}
 
 
 class Minidump:
@@ -190,20 +236,57 @@ def required_alignment(ins, size: int) -> int:
     return 1
 
 
-def verdict(ins, code: int, params: list[int], regs, gs_base, md: Minidump) -> str:
-    gp = code == 0xC0000005 and len(params) >= 2 and params[1] == 0xFFFFFFFFFFFFFFFF
+def uses_stack_implicitly(ins) -> bool:
+    """push, pop, call, ret, enter, leave, pushf...: Capstone lists the stack pointer among the implicit registers."""
+    return any(ins.reg_name(r) in STACK_REGS for r in list(ins.regs_read) + list(ins.regs_write))
+
+
+def unchecked_cases(ins) -> list[str]:
+    """Why a general protection fault may come from this instruction even with valid explicit memory operands: cases
+    the tool does not check, which forbid the NOT EXPLAINED verdict."""
+    import capstone
+
+    out = []
+    if ins.size > 15:
+        out.append(f"instruction longer than 15 bytes ({ins.size})")
+    groups = set(ins.groups)
+    _read, written = ins.regs_access()
+    if ins.mnemonic in SYSTEM_MNEMONICS or groups & {capstone.CS_GRP_PRIVILEGE, capstone.CS_GRP_INT,
+                                                     capstone.CS_GRP_IRET}:
+        out.append("system or privileged instruction")
+    elif any(ins.reg_name(r) in SEGMENT_REGS for r in written):
+        out.append("segment register load")
+    if uses_stack_implicitly(ins):
+        out.append("implicit stack use")
+    if groups & {capstone.CS_GRP_JUMP, capstone.CS_GRP_CALL, capstone.CS_GRP_RET}:
+        out.append("branch (its target is not fully checked)")
+    return out
+
+
+def verdict(ins, code: int, params: list[int], regs, gs_base, read) -> tuple[int, str, list[str]]:
+    """(exit code, verdict text, operand lines) for the faulting instruction. `read(address, size)` returns the bytes
+    captured in the dump, or None."""
+    from capstone import x86
+
+    gp = code == 0xC0000005 and len(params) >= 2 and params[1] == MASK64
     ops = operand_addresses(ins, regs, gs_base)
-    lines = []
-    reasons = []
+    lines: list[str] = []
+    reasons: list[str] = []
+    unknown = False
     for text, ea, size in ops:
         if ea is None:
+            unknown = True
             lines.append(f"  memory operand ({text}): address unknown (segment base or register not in the context)")
             continue
         align = required_alignment(ins, size)
+        last = (ea + max(size, 1) - 1) & MASK64
         notes = []
         if not canonical(ea):
             notes.append("NON-CANONICAL")
             reasons.append(f"non-canonical address 0x{ea:016X}")
+        elif not canonical(last):
+            notes.append("CROSSES THE END OF THE CANONICAL RANGE")
+            reasons.append(f"operand 0x{ea:016X}..0x{last:016X} crosses the end of the canonical range")
         elif ea >= 0xFFFF800000000000:
             notes.append("kernel half")
             reasons.append(f"kernel address 0x{ea:016X}")
@@ -213,37 +296,110 @@ def verdict(ins, code: int, params: list[int], regs, gs_base, md: Minidump) -> s
         if not gp and len(params) >= 2 and ea <= params[1] < ea + max(size, 1):
             notes.append("matches the address reported by Windows")
             reasons.append("reported address")
-        region = "captured in the dump" if md.read(ea, 1) is not None else "not captured in the dump"
+        region = "captured in the dump" if read(ea, 1) is not None else "not captured in the dump"
         lines.append(f"  memory operand ({text}): 0x{ea:016X} [{', '.join(notes) or 'canonical'}; {region}]")
+    # Implicit stack use with a non-canonical stack pointer faults (stack fault) on the instruction itself.
+    if uses_stack_implicitly(ins) and "rsp" in regs:
+        lines.append(f"  stack pointer (implicit stack use): 0x{regs['rsp']:016X}")
+        if not canonical(regs["rsp"]):
+            reasons.append(f"non-canonical stack pointer 0x{regs['rsp']:016X}")
     # Control transfers: a non-canonical target faults on the branch itself.
     if ins.mnemonic in ("ret", "retn") and "rsp" in regs:
-        target = md.read(regs["rsp"], 8)
+        target = read(regs["rsp"], 8)
         if target is not None:
             t = struct.unpack("<Q", target)[0]
             lines.append(f"  return address at [rsp]: 0x{t:016X}")
             if not canonical(t):
                 reasons.append(f"return to non-canonical 0x{t:016X}")
     if ins.mnemonic in ("jmp", "call") and len(ins.operands) == 1:
-        from capstone import x86
         op = ins.operands[0]
+        t = None
         if op.type == x86.X86_OP_REG:
             t = reg_value(ins.reg_name(op.reg), regs)
-            if t is not None and not canonical(t):
+        elif op.type == x86.X86_OP_MEM and ops and ops[0][1] is not None:
+            target = read(ops[0][1], 8)
+            t = struct.unpack("<Q", target)[0] if target is not None else None
+        if t is not None:
+            lines.append(f"  branch target: 0x{t:016X}")
+            if not canonical(t):
                 reasons.append(f"branch to non-canonical 0x{t:016X}")
-    for line in lines:
-        print(line)
     if gp:
         if reasons:
-            return "general protection fault EXPLAINED by the instruction: " + "; ".join(reasons)
-        return ("general protection fault NOT EXPLAINED by the instruction: with these registers it cannot raise one. "
-                "Suspect a fault outside the program: unstable machine (processor, memory, overclocking, temperature: "
-                "look for WHEA-Logger events in the Windows System log at the time of the crash) or a thread context "
-                "altered by another component. Compare with other crash reports of the same machine.")
+            return EXIT_EXPLAINED, "general protection fault EXPLAINED by the instruction: " + "; ".join(reasons), lines
+        unchecked = unchecked_cases(ins)
+        if not ops:
+            unchecked.append("no explicit memory operand")
+        if unknown:
+            unchecked.append("a memory operand address is unknown")
+        if unchecked:
+            return (EXIT_UNDETERMINED, "general protection fault UNDETERMINED: the checks of this tool do not cover this "
+                    "instruction (" + "; ".join(unchecked) + "); no conclusion can be drawn", lines)
+        return (EXIT_NOT_EXPLAINED,
+                "general protection fault NOT EXPLAINED by the checks of this tool: the explicit memory operands are "
+                "canonical and aligned as required, and the instruction is not one of the cases the tool does not check "
+                "(system, stack, branch). This suggests, as a hypothesis to confirm with more reports, a fault outside "
+                "the program: unstable machine (processor, memory, overclocking, temperature: look for WHEA-Logger "
+                "events in the Windows System log at the time of the crash) or a thread context altered by another "
+                "component. Compare with other crash reports of the same machine.", lines)
     if code == 0xC0000005:
         if reasons:
-            return "access violation consistent with the instruction: " + "; ".join(reasons)
-        return "access violation: no memory operand matches the reported address (check the decoding)"
-    return "not an access violation: see the exception code"
+            return EXIT_EXPLAINED, "access violation consistent with the instruction: " + "; ".join(reasons), lines
+        return (EXIT_UNDETERMINED, "access violation UNDETERMINED: no memory operand matches the reported address "
+                "(check the decoding)", lines)
+    return EXIT_UNDETERMINED, "UNDETERMINED: not an access violation, which this tool does not analyse", lines
+
+
+def self_test() -> int:
+    """Verdicts on synthetic instruction bytes (general protection fault unless stated)."""
+    try:
+        import capstone
+    except ImportError:
+        print("self-test: Capstone not installed (py -3 -m pip install capstone)")
+        return EXIT_UNDETERMINED
+    dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    dis.detail = True
+    rip = 0x00007FF600001000
+    base = {name: 0x1000 for name in CTX_NAMES}
+    base.update(rip=rip, rsp=0x000000E12345F000, rsi=0x000001D234560000)
+    gp = (0xC0000005, [1, MASK64])
+    cases = [
+        # (name, code bytes, register changes, (code, parameters), expected exit code)
+        ("mov dword ptr [rsi+0x280], imm, valid address", "c7868002000001000000", {}, gp, EXIT_NOT_EXPLAINED),
+        ("mov dword ptr [rsi+0x280], imm, non-canonical address", "c7868002000001000000",
+         {"rsi": 0x8000000000000000}, gp, EXIT_EXPLAINED),
+        ("push rax", "50", {}, gp, EXIT_UNDETERMINED),
+        ("push rax, non-canonical rsp", "50", {"rsp": 0x8000000000001000}, gp, EXIT_EXPLAINED),
+        ("rdmsr", "0f32", {}, gp, EXIT_UNDETERMINED),
+        ("int 3", "cd03", {}, gp, EXIT_UNDETERMINED),
+        ("int3", "cc", {}, gp, EXIT_UNDETERMINED),
+        ("in al, dx", "ec", {}, gp, EXIT_UNDETERMINED),
+        ("mov ds, eax", "8ed8", {}, gp, EXIT_UNDETERMINED),
+        ("xgetbv", "0f01d0", {}, gp, EXIT_UNDETERMINED),
+        ("ldmxcsr dword ptr [rsi]", "0fae16", {}, gp, EXIT_UNDETERMINED),
+        ("jmp qword ptr [rsi], target not captured", "ff26", {}, gp, EXIT_UNDETERMINED),
+        ("push qword ptr [rsi]", "ff36", {}, gp, EXIT_UNDETERMINED),
+        ("movaps xmmword ptr [rsi+8], xmm0, misaligned", "0f294608", {}, gp, EXIT_EXPLAINED),
+        ("mov qword ptr [rsi], rax across the end of the canonical range", "488906",
+         {"rsi": 0x00007FFFFFFFFFFC}, gp, EXIT_EXPLAINED),
+        ("mov eax, dword ptr [rsi], read fault at the reported address", "8b06", {},
+         (0xC0000005, [0, 0x000001D234560000]), EXIT_EXPLAINED),
+        ("mov eax, dword ptr [rsi], read fault elsewhere", "8b06", {}, (0xC0000005, [0, 0x10]), EXIT_UNDETERMINED),
+        ("illegal instruction exception", "0f0b", {}, (0xC000001D, []), EXIT_UNDETERMINED),
+    ]
+    failed = 0
+    for name, hexcode, changes, (code, params), expected in cases:
+        regs = dict(base, **changes)
+        ins = next(dis.disasm(bytes.fromhex(hexcode), rip), None)
+        if ins is None:
+            status, text = None, "could not decode"
+        else:
+            status, text, _lines = verdict(ins, code, params, regs, None, lambda _a, _n: None)
+        ok = status == expected
+        failed += not ok
+        print(f"{'PASS' if ok else 'FAIL'} {name}: {STATUS_NAMES.get(status, status)}"
+              + ("" if ok else f" (expected {STATUS_NAMES[expected]}: {text})"))
+    print(f"self-test: {len(cases) - failed}/{len(cases)} cases passed")
+    return EXIT_EXPLAINED if failed == 0 else EXIT_ERROR
 
 
 def find_in_executables(window_start: int, window: bytes, rip: int, crash_rva: int | None, exes: list[str]) -> None:
@@ -286,17 +442,26 @@ def find_in_executables(window_start: int, window: bytes, rip: int, crash_rva: i
             print(f"find-in {exe}: code not found")
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("dump", type=Path)
-    ap.add_argument("--find-in", nargs="+", default=[], metavar="EXE", help="local executables to search")
-    ap.add_argument("--window", type=int, default=96, help="bytes disassembled before rip (default 96)")
-    args = ap.parse_args()
+class ArgumentParser(argparse.ArgumentParser):
+    """Usage errors exit with code 1 (argparse uses 2, which here means NOT EXPLAINED)."""
+
+    def error(self, message: str):
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_ERROR, f"{self.prog}: error: {message}\n")
+
+
+def result(status: int, text: str) -> int:
+    print(f"verdict: {text}")
+    print(f"result: {STATUS_NAMES[status]} (exit code {status})")
+    return status
+
+
+def inspect_dump(args) -> int:
     md = Minidump(args.dump)
     describe_system(md)
     if EXCEPTION not in md.streams:
-        print("no exception stream")
-        return 1
+        print("no exception stream: not a crash dump")
+        return EXIT_ERROR
     _, rva = md.streams[EXCEPTION]
     tid = struct.unpack_from("<I", md.d, rva)[0]
     code, flags, _rec, addr, nparams = struct.unpack_from("<IIQQI", md.d, rva + 8)
@@ -322,14 +487,14 @@ def main() -> int:
     start, window = md.readable_window(rip, args.window, 64)
     if not window:
         print("code bytes around rip: not captured in the dump")
-        return 0
+        return result(EXIT_UNDETERMINED, "UNDETERMINED: no code bytes to decode")
     try:
         import capstone
     except ImportError:
         print(f"code from 0x{start:X} (rip = +0x{rip - start:X}): {window.hex()}")
         print("Capstone not installed: no decoding (py -3 -m pip install capstone)")
         find_in_executables(start, window, rip, crash_rva, args.find_in)
-        return 0
+        return result(EXIT_UNDETERMINED, "UNDETERMINED: Capstone not installed, the instruction was not decoded")
     dis = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
     dis.detail = True
     listing, fault = [], None
@@ -341,16 +506,37 @@ def main() -> int:
             break
     if fault is None:
         print("could not decode an instruction at rip")
-        return 0
+        return result(EXIT_UNDETERMINED, "UNDETERMINED: no instruction decoded at rip (an instruction longer than "
+                      "15 bytes, or invalid bytes, also ends up here)")
     idx = listing.index(fault)
     for ins in listing[max(0, idx - 12): idx + 6]:
         mark = ">>" if ins is fault else "  "
         print(f"{mark}{ins.address:016X}: {ins.bytes.hex():<24} {ins.mnemonic} {ins.op_str}")
     print(f"faulting instruction: {fault.mnemonic} {fault.op_str}")
-    print("verdict: " + verdict(fault, code, params, regs, teb, md))
+    status, text, lines = verdict(fault, code, params, regs, teb, md.read)
+    for line in lines:
+        print(line)
     if args.find_in:
         find_in_executables(start, window, rip, crash_rva, args.find_in)
-    return 0
+    return result(status, text)
+
+
+def main() -> int:
+    ap = ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("dump", type=Path, nargs="?")
+    ap.add_argument("--find-in", nargs="+", default=[], metavar="EXE", help="local executables to search")
+    ap.add_argument("--window", type=int, default=96, help="bytes disassembled before rip (default 96)")
+    ap.add_argument("--self-test", action="store_true", help="check the verdicts on synthetic instructions")
+    args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    if args.dump is None:
+        ap.error("a minidump is required (or --self-test)")
+    try:
+        return inspect_dump(args)
+    except (OSError, struct.error, IndexError, ValueError) as e:
+        print(f"{args.dump}: cannot read the minidump: {e}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":
