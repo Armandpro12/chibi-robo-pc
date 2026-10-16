@@ -74,6 +74,43 @@ GGTE01 = ["800156CC", "80171630"]
 GGTP01 = ["8015B2BC:r3=0x12345678"]
 GGTE01 = ["80158A0C:r3=0x12345678"]
 
+[stage]
+# tools/run.py --stage <name|number>: start in a chosen stage (tooling: reproduce a report, test a point of the
+# game without a matching save). How: when the game restores a save, the stage stored in the save is replaced
+# ONCE, just before the restore function reads it (GCRT_FORCE_ARG memory item, first entry only). The rest of the
+# save (position, counters, battery, time, story flags) is restored by the game as usual, and later stage
+# changes (the warps of the debug scene's menus, doors) are left alone. A save must be loaded: a user folder with
+# a save (--user-seed / --user-dir) and a scenario (or a player) that loads it.
+# Normal stages are numbered 0 to count - 1.
+count = 30
+
+[stage.start]
+# GCRT_FORCE_ARG items added by tools/run.py, "{stage}" replaced by the stage number.
+# GGTE01: 0x80087CC0 = save restore function (r3 = save data); the stage is the 32-bit word at save+0xC408
+# (Ghidra: the function copies it to the current stage; runs: the stage file read follows this word).
+# GGTP01: not found yet (tools/run.py refuses --stage on that version).
+GGTE01 = ["80087CC0:[r3+0xC408]={stage}#1"]
+
+[stage.names]
+# Stage numbers from unplug (https://github.com/adierking/unplug, MIT License, Copyright (c) 2022 Derpky); the
+# short names are ours. Unnamed stages (8, 12, 15, 17, 19 to 21, 23 to 29) are chosen by number.
+debug = 0
+kitchen = 1
+foyer = 2
+basement = 3
+jennys-room = 4
+chibi-house = 5
+bedroom = 6
+living-room = 7
+backyard = 9
+staff-credit = 10
+drain = 11
+chibi-manual = 13
+living-room-birthday = 14
+ufo = 16
+bedroom-past = 18
+mother-spiders-room = 22
+
 [pgo]
 # tools/pgo.py train (local PGO profiles of our builds, build/pgo/, never in Git): scenarios replayed by the instrumented
 # executable (tools/run.py --scenario, cycle clock, hence reproducible). They must go through the game's hot

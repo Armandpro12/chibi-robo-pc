@@ -14,7 +14,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "hle/gcrt_hle.h"
+#include "platform/trace.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -89,49 +91,175 @@ static bool hle_halt(GcrtCpu* g, u32 address) {
     return true;
 }
 
-/* Diagnostic (GCRT_FORCE_ARG="ADDRESS:rN=VALUE[;...]", hexadecimal for the address): on each entry into the
- * function at ADDRESS, register rN receives VALUE, then the original function runs. Used to make two runs
- * comparable when the game depends on a clock value (e.g. random generator seed taken from OSGetTick: a build
- * that executes fewer instructions at startup gets another seed). Without a compiled hook (game.toml
- * [hle.hooks]), only the calls that go through the chassis are seen. */
+/* Diagnostic and tooling (GCRT_FORCE_ARG="ITEM[;ITEM...]", at most FORCE_ARG_MAX items): on entry into a function,
+ * before its original code runs, a register or a 32-bit word of guest memory receives a value. Item syntax:
+ *   ADDRESS:rN=VALUE[#COUNT]          register rN receives VALUE
+ *   ADDRESS:[rN+OFFSET]=VALUE[#COUNT] the big-endian word at rN+OFFSET (rN read on entry; "-" also accepted)
+ *   ADDRESS:[ABSOLUTE]=VALUE[#COUNT]  the big-endian word at a fixed guest address
+ * ADDRESS, OFFSET and ABSOLUTE are hexadecimal ("0x" optional); VALUE is decimal, or hexadecimal with "0x";
+ * #COUNT applies the item to the first COUNT entries only (default: every entry).
+ * Uses: make two runs comparable when the game depends on a clock value (random seed taken from OSGetTick: a
+ * build that executes fewer instructions at startup gets another seed), or change one value once (e.g. a field
+ * of the game's data just before the game reads it), the game's own code doing the rest. The addresses are
+ * specific to each game and version: they come from the caller (tools/run.py and games/<game>/game.toml), never
+ * from the core. Without a compiled hook (game.toml [hle.hooks]), only the calls that go through the chassis are
+ * seen. Traces: one stderr line per application of a counted item; every application with GCRT_TRACE=native. */
 #define FORCE_ARG_MAX 8
+enum { FORCE_REG, FORCE_MEM_REG, FORCE_MEM_ABS };
 static struct {
-    u32 address;
+    u32 address; /* function entry */
+    u32 kind;
     u32 reg;
+    u32 offset; /* FORCE_MEM_REG: added to rN (modulo 2^32); FORCE_MEM_ABS: the guest address */
     u32 value;
+    u32 limit; /* 0 = every entry */
+    u32 hits;
 } s_force[FORCE_ARG_MAX];
 static unsigned s_force_count;
 
+static void describe_force_target(unsigned i, char* out, size_t size) {
+    switch (s_force[i].kind) {
+    case FORCE_REG:
+        snprintf(out, size, "r%u", (unsigned)s_force[i].reg);
+        break;
+    case FORCE_MEM_REG:
+        snprintf(out, size, "[r%u+0x%X]", (unsigned)s_force[i].reg, (unsigned)s_force[i].offset);
+        break;
+    default:
+        snprintf(out, size, "[0x%08X]", (unsigned)s_force[i].offset);
+        break;
+    }
+}
+
 static bool hle_force_arg(GcrtCpu* g, u32 address) {
-    for (unsigned i = 0; i < s_force_count; i++)
-        if (s_force[i].address == address)
+    for (unsigned i = 0; i < s_force_count; i++) {
+        if (s_force[i].address != address)
+            continue;
+        if (s_force[i].limit && s_force[i].hits >= s_force[i].limit)
+            continue;
+        s_force[i].hits++;
+        u32 target = 0, before = 0;
+        if (s_force[i].kind == FORCE_REG) {
+            before = g->state.gpr[s_force[i].reg];
             g->state.gpr[s_force[i].reg] = s_force[i].value;
+        } else {
+            target = s_force[i].kind == FORCE_MEM_REG ? g->state.gpr[s_force[i].reg] + s_force[i].offset
+                                                      : s_force[i].offset;
+            before = mem_read32(&g->state, target);
+            mem_write32(&g->state, target, s_force[i].value);
+        }
+        if (s_force[i].limit || GCRT_TRACE_ON(GCRT_TRACE_NATIVE)) {
+            char what[48];
+            describe_force_target(i, what, sizeof(what));
+            char where[24] = "";
+            if (s_force[i].kind != FORCE_REG)
+                snprintf(where, sizeof(where), " (0x%08X)", (unsigned)target);
+            char line[192];
+            snprintf(line, sizeof(line),
+                     "GCRT_FORCE_ARG: entry %u%s%u into %08X (called from %08X): %s%s 0x%08X -> 0x%08X\n",
+                     (unsigned)s_force[i].hits, s_force[i].limit ? "/" : "",
+                     (unsigned)(s_force[i].limit ? s_force[i].limit : 0u), (unsigned)address,
+                     (unsigned)g->state.lr, what, where, (unsigned)before, (unsigned)s_force[i].value);
+            if (s_force[i].limit)
+                fprintf(stderr, "gcrt hle: %s", line);
+            GCRT_TRACE(GCRT_TRACE_NATIVE, "%s", line);
+        }
+    }
     return false; /* the original code runs afterwards */
+}
+
+/* Parses one item (see above); false if it is malformed. */
+static bool parse_force_item(const char* item, unsigned slot) {
+    char* p = NULL;
+    const unsigned long address = strtoul(item, &p, 16);
+    if (!p || p == item || *p != ':')
+        return false;
+    p++;
+    u32 kind, reg = 0, offset = 0;
+    if (*p == 'r' || *p == 'R') {
+        kind = FORCE_REG;
+        reg = (u32)strtoul(p + 1, &p, 10);
+    } else if (*p == '[') {
+        p++;
+        if (*p == 'r' || *p == 'R') {
+            kind = FORCE_MEM_REG;
+            reg = (u32)strtoul(p + 1, &p, 10);
+            if (*p == '+' || *p == '-') {
+                const char sign = *p;
+                const u32 magnitude = (u32)strtoul(p + 1, &p, 16);
+                offset = sign == '-' ? 0u - magnitude : magnitude;
+            }
+        } else {
+            kind = FORCE_MEM_ABS;
+            char* start = p;
+            offset = (u32)strtoul(p, &p, 16);
+            if (p == start)
+                return false;
+        }
+        if (*p != ']')
+            return false;
+        p++;
+    } else {
+        return false;
+    }
+    if (reg > 31 || *p != '=')
+        return false;
+    char* start = p + 1;
+    const unsigned long value = strtoul(start, &p, 0);
+    if (p == start)
+        return false;
+    unsigned long limit = 0;
+    if (*p == '#') {
+        start = p + 1;
+        limit = strtoul(start, &p, 10);
+        if (p == start || limit == 0)
+            return false;
+    }
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p)
+        return false;
+    s_force[slot].address = (u32)address;
+    s_force[slot].kind = kind;
+    s_force[slot].reg = reg;
+    s_force[slot].offset = offset;
+    s_force[slot].value = (u32)value;
+    s_force[slot].limit = (u32)limit;
+    s_force[slot].hits = 0;
+    return true;
 }
 
 static void install_force_args(GcrtCpu* g) {
     const char* spec = getenv("GCRT_FORCE_ARG");
     if (!spec || !spec[0])
         return;
-    char buf[256];
+    char buf[512];
     strncpy(buf, spec, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
-    for (char* item = strtok(buf, ";,"); item && s_force_count < FORCE_ARG_MAX; item = strtok(NULL, ";,")) {
-        unsigned long address = 0, reg = 0, value = 0;
-        char* p = NULL;
-        address = strtoul(item, &p, 16);
-        if (!p || *p != ':' || (p[1] != 'r' && p[1] != 'R'))
+    for (char* item = strtok(buf, ";,"); item; item = strtok(NULL, ";,")) {
+        while (*item == ' ' || *item == '\t')
+            item++;
+        if (!*item)
             continue;
-        reg = strtoul(p + 2, &p, 10);
-        if (!p || *p != '=' || reg > 31)
+        if (s_force_count >= FORCE_ARG_MAX) {
+            fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: more than %d items, \"%s\" and the next ones ignored\n",
+                    FORCE_ARG_MAX, item);
+            break;
+        }
+        if (!parse_force_item(item, s_force_count)) {
+            fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: invalid item \"%s\" ignored (expected ADDRESS:rN=VALUE, "
+                            "ADDRESS:[rN+OFFSET]=VALUE or ADDRESS:[ABSOLUTE]=VALUE, optionally #COUNT)\n",
+                    item);
             continue;
-        value = strtoul(p + 1, NULL, 0);
-        s_force[s_force_count].address = (u32)address;
-        s_force[s_force_count].reg = (u32)reg;
-        s_force[s_force_count].value = (u32)value;
-        s_force_count++;
-        gcrt_hle_register(g, (u32)address, "GCRT_FORCE_ARG", hle_force_arg);
-        fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: r%lu = 0x%08lX on entry to %08lX\n", reg, value, address);
+        }
+        const unsigned i = s_force_count++;
+        gcrt_hle_register(g, s_force[i].address, "GCRT_FORCE_ARG", hle_force_arg);
+        char what[48], when[40] = "";
+        describe_force_target(i, what, sizeof(what));
+        if (s_force[i].limit)
+            snprintf(when, sizeof(when), " (first %u entries only)", (unsigned)s_force[i].limit);
+        fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: %s = 0x%08X on entry to %08X%s\n", what,
+                (unsigned)s_force[i].value, (unsigned)s_force[i].address, when);
     }
 }
 

@@ -8,6 +8,12 @@ Usage:
                      a name is looked up in games/<game>/scenarios/<ID>/ then games/<game>/scenarios/: one scenario
                      per version)
 
+Start in a chosen stage (--stage NAME|NUMBER, names and addresses in games/<game>/game.toml [stage]): when the game
+restores a save, the stage stored in the save is replaced once, then the game restores the rest of the save as usual
+(counters, story flags...) and later stage changes work normally. A save must be loaded, e.g.:
+  py -3 tools/run.py chibi-robo --version GGTE01 --stage backyard --user-seed FOLDER_WITH_A_SAVE --scenario FILE.scn
+Without --stage, nothing changes.
+
 User folder of the game (settings, saves): always isolated (<output>/user by default, --user-dir to reuse one).
 --user-seed FOLDER first fills it with a COPY of FOLDER (e.g. the user folder left by another scenario: "after"
 directive of tools/scenario.py, used by tools/ab.py); run.json stores the list of the folder's files before (seed)
@@ -73,7 +79,31 @@ CAPABILITY_TOKENS = {
     "capture_frames": b"GCRT_CAPTURE_FRAMES",  # captures at the exact frame
     "clock_flag": b"--clock",               # --clock cycles option (deterministic guest clock)
     "force_arg": b"GCRT_FORCE_ARG",         # value forced at the entry of a function (random seed)
+    "force_mem": b"ADDRESS:[rN+OFFSET]=VALUE",  # GCRT_FORCE_ARG memory items and #COUNT (--stage)
 }
+
+
+def stage_items(game_cfg: dict, version: str, choice: str) -> tuple[int, list[str]]:
+    """--stage: stage number and GCRT_FORCE_ARG items, from game.toml [stage] (names, count, start.<version>)."""
+    cfg = game_cfg.get("stage", {})
+    names = {str(k).lower(): int(v) for k, v in cfg.get("names", {}).items()}
+    key = choice.strip().lower()
+    if key in names:
+        number = names[key]
+    elif re.fullmatch(r"\d+", key):
+        number = int(key)
+        count = int(cfg.get("count", 0))
+        if count and number >= count:
+            raise SystemExit(f"--stage {choice}: stage numbers go from 0 to {count - 1}")
+    else:
+        known = ", ".join(f"{n} ({v})" for n, v in sorted(names.items(), key=lambda kv: kv[1])) or "none"
+        raise SystemExit(f"--stage {choice}: unknown stage. Names: {known}; or a number")
+    templates = cfg.get("start", {}).get(version)
+    if not templates:
+        have = ", ".join(sorted(cfg.get("start", {}))) or "none"
+        raise SystemExit(f"--stage is not available on {version} yet (game.toml [stage.start] has no addresses for "
+                         f"this version; available: {have})")
+    return number, [t.replace("{stage}", str(number)) for t in templates]
 
 
 def find_exe(game: str, version: str, config: str | None, tag: str | None = None) -> Path:
@@ -241,6 +271,11 @@ def main() -> int:
     parser.add_argument("--force-arg", metavar="SPEC|none",
                         help='scenario: GCRT_FORCE_ARG ("ADDRESS:rN=VALUE;..."); default: game.toml [run.force] of the '
                              "version (fixed random seed); none = force nothing")
+    parser.add_argument("--stage", metavar="NAME|NUMBER",
+                        help="start in this stage: when the game restores a save, the saved stage is replaced once "
+                             "(the rest of the save is restored, later stage changes are free); names and addresses "
+                             "in game.toml [stage] (e.g. chibi-robo: backyard, debug, living-room). Needs a save that "
+                             "gets loaded (--user-seed, scenario)")
     parser.add_argument("--data-dir", metavar="FOLDER",
                         help="Aurora data folder (GCRT_DATA_DIR: pipeline and shader caches); default: PRIVATE copy "
                              "of the executable's caches in <output>/gcrt-data (deleted after a successful launch), "
@@ -260,6 +295,7 @@ def main() -> int:
     exe = Path(args.exe) if args.exe else find_exe(args.game, version, args.config, args.tag)
     if not exe.exists():
         raise SystemExit(f"Executable not found: {exe}")
+    stage = stage_items(game_cfg, version, args.stage) if args.stage else None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     out = (Path(args.out) if args.out else tc.ROOT / "tests" / args.game / version / f"run-{stamp}").resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -415,6 +451,14 @@ def main() -> int:
         else:
             cmd = [str(exe), "--max-seconds", f"{seconds:g}", *clock, *extra]
 
+    if stage:
+        # --stage: the stage items come after the forced values already chosen (random seed of the scenarios,
+        # --force-arg, or GCRT_FORCE_ARG of the caller).
+        if not info["capabilities"]["force_mem"]:
+            raise SystemExit(f"--stage: {exe.name} is too old (no GCRT_FORCE_ARG memory items): rebuild it")
+        env["GCRT_FORCE_ARG"] = ";".join([s for s in [env.get("GCRT_FORCE_ARG", "")] if s] + stage[1])
+        print(f"Stage {stage[0]} ({args.stage}): GCRT_FORCE_ARG={env['GCRT_FORCE_ARG']}")
+
     label = f"scenario {sc.name}" if sc else f"{seconds:g} s"
     print(f"== {exe.name} {version}, {label} -> {out}")
     t0 = time.time()
@@ -447,6 +491,7 @@ def main() -> int:
         "captures": sorted(p.name for p in out.glob("capture_*.png")),
         "osreport_lines": sum(1 for l in trace.splitlines() if "[osreport]" in l),
         "unhandled_lines": sum(1 for l in trace.splitlines() if "[unhandled]" in l),
+        "stage": {"choice": args.stage, "number": stage[0], "force": stage[1]} if stage else None,
         "note": args.note,
         "summary": {"final": parsed["final"], "gx": parsed["gx"], "hw_access": parsed["hw_access"],
                     "unhandled": parsed["unhandled"], "stop_lines": parsed["stop_lines"]},

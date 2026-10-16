@@ -66,7 +66,9 @@
  *                      the N-th safe write of a save (platform/gcrt_save_file.h)
  *   GCRT_HW_COUNT_FILE hardware access counter in JSON at the end (also --hw-count); a "hardware
  *                      accesses" line is written to the trace at each report
- *   GCRT_FORCE_ARG     diagnostic: "ADDRESS:rN=VALUE" forces a register on entry to a function (hle)
+ *   GCRT_FORCE_ARG     diagnostic: "ADDRESS:rN=VALUE" forces a register on entry to a function,
+ *                      "ADDRESS:[rN+OFFSET]=VALUE" or "ADDRESS:[ABSOLUTE]=VALUE" a 32-bit word of guest memory;
+ *                      "#COUNT" at the end: first COUNT entries only (hle/os_report.c)
  *   GCRT_WATCH         addresses (hex) whose passes at block start are counted (e.g. "80001234,80005678")
  *   GCRT_GX_STALE_COPIES "evict" (default): an EFB -> texture copy whose guest memory the game has rewritten since
  *                      is dropped and the texture is read from memory, like the console; "keep": former behavior
