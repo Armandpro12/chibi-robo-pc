@@ -85,11 +85,22 @@ GGTE01 = ["80158A0C:r3=0x12345678"]
 count = 30
 
 [stage.start]
-# GCRT_FORCE_ARG items added by tools/run.py, "{stage}" replaced by the stage number.
-# GGTE01: 0x80087CC0 = save restore function (r3 = save data); the stage is the 32-bit word at save+0xC408
-# (Ghidra: the function copies it to the current stage; runs: the stage file read follows this word).
-# GGTP01: not found yet (tools/run.py refuses --stage on that version).
-GGTE01 = ["80087CC0:[r3+0xC408]={stage}#1"]
+# GCRT_FORCE_ARG items added by tools/run.py, "{stage}" replaced by the stage number. Both items act once, on entry
+# to the save restore function (r3 = save data):
+# - the stage stored in the save (32-bit word at save+0xC408), which the function copies to the current stage;
+# - the current stage of the game object, which the function first copies to the previous stage. On a normal load
+#   both are the saved stage; writing it too keeps "previous = current", as if the save had been made in the
+#   chosen stage (no visible difference in the tests, kept to stay close to a normal load).
+# Known limit: in a stage other than the saved one, Chibi-Robo can be placed inside the scenery (seen in the
+# backyard from a Chibi-House save); the debug scene places him at its own starting point.
+# GGTE01: restore 0x80087CC0 (called from 0x80012704), game object 0x8025C400, current stage at +0x3444; stage
+# change 0x8000B394, called with 20000 by the save load at 0x80030C48; stage getter 0x80087A40.
+# GGTP01: restore 0x80089C1C (called from 0x80012864), the same function (same instructions as the US one apart
+# from the game object's address 0x80263000, its stage fields at +0x344C/+0x3450 and constants; reads at the same
+# save offsets); stage change 0x8000B3B4 (60 of its first 64 instructions match the US one, masked immediates),
+# called by the save load at 0x8003158C; stage getter 0x8008999C (identical to the US one).
+GGTP01 = ["80089C1C:[r3+0xC408]={stage}#1", "80089C1C:[0x8026644C]={stage}#1"]
+GGTE01 = ["80087CC0:[r3+0xC408]={stage}#1", "80087CC0:[0x8025F844]={stage}#1"]
 
 [stage.names]
 # Stage numbers from unplug (https://github.com/adierking/unplug, MIT License, Copyright (c) 2022 Derpky); the
