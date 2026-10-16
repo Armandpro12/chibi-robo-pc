@@ -79,7 +79,7 @@ CAPABILITY_TOKENS = {
     "capture_frames": b"GCRT_CAPTURE_FRAMES",  # captures at the exact frame
     "clock_flag": b"--clock",               # --clock cycles option (deterministic guest clock)
     "force_arg": b"GCRT_FORCE_ARG",         # value forced at the entry of a function (random seed)
-    "force_mem": b"ADDRESS:[rN+OFFSET]=VALUE",  # GCRT_FORCE_ARG memory items and #COUNT (--stage)
+    "force_mem": b"ADDRESS@RETURN",         # GCRT_FORCE_ARG memory items, &=, |=, @RETURN, #COUNT (--stage)
 }
 
 
@@ -455,7 +455,8 @@ def main() -> int:
         # --stage: the stage items come after the forced values already chosen (random seed of the scenarios,
         # --force-arg, or GCRT_FORCE_ARG of the caller).
         if not info["capabilities"]["force_mem"]:
-            raise SystemExit(f"--stage: {exe.name} is too old (no GCRT_FORCE_ARG memory items): rebuild it")
+            raise SystemExit(f"--stage: {exe.name} is too old (its GCRT_FORCE_ARG lacks memory items, &=, |= or "
+                             "@RETURN): rebuild it")
         env["GCRT_FORCE_ARG"] = ";".join([s for s in [env.get("GCRT_FORCE_ARG", "")] if s] + stage[1])
         print(f"Stage {stage[0]} ({args.stage}): GCRT_FORCE_ARG={env['GCRT_FORCE_ARG']}")
 

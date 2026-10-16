@@ -140,8 +140,8 @@ py -3 tools/run.py chibi-robo --version GGTE01 --stage backyard --user-seed FOLD
 ```
 
 `--stage debug` opens the developers' debug scene: walk up to a character and press A for a menu of story points.
-Stage names and addresses are in `games/chibi-robo/game.toml` (`[stage]`). Known limit: in a stage other than the
-saved one, Chibi-Robo can start inside the scenery. Without `--stage`, nothing changes.
+Chibi-Robo starts at the stage's own starting point. Stage names and addresses are in `games/chibi-robo/game.toml`
+(`[stage]`). Without `--stage`, nothing changes.
 
 ## Repository layout
 
