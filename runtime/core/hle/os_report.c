@@ -99,7 +99,9 @@ static bool hle_halt(GcrtCpu* g, u32 address) {
  * with TARGET = rN (register), [rN+OFFSET] (the big-endian word at rN+OFFSET, rN read on entry; "-" also
  * accepted) or [ABSOLUTE] (the big-endian word at a fixed guest address).
  * ADDRESS, OFFSET and ABSOLUTE are hexadecimal ("0x" optional); VALUE is decimal, or hexadecimal with "0x";
- * #COUNT applies the item to the first COUNT entries only (default: every entry).
+ * #COUNT applies the item to the first COUNT entries only (default: every entry). ADDRESS@RETURN instead of
+ * ADDRESS: only the entries whose return address (link register) is RETURN (hexadecimal), i.e. the calls made from
+ * the call instruction at RETURN - 4; the other entries are neither changed nor counted.
  * Uses: make two runs comparable when the game depends on a clock value (random seed taken from OSGetTick: a
  * build that executes fewer instructions at startup gets another seed), or change one value once (e.g. a field
  * of the game's data just before the game reads it), the game's own code doing the rest. The addresses are
@@ -111,6 +113,7 @@ enum { FORCE_REG, FORCE_MEM_REG, FORCE_MEM_ABS };
 enum { FORCE_SET, FORCE_AND, FORCE_OR };
 static struct {
     u32 address; /* function entry */
+    u32 caller;  /* return address required on entry, 0 = any */
     u32 kind;
     u32 reg;
     u32 offset; /* FORCE_MEM_REG: added to rN (modulo 2^32); FORCE_MEM_ABS: the guest address */
@@ -138,6 +141,8 @@ static void describe_force_target(unsigned i, char* out, size_t size) {
 static bool hle_force_arg(GcrtCpu* g, u32 address) {
     for (unsigned i = 0; i < s_force_count; i++) {
         if (s_force[i].address != address)
+            continue;
+        if (s_force[i].caller && g->state.lr != s_force[i].caller)
             continue;
         if (s_force[i].limit && s_force[i].hits >= s_force[i].limit)
             continue;
@@ -184,7 +189,16 @@ static bool hle_force_arg(GcrtCpu* g, u32 address) {
 static bool parse_force_item(const char* item, unsigned slot) {
     char* p = NULL;
     const unsigned long address = strtoul(item, &p, 16);
-    if (!p || p == item || *p != ':')
+    if (!p || p == item)
+        return false;
+    unsigned long caller = 0;
+    if (*p == '@') {
+        char* begin = p + 1;
+        caller = strtoul(begin, &p, 16);
+        if (p == begin || caller == 0)
+            return false;
+    }
+    if (*p != ':')
         return false;
     p++;
     u32 kind, reg = 0, offset = 0;
@@ -237,6 +251,7 @@ static bool parse_force_item(const char* item, unsigned slot) {
     if (*p)
         return false;
     s_force[slot].address = (u32)address;
+    s_force[slot].caller = (u32)caller;
     s_force[slot].kind = kind;
     s_force[slot].reg = reg;
     s_force[slot].offset = offset;
@@ -266,16 +281,22 @@ static void install_force_args(GcrtCpu* g) {
         }
         if (!parse_force_item(item, s_force_count)) {
             fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: invalid item \"%s\" ignored (expected ADDRESS:rN=VALUE, "
-                            "ADDRESS:[rN+OFFSET]=VALUE or ADDRESS:[ABSOLUTE]=VALUE, &= or |= instead of =, optionally #COUNT)\n",
+                            "ADDRESS:[rN+OFFSET]=VALUE or ADDRESS:[ABSOLUTE]=VALUE, &= or |= instead of =, optionally ADDRESS@RETURN "
+                            "and #COUNT)\n",
                     item);
             continue;
         }
         const unsigned i = s_force_count++;
         gcrt_hle_register(g, s_force[i].address, "GCRT_FORCE_ARG", hle_force_arg);
-        char what[48], when[40] = "";
+        char what[48], when[80] = "";
         describe_force_target(i, what, sizeof(what));
-        if (s_force[i].limit)
+        if (s_force[i].limit && s_force[i].caller)
+            snprintf(when, sizeof(when), " (first %u entries from return address %08X only)",
+                     (unsigned)s_force[i].limit, (unsigned)s_force[i].caller);
+        else if (s_force[i].limit)
             snprintf(when, sizeof(when), " (first %u entries only)", (unsigned)s_force[i].limit);
+        else if (s_force[i].caller)
+            snprintf(when, sizeof(when), " (entries from return address %08X only)", (unsigned)s_force[i].caller);
         static const char* const op_text[] = {"=", "&=", "|="};
         fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: %s %s 0x%08X on entry to %08X%s\n", what,
                 op_text[s_force[i].op], (unsigned)s_force[i].value, (unsigned)s_force[i].address, when);
