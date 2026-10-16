@@ -852,6 +852,20 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     host.windowMode = window == "background" ? 1 : window == "minimized" ? 2 : 0;
   }
   host.viewportFit = env("GCRT_VIEWPORT", "stretch") == "fit";
+  {
+    // Setup menu (gcrt_game_config.h): for a player's direct launch only. "1" forces it, "0" disables it; by default
+    // ("auto") it is off as soon as a launcher sets one of these variables (tools/run.py, test benches): nobody would
+    // be there to click "Start game".
+    const std::string menu = env("GCRT_SETUP_MENU", "auto");
+    static const char* const kLauncherVars[] = {"GCRT_WINDOW",       "GCRT_USER_DIR", "GCRT_INPUT",
+                                                "GCRT_INPUT_FRAMES", "GCRT_STOP_AT",  "GCRT_STOP_FRAME",
+                                                "GCRT_CAPTURE_DIR",  "GCRT_RTC"};
+    bool launched = false;
+    for (const char* var : kLauncherVars) {
+      launched |= std::getenv(var) != nullptr;
+    }
+    host.setupMenu = menu == "1" || (menu != "0" && host.windowMode == 0 && !launched);
+  }
   std::error_code ec;
   fs::create_directories(host.dataDir, ec);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s", host.dataDir.c_str());
@@ -859,7 +873,12 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   if (!p->captureTimes.empty() || !p->captureFrames.empty() || !p->captureFields.empty()) {
     fs::create_directories(p->captureDir, ec);
   }
-  gcrt::platform::host_init(host);
+  if (!gcrt::platform::host_init(host)) {
+    // The window was closed from the setup menu, before the game started: quit without running it.
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
+    std::fflush(nullptr);
+    std::exit(0);
+  }
   // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
   if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
     gcrt_crash_handler_set_default_dir((std::string(userDir) + "crashes").c_str());

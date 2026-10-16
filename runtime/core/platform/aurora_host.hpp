@@ -24,10 +24,14 @@ struct HostConfig {
   bool viewportFit = false;
   std::string dataDir;   // Aurora's userPath / cachePath (pipeline caches; the gamepad mappings
                          // are in the user folder, gcrt_user_dir.h)
+  // Setup menu before the game (gcrt_game_config.h): only on a player's direct launch (GCRT_SETUP_MENU,
+  // platform/gcrt_platform.h); the settings file is applied only then too.
+  bool setupMenu = false;
   uint32_t width = 640;  // initial window size
   uint32_t height = 480;
 };
 
+// false: the window was closed from the setup menu (HostConfig::setupMenu); the boot is aborted.
 bool host_init(const HostConfig& config);
 void host_shutdown();
 // Opens an Aurora frame (false if the window cannot be drawn: minimized, etc.).

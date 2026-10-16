@@ -40,6 +40,10 @@
  *                      GCRT_AUDIO_WAV or ./audio.wav) | off (no sound)
  *   GCRT_WINDOW        normal (default) | background (shown without taking the foreground) |
  *                      minimized: for automated runs
+ *   GCRT_SETUP_MENU    setup menu before the game (window size, fullscreen, render scale; platform/gcrt_game_config.h):
+ *                      auto (default): on a direct launch only, i.e. none of GCRT_WINDOW, GCRT_USER_DIR, GCRT_INPUT,
+ *                      GCRT_INPUT_FRAMES, GCRT_STOP_AT, GCRT_STOP_FRAME, GCRT_CAPTURE_DIR, GCRT_RTC is set; 1 always; 0 never.
+ *                      When the menu is used, its render scale replaces GCRT_RENDER_SCALE
  *   GCRT_STOP_AT       stop requested when the emulated time reaches this value (seconds)
  *   GCRT_RENDER_SCALE  rendering resolution in multiples of the EFB (default 1 = console; 0 = window)
  *   GCRT_VIEWPORT      stretch (default: 4:3 width of the window) | fit (diagnostic: EFB rendered

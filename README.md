@@ -82,6 +82,15 @@ Run the game by launching the executable directly. `chibi-robo.exe --help` lists
 `tools/run.py` runs it for automated tests (isolated user folder, audio recorded to a WAV file instead of the
 speakers).
 
+### Setup menu
+
+A direct launch opens a small setup menu first: window size, fullscreen and render scale (Enter or "Start game"
+starts the game; launches by the project's tools never show it; `GCRT_SETUP_MENU=0` disables it, `=1` forces
+it). The choices are
+saved in `game_config.ini` in the same folder as `controls.ini` (see below). Tick "Skip this menu next time"
+to start the game directly; hold Shift while the game starts to show the menu again, or set `skipMenu=0` in
+`game_config.ini`. Values outside the menu's choices fall back to the defaults.
+
 ### Controls
 
 On first launch the game writes a commented `controls.ini` into
@@ -179,6 +188,7 @@ line.
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
   dependencies (Dawn, SDL3 and others, under their own licenses).
+- [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
 - [cbr_decomp](https://github.com/eavpsp/cbr_decomp) — function names in `games/chibi-robo/symbols/` come from its
