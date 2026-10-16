@@ -859,7 +859,12 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   if (!p->captureTimes.empty() || !p->captureFrames.empty() || !p->captureFields.empty()) {
     fs::create_directories(p->captureDir, ec);
   }
-  gcrt::platform::host_init(host);
+  if (!gcrt::platform::host_init(host)) {
+    // The window was closed from the setup menu, before the game started: quit without running it.
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
+    std::fflush(nullptr);
+    std::exit(0);
+  }
   // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
   if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
     gcrt_crash_handler_set_default_dir((std::string(userDir) + "crashes").c_str());

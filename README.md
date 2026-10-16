@@ -82,6 +82,13 @@ Run the game by launching the executable directly. `chibi-robo.exe --help` lists
 `tools/run.py` runs it for automated tests (isolated user folder, audio recorded to a WAV file instead of the
 speakers).
 
+### Setup menu
+
+A direct launch opens a small setup menu first: window size, fullscreen and render scale. The choices are
+saved in `game_config.ini` in the same folder as `controls.ini` (see below). Tick "Skip this menu next time"
+to start the game directly; hold Shift while the game starts to show the menu again, or set `skipMenu=0` in
+`game_config.ini`. Values outside the menu's choices fall back to the defaults.
+
 ### Controls
 
 On first launch the game writes a commented `controls.ini` into

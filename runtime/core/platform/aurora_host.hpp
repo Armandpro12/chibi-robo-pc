@@ -28,6 +28,7 @@ struct HostConfig {
   uint32_t height = 480;
 };
 
+// false: the window was closed from the setup menu (windowMode 0, gcrt_game_config.h); the boot is aborted.
 bool host_init(const HostConfig& config);
 void host_shutdown();
 // Opens an Aurora frame (false if the window cannot be drawn: minimized, etc.).
