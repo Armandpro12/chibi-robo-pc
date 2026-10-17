@@ -141,7 +141,8 @@ scenarios = ["title-boot", "intro-no-card"]
 
 # tools/collect_diagnostics.cmd (tools/diag/): where the game's crash reports are and which process to inspect.
 # user_org / user_app must match gcrt_set_user_identity() in main.c: the crash handler writes to
-# %APPDATA%\<user_org>\<user_app>\crashes\ when the game is started normally.
+# %APPDATA%\<user_org>\<user_app>\crashes\ when the game is started normally. The collector writes its output to
+# %LOCALAPPDATA%\<user_org>\<user_app>\diagnostics\ by default.
 [diagnostics]
 user_org = "Chibi Robo PC"
 user_app = "Chibi Robo"

@@ -11,13 +11,18 @@
   [diagnostics] section of games/<game>/game.toml, or from the parameters below.
 
 .PARAMETER Game        Folder name under games/ (default: the only game present).
-.PARAMETER OutDir      Parent folder of the output (default: the Desktop).
+.PARAMETER OutDir      Parent folder of the output (default: %LOCALAPPDATA%\<user_org>\<user_app>\diagnostics, a
+                       folder that OneDrive does not synchronise; the Desktop often is).
 .PARAMETER Days        How far back to read hardware error events (default 30).
 .PARAMETER MaxCrashes  How many of the most recent crash reports to copy (default 5).
 .PARAMETER CrashDir    Extra folders to search for crash reports (crash-*.txt / crash-*.dmp).
 .PARAMETER IncludeGuestRam  Also copy the *-guest-ram.bin dumps (about 25 MiB each).
 .PARAMETER NoZip       Do not create the .zip.
 .PARAMETER NoPause     Do not wait for a key at the end (for scripts).
+.PARAMETER CheckOnly   Collect nothing: run the anonymization check on the files of an existing folder (recursively)
+                       and exit with code 0 if no name or SID of this account and computer is found, 1 otherwise.
+.NOTES
+  Exit code: 0 done (anonymization check OK), 1 the check found a name or SID left in the output (no .zip is made).
 #>
 param(
     [string]$Game = "",
@@ -27,7 +32,8 @@ param(
     [string[]]$CrashDir = @(),
     [switch]$IncludeGuestRam,
     [switch]$NoZip,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [string]$CheckOnly = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -73,67 +79,173 @@ if ($diag.ContainsKey("user_org") -and $diag.ContainsKey("user_app") -and $env:A
 $crashDirs += $CrashDir
 
 # --------------------------------------------------------------------------------------------------------------------
-# Output folder
+# Anonymization. Secrets: profile folder name, USERNAME, computer name, USERDOMAIN / USERDNSDOMAIN, the full name of a
+# local account (Win32_UserAccount), account SIDs (S-1-5-21-..., string forms; binary form of the current user's SID).
+# Text files: names replaced by [user] / [computer] / [domain] / [name], SIDs by S-1-5-21-[removed].
+# Binary files (minidumps, guest RAM): same-length replacement by 'x' (or 'x' 0x00 pairs), so that their structure,
+# offsets and sizes stay valid. To avoid altering code bytes and ordinary values (an account named "user" must not turn
+# user32.dll into xxxx32.dll), a name is replaced in binary files only when it stands alone (no ASCII letter or digit
+# just before or after it), and, if it is shorter than 4 characters, only in a context: after \Users\ or /Users/
+# (UTF-16 and 8-bit), after "=" (environment block) or "\\" (network name) in UTF-16.
 # --------------------------------------------------------------------------------------------------------------------
-if (-not $OutDir) { $OutDir = [Environment]::GetFolderPath("Desktop") }
+$RxCI = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+$RxNone = [System.Text.RegularExpressions.RegexOptions]::None
+$latin1 = [System.Text.Encoding]::GetEncoding(28591)   # one char per byte: exact round trip of any byte sequence
+$utf16 = [System.Text.Encoding]::Unicode
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$ansi = [System.Text.Encoding]::Default                # the ANSI code page of this Windows
+$MaskTokens = @("[user]", "[computer]", "[domain]", "[name]", "[removed]")
+
+$secrets = New-Object System.Collections.Generic.List[object]
+function Add-Secret([string]$Value, [string]$Label) {
+    if (-not $Value) { return }
+    $v = $Value.Trim()
+    if (-not $v) { return }
+    foreach ($s in $secrets) { if ([string]::Equals($s.Value, $v, [StringComparison]::OrdinalIgnoreCase)) { return } }
+    $secrets.Add([pscustomobject]@{ Value = $v; Label = $Label })
+}
+if ($env:USERPROFILE) { Add-Secret (Split-Path -Leaf $env:USERPROFILE) "user" }
+Add-Secret $env:USERNAME "user"
+Add-Secret $env:COMPUTERNAME "computer"
+Add-Secret $env:USERDOMAIN "domain"
+Add-Secret $env:USERDNSDOMAIN "domain"
+if ($env:USERNAME) {
+    # Full name of a local account (for a Microsoft account, the name shown at sign-in). Domain accounts: not read.
+    try {
+        $wql = $env:USERNAME.Replace("\", "\\").Replace("'", "\'")
+        foreach ($a in @(Get-CimInstance -ClassName Win32_UserAccount -Filter ("LocalAccount=True AND Name='{0}'" -f $wql) -ErrorAction Stop)) {
+            if ($a.FullName) {
+                Add-Secret $a.FullName "name"
+                foreach ($part in ($a.FullName -split '\s+')) { if ($part.Length -ge 3) { Add-Secret $part "name" } }
+            }
+        }
+    } catch { }
+}
+$secrets = @($secrets | Sort-Object { $_.Value.Length } -Descending)
+$userSidBytes = $null
+try {
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $userSidBytes = New-Object byte[] $sid.BinaryLength
+    $sid.GetBinaryForm($userSidBytes, 0)
+} catch { $userSidBytes = $null }
+
+function Hide-Text([string]$s) {
+    if ($null -eq $s) { return $s }
+    foreach ($k in $secrets) {
+        if ($k.Value.Length -lt 2) { continue }
+        $s = [regex]::Replace($s, '(?<![A-Za-z0-9])' + [regex]::Escape($k.Value) + '(?![A-Za-z0-9])', ('[' + $k.Label + ']'), $RxCI)
+    }
+    return [regex]::Replace($s, 'S-1-5-21-\d+(?:-\d+){2,3}', 'S-1-5-21-[removed]')
+}
+
+# Byte forms of a name (as Latin-1 strings): UTF-16LE, UTF-8 and ANSI, for the name as written, upper and lower case;
+# a form that the encoding cannot represent (it would become '?') is skipped.
+function Get-Forms([string]$v) {
+    $forms = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+    foreach ($variant in @($v, $v.ToUpperInvariant(), $v.ToLowerInvariant())) {
+        foreach ($e in @(@{ E = $utf16; W = $true }, @{ E = $utf8; W = $false }, @{ E = $ansi; W = $false })) {
+            $b = $e.E.GetBytes($variant)
+            if ($e.E.GetString($b) -cne $variant) { continue }
+            $p = $latin1.GetString($b)
+            $key = $p.ToLowerInvariant()
+            if (-not $forms.ContainsKey($key)) { $forms[$key] = [pscustomobject]@{ Pat = $p; Wide = $e.W } }
+        }
+    }
+    return @($forms.Values)
+}
+
+function New-Rule([string]$Pattern, [bool]$Wide, [string]$Label, $Options) {
+    [pscustomobject]@{ Rx = (New-Object System.Text.RegularExpressions.Regex($Pattern, $Options)); Wide = $Wide; Label = $Label }
+}
+
+# Byte-level rules, used both to mask binary files and to check every output file. $Binary: rules for minidumps and
+# guest RAM (names of 2-3 characters only in context); otherwise rules for text files (every name of 2+ characters).
+function Get-ByteRules([bool]$Binary) {
+    $rules = New-Object System.Collections.Generic.List[object]
+    foreach ($k in $secrets) {
+        $n = $k.Value.Length
+        if ($n -lt 2) { continue }
+        foreach ($f in Get-Forms $k.Value) {
+            $e = [regex]::Escape($f.Pat)
+            if (-not $Binary -or $n -ge 4) {
+                if ($f.Wide) { $rx = '(?<![A-Za-z0-9]\x00)' + $e + '(?![A-Za-z0-9]\x00)' }
+                else { $rx = '(?<![A-Za-z0-9])' + $e + '(?![A-Za-z0-9])' }
+            } elseif ($f.Wide) {
+                $rx = '(?<=(?:[\\/]\x00U\x00s\x00e\x00r\x00s\x00[\\/]\x00|=\x00|\\\x00\\\x00))' + $e + '(?=(?:[\\/"'']\x00|\x00\x00))'
+            } else {
+                $rx = '(?<=[\\/]Users[\\/])' + $e + '(?=[\\/"''\x00])'
+            }
+            $rules.Add((New-Rule $rx $f.Wide $k.Label $RxCI))
+        }
+    }
+    $rules.Add((New-Rule '(?<=S-1-5-21-)\d+(?:-\d+){2,3}' $false "SID" $RxNone))
+    $rules.Add((New-Rule '(?<=S\x00-\x001\x00-\x005\x00-\x002\x001\x00-\x00)(?:\d\x00)+(?:-\x00(?:\d\x00)+){2,3}' $true "SID" $RxNone))
+    if ($userSidBytes) { $rules.Add((New-Rule ([regex]::Escape($latin1.GetString($userSidBytes))) $false "SID" $RxNone)) }
+    return $rules
+}
+$binRules = Get-ByteRules $true
+$textRules = Get-ByteRules $false
+$evNarrow = [System.Text.RegularExpressions.MatchEvaluator] { param($m) "x" * $m.Length }
+$evWide = [System.Text.RegularExpressions.MatchEvaluator] { param($m) ("x" + [char]0) * [int]($m.Length / 2) }
+
+function Test-BinaryFile([string]$Name) { return ($Name -like "*.dmp" -or $Name -like "*.bin") }
+
+function Hide-Binary([string]$Path) {
+    $text = $latin1.GetString([System.IO.File]::ReadAllBytes($Path))
+    foreach ($r in $binRules) { $text = $r.Rx.Replace($text, $(if ($r.Wide) { $evWide } else { $evNarrow })) }
+    [System.IO.File]::WriteAllBytes($Path, $latin1.GetBytes($text))
+}
+
+# Anonymization check: the same byte-level rules, run again on the files as written (text files: every name of 2+
+# characters in UTF-16, UTF-8 and ANSI form, the mask tokens being ignored). Returns "file (what)" for each hit.
+function Find-Leaks($Files, [string]$Root) {
+    $hits = @()
+    foreach ($f in $Files) {
+        $rel = $f.FullName
+        if ($Root -and $rel.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $rel.Substring($Root.Length).TrimStart('\', '/') }
+        if ($f.Name -like "*.zip") { $hits += ("{0} (compressed: not checked)" -f $rel); continue }
+        $t = $latin1.GetString([System.IO.File]::ReadAllBytes($f.FullName))
+        if (Test-BinaryFile $f.Name) { $rules = $binRules }
+        else { $rules = $textRules; foreach ($m in $MaskTokens) { $t = $t.Replace($m, " ") } }
+        $what = @($rules | Where-Object { $_.Rx.IsMatch($t) } | ForEach-Object { $_.Label } | Sort-Object -Unique)
+        if ($what.Count) { $hits += ("{0} ({1})" -f $rel, ($what -join ", ")) }
+    }
+    return $hits
+}
+
+if ($CheckOnly) {
+    if (-not (Test-Path -LiteralPath $CheckOnly -PathType Container)) { Write-Host ("Not a folder: {0}" -f $CheckOnly); exit 2 }
+    $root = (Resolve-Path -LiteralPath $CheckOnly).Path
+    $hits = @(Find-Leaks @(Get-ChildItem -LiteralPath $root -Recurse -File) $root)
+    if ($hits.Count) { Write-Host ("WARNING: a name or SID of this account or computer is still present in: {0}" -f ($hits -join "; ")); exit 1 }
+    Write-Host "OK: no name or SID of this account or computer found."
+    exit 0
+}
+
+# --------------------------------------------------------------------------------------------------------------------
+# Output folder. Default: the local application data folder of the game (not synchronised by OneDrive, unlike the
+# Desktop when OneDrive folder backup is on).
+# --------------------------------------------------------------------------------------------------------------------
+if (-not $OutDir -and $env:LOCALAPPDATA) {
+    if ($diag.ContainsKey("user_org") -and $diag.ContainsKey("user_app")) {
+        $OutDir = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA $diag["user_org"]) $diag["user_app"]) "diagnostics"
+    } else { $OutDir = Join-Path $env:LOCALAPPDATA "game-diagnostics" }
+    New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction SilentlyContinue | Out-Null
+}
 if (-not $OutDir -or -not (Test-Path -LiteralPath $OutDir)) { $OutDir = (Get-Location).Path }
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $out = Join-Path $OutDir ("{0}-diagnostics-{1}" -f $label, $stamp)
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $out "crashes") -Force | Out-Null
+$out = (Resolve-Path -LiteralPath $out).Path
 
 $summary = New-Object System.Collections.Generic.List[string]
 function Add-Line([string]$s) { $summary.Add($s) | Out-Null; Write-Host $s }
 function Add-Section([string]$s) { Add-Line ""; Add-Line ("== " + $s + " ==") }
 
-# --------------------------------------------------------------------------------------------------------------------
-# Anonymization: user name, profile path, computer name, user SIDs. Same length replacement, so that binary files
-# (minidumps) keep their structure.
-# --------------------------------------------------------------------------------------------------------------------
-$secretNames = @()
-if ($env:USERPROFILE) { $secretNames += (Split-Path -Leaf $env:USERPROFILE) }
-if ($env:USERNAME) { $secretNames += $env:USERNAME }
-$secretNames = @($secretNames | Where-Object { $_ -and $_.Length -ge 2 } | Sort-Object -Unique)
-$computerName = $env:COMPUTERNAME
-
-function Hide-Text([string]$s) {
-    if ($null -eq $s) { return $s }
-    foreach ($n in $secretNames) {
-        $e = [regex]::Escape($n)
-        $s = [regex]::Replace($s, "(?i)([\\/]Users[\\/])$e(?=[\\/\s""']|$)", '$1[user]')
-        $s = [regex]::Replace($s, "(?i)(?<![A-Za-z0-9])$e(?![A-Za-z0-9])", '[user]')
-    }
-    if ($computerName -and $computerName.Length -ge 3) {
-        $s = [regex]::Replace($s, "(?i)(?<![A-Za-z0-9])" + [regex]::Escape($computerName) + "(?![A-Za-z0-9])", '[computer]')
-    }
-    $s = [regex]::Replace($s, 'S-1-5-21-\d+-\d+-\d+-\d+', 'S-1-5-21-<removed>')
-    return $s
-}
-
-$latin1 = [System.Text.Encoding]::GetEncoding(28591)
-function Hide-Binary([string]$Path) {
-    # Byte-level, same length: each secret is searched as UTF-16LE, UTF-8 and ANSI bytes, case-insensitively, and
-    # replaced by as many 'x' (or 'x' 0x00 pairs). Latin-1 maps every byte to one char, so the round trip is exact.
-    $bytes = [System.IO.File]::ReadAllBytes($Path)
-    $text = $latin1.GetString($bytes)
-    $secrets = @($secretNames)
-    if ($computerName -and $computerName.Length -ge 3) { $secrets += $computerName }
-    foreach ($n in $secrets) {
-        foreach ($enc in @([System.Text.Encoding]::Unicode, [System.Text.Encoding]::UTF8, [System.Text.Encoding]::Default)) {
-            foreach ($variant in @($n, $n.ToUpperInvariant(), $n.ToLowerInvariant()) | Sort-Object -Unique) {
-                $pat = $latin1.GetString($enc.GetBytes($variant))
-                if ($pat.Length -lt 2) { continue }
-                $rep = if ($enc -eq [System.Text.Encoding]::Unicode) { ("x" + [char]0) * ($pat.Length / 2) } else { "x" * $pat.Length }
-                $text = [regex]::Replace($text, [regex]::Escape($pat), $rep, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            }
-        }
-    }
-    [System.IO.File]::WriteAllBytes($Path, $latin1.GetBytes($text))
-}
-
 function Save-Text([string]$Name, [string]$Content) {
     $p = Join-Path $out $Name
-    [System.IO.File]::WriteAllText($p, (Hide-Text $Content), (New-Object System.Text.UTF8Encoding($false)))
+    [System.IO.File]::WriteAllText($p, (Hide-Text $Content), $utf8)
 }
 
 function Try-Cim([string]$Class) {
@@ -143,6 +255,12 @@ function Try-Cim([string]$Class) {
 Add-Line ("Diagnostics for: {0}" -f $label)
 Add-Line ("Collected: {0} (local time), UTC offset {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), ([TimeZoneInfo]::Local.GetUtcOffset((Get-Date))).ToString())
 Add-Line "Nothing was sent anywhere. Review the files before sharing them."
+foreach ($od in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
+    if ($od -and $out.StartsWith($od.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Add-Line "Note: the output folder is inside a OneDrive folder, so OneDrive may upload it. Use -OutDir to choose another folder."
+        break
+    }
+}
 
 # --------------------------------------------------------------------------------------------------------------------
 # (b) Processor, microcode, BIOS, motherboard model, memory modules
@@ -204,8 +322,8 @@ foreach ($g in Try-Cim "Win32_VideoController") {
     $hw = ("" + $g.PNPDeviceID) -replace '^([^\\]+\\[^\\]+).*$', '$1'
     Add-Line ("{0} ({1}, {2}): driver {3} ({4}); hardware id {5}" -f $g.Name, $g.VideoProcessor, $g.AdapterCompatibility, $g.DriverVersion, $g.DriverDate, $hw)
 }
-# Capture / overlay helper DLLs installed with graphics software (version information only). nvspcap64.dll is
-# installed by the NVIDIA App / GeForce Experience and is loaded into game processes.
+# Capture / overlay helper DLLs installed with graphics software (version information only). nvspcap64.dll ("NVIDIA
+# Game Proxy") was seen loaded into the game process on a development machine with the NVIDIA App installed.
 foreach ($n in @("nvspcap64.dll")) {
     $p = Join-Path (Join-Path $env:SystemRoot "System32") $n
     if (Test-Path -LiteralPath $p) {
@@ -251,13 +369,18 @@ foreach ($e in $recent) {
     }
     $crashTimes += $t
     $copied = @()
-    foreach ($f in Get-ChildItem -LiteralPath $e.Value.Dir -File -Filter ($stem + "*")) {
+    foreach ($f in Get-ChildItem -LiteralPath $e.Value.Dir -File -Filter "crash-*") {
+        # Exact stem: crash-...-12 must not take the files of crash-...-123.
+        if (-not ($f.Name -match '^(crash-\d{8}-\d{6}-\d+)') -or $Matches[1] -ne $stem) { continue }
         if ($f.Name -like "*-guest-ram.bin" -and -not $IncludeGuestRam) { continue }
         $dst = Join-Path (Join-Path $out "crashes") $f.Name
         Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
-        if ($f.Extension -eq ".txt") {
-            $txt = [System.IO.File]::ReadAllText($dst)
-            [System.IO.File]::WriteAllText($dst, (Hide-Text $txt), (New-Object System.Text.UTF8Encoding($false)))
+        if (-not (Test-BinaryFile $f.Name)) {
+            # Text: UTF-8 if it decodes as such, the ANSI code page otherwise; written back as UTF-8.
+            $raw = [System.IO.File]::ReadAllBytes($dst)
+            try { $txt = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($raw) } catch { $txt = $ansi.GetString($raw) }
+            if ($txt.Length -gt 0 -and $txt[0] -eq [char]0xFEFF) { $txt = $txt.Substring(1) }
+            [System.IO.File]::WriteAllText($dst, (Hide-Text $txt), $utf8)
         } else {
             Hide-Binary $dst
         }
@@ -312,9 +435,11 @@ foreach ($ct in $crashTimes) {
 }
 
 # --------------------------------------------------------------------------------------------------------------------
-# (e) Overlay, tuning and security software known to inject into games or change CPU behaviour: process names only.
+# (e) Overlay, tuning and security software that may inject into games or change CPU behaviour: process names only.
+# The list below is made of commonly seen process names, compiled from general knowledge; the names were not checked
+# one by one against each product, so a product may be missed.
 # --------------------------------------------------------------------------------------------------------------------
-Add-Section "Overlay, tuning and security software running now (process names only)"
+Add-Section "Overlay, tuning and security software running now (process names from a fixed, unverified list)"
 $known = [ordered]@{
     "overlay / capture" = @("rtss", "nvidia app", "msiafterburner", "discord", "steam", "gameoverlayui", "overwolf", "nvidia overlay", "nvidia share", "nvcontainer", "gamebar", "gamebarftserver", "xboxgamebar", "obs64", "obs32", "bdcam", "bandicam", "fraps", "medal", "outplayed", "razercortex", "evga precision x1", "precisionx_x64", "epicgameslauncher", "upc", "eadesktop", "playnite.desktopapp", "radeonsoftware", "amdrsserv", "dxtory", "action_x64", "mirillis")
     "CPU / RAM tuning" = @("throttlestop", "xtu3service", "xtuservice", "perftune", "amdryzenmaster", "ryzenmaster", "processlasso", "processgovernor", "hwinfo64", "aida64", "armourycrate.service", "armourycrate.usersessionhelper", "lghub", "lghub_agent", "icue", "signalrgb", "nzxt cam", "msi.centralserver", "msi center", "gigabyte control center", "aorusengine")
@@ -360,48 +485,63 @@ if ($exeName) {
 }
 
 # --------------------------------------------------------------------------------------------------------------------
-# (f) README, summary, self-check of the anonymization, archive
+# (f) README, summary, anonymization check of every output file, archive
 # --------------------------------------------------------------------------------------------------------------------
 $readme = @"
 What this folder contains
 =========================
 Created by tools/diag/collect_diagnostics.ps1. The tool only READ the items below, wrote this folder on your
-computer, and sent NOTHING anywhere (it has no network access). It changed no setting.
+computer, and sent NOTHING anywhere (it has no network access). It changed no setting. If this folder is inside a
+OneDrive folder (often the case of the Desktop), OneDrive may upload it: summary.txt says so.
 
-- summary.txt: processor name, microcode revision, BIOS version and date, motherboard model, memory modules
-  (size, maker, part number, rated and configured speed; no serial number), Windows version, graphics driver
-  version, active power plan, names of running overlay / tuning / security programs from a fixed list, names of
-  DLLs loaded into the game if it is running, and the crash report list.
+- summary.txt: date, time and UTC offset of the collection (to line up crash times with event times), processor
+  name, microcode revision, BIOS version and date, motherboard model, memory modules (size, maker, part number,
+  rated and configured speed; no serial number), Windows version, graphics driver version, active power plan,
+  names of running overlay / tuning / security programs from a fixed list, names of DLLs loaded into the game if
+  it is running, the crash report list, and the result of the anonymization check.
 - whea-*.txt / whea-*.xml (only if present): Windows hardware error events (WHEA) of the last $Days days,
   from the System log (provider Microsoft-Windows-WHEA-Logger) and the Microsoft-Windows-Kernel-WHEA logs.
   "Corrected" WHEA errors near a crash time point to an unstable processor, memory or BIOS setting.
 - crashes/: the $MaxCrashes most recent crash reports of the game (.txt and .dmp minidumps).
 
-Anonymization: your user name, profile folder and computer name are replaced by [user] / [computer] in the text
-files, and by x characters in the minidumps; user account SIDs are removed. Please still look at the files
-before sharing them, and remove anything you do not want to share.
+Anonymization: your user name, profile folder name, computer name, domain name and the full name of a local
+account are replaced by [user] / [computer] / [domain] / [name] in the text files; account SIDs (S-1-5-21-...)
+by S-1-5-21-[removed]. In the minidumps they are overwritten by x characters of the same length, only where
+the name stands alone; a name shorter than 4 characters only in a folder path (\Users\...), an environment
+variable or a network name (summary.txt says if this applies). A final check searches every output file again
+and its result is at the end of summary.txt. Please still look at the files before sharing them, and remove
+anything you do not want to share.
 "@
-Save-Text "README.txt" $readme
 
-# Self-check: the secrets must not appear in any output file (UTF-16 and 8-bit forms).
-$leaks = @()
-foreach ($f in Get-ChildItem -LiteralPath $out -Recurse -File) {
-    $t = $latin1.GetString([System.IO.File]::ReadAllBytes($f.FullName))
-    foreach ($n in $secretNames + @($computerName)) {
-        if (-not $n -or $n.Length -lt 3) { continue }
-        foreach ($enc in @([System.Text.Encoding]::Unicode, [System.Text.Encoding]::UTF8)) {
-            if ($t.IndexOf($latin1.GetString($enc.GetBytes($n)), [StringComparison]::OrdinalIgnoreCase) -ge 0) { $leaks += $f.Name; break }
-        }
+Add-Section "Anonymization"
+$binCopied = @(Get-ChildItem -LiteralPath (Join-Path $out "crashes") -File | Where-Object { Test-BinaryFile $_.Name }).Count
+foreach ($k in $secrets) {
+    $n = $k.Value.Length
+    if ($n -lt 2) {
+        Add-Line ("LIMIT: the {0} name has 1 character and cannot be masked. Look at the files before sharing them." -f $k.Label)
+    } elseif ($n -lt 4 -and $binCopied -gt 0) {
+        Add-Line ("LIMIT: the {0} name has {1} characters: in the .dmp / .bin files it was masked only in a folder path (\Users\...), an environment variable or a network name; elsewhere in them it cannot be told apart from ordinary bytes and was left as is. Do not share the .dmp files if this matters to you." -f $k.Label, $n)
     }
 }
-Add-Section "Anonymization check"
-if ($leaks.Count) { Add-Line ("WARNING: a user or computer name is still present in: {0}" -f (($leaks | Sort-Object -Unique) -join ", ")) }
-else { Add-Line "OK: no user name or computer name found in the output files." }
+if (-not ($secrets | Where-Object { $_.Label -eq "name" })) { Add-Line "Full account name: not found (only local accounts are read); it is not masked." }
 
+Save-Text "README.txt" $readme
 Save-Text "summary.txt" ($summary -join "`r`n")
 
+# Check every output file as written, summary.txt and README.txt included, then add the verdict to summary.txt and
+# check that file once more.
+$leaks = @(Find-Leaks @(Get-ChildItem -LiteralPath $out -Recurse -File) $out)
+Add-Section "Anonymization check (every output file, after writing)"
+if ($leaks.Count) {
+    Add-Line ("WARNING: a name or SID of this account or computer is still present in: {0}" -f ($leaks -join "; "))
+    Add-Line "No .zip was made. Remove or edit these files before sharing anything."
+} else { Add-Line "OK: no name or SID of this account or computer found in the output files." }
+Save-Text "summary.txt" ($summary -join "`r`n")
+$again = @(Find-Leaks @(Get-Item -LiteralPath (Join-Path $out "summary.txt")) $out)
+if ($again.Count) { Write-Host "WARNING: summary.txt failed the anonymization check after the verdict was added."; $leaks += $again }
+
 $zipPath = ""
-if (-not $NoZip) {
+if (-not $NoZip -and $leaks.Count -eq 0) {
     $zipPath = $out + ".zip"
     try { Compress-Archive -Path (Join-Path $out "*") -DestinationPath $zipPath -Force -ErrorAction Stop }
     catch { Write-Host ("Could not create the .zip: {0}" -f $_.Exception.Message); $zipPath = "" }
@@ -412,6 +552,12 @@ Write-Host "Done. Nothing was sent anywhere."
 Write-Host ("Folder: {0}" -f $out)
 if ($zipPath) { Write-Host ("Archive to attach to your report: {0}" -f $zipPath) }
 if (-not $NoPause -and [Environment]::UserInteractive -and $Host.Name -eq "ConsoleHost") {
+    # Interactive use only: show the result in File Explorer (explorer.exe /select,<file>), since the default folder
+    # is under the hidden AppData folder.
+    $show = if ($zipPath) { $zipPath } else { $out }
+    try { Start-Process -FilePath "explorer.exe" -ArgumentList ('/select,"{0}"' -f $show) } catch { }
     Write-Host "Press Enter to close."
     [void][Console]::ReadLine()
 }
+if ($leaks.Count) { exit 1 }
+exit 0

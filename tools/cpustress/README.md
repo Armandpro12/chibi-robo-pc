@@ -63,8 +63,9 @@ The `gp` case shows how Windows reports a general-protection fault on a store: `
 
 - A **PASS does not prove the processor is sound**. It only shows that these patterns ran correctly for this long,
   at this temperature, with these BIOS settings. Marginal processors may fail only under a specific load, voltage
-  transition, temperature or after hours. A FAIL, on the other hand, is strong evidence of a hardware or settings
-  problem (the code and its expected results are deterministic).
+  transition, temperature or after hours. A FAIL, on the other hand, is strong evidence of a problem outside the
+  program's own logic (hardware, settings, system software), since the code and its expected results are
+  deterministic.
 - The patterns imitate a recompiled game's code but not the game's whole workload (GPU driver, audio, large memory
   traffic). Run it at least as long as the time the game usually takes to crash, ideally several times that.
 - It tests the processor core only, not the memory (use a memory tester for that).
