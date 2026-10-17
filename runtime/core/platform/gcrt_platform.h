@@ -93,7 +93,8 @@
  *                      (Aurora keeps binding the copy); counted in the final GX report (gx/gx_bridge.hpp)
  *   GCRT_GX_FREEZE     "1" (default): the bridge gives Aurora's thread copies, taken when the game emits the command,
  *                      of the data passed by pointer (vertex arrays, textures, TLUTs), so rendering no longer depends
- *                      on when that thread runs; "0": Aurora reads guest memory itself (former behavior, diagnostic).
+ *                      on when that thread runs; "0": no vertex array or texture copies, Aurora reads that guest memory itself
+ *                      (diagnostic; TLUTs are still copied at every load, so not the behavior before the fix).
  *                      Counted in the final report ("GX frozen copies") (gx/gx_bridge.hpp)
  *   GCRT_GX_FREEZE_CHECK diagnostic: "1" compares, at every draw, the copies Aurora holds for the arrays and texture
  *                      maps the draw reads with guest memory; differences counted and the first 200 traced

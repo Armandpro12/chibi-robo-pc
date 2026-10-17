@@ -137,7 +137,8 @@ public:
   size_t pending_bytes() const { return m_pending.size() - m_pendingOff; }
 
   const BridgeStats& stats() const { return m_stats; }
-  // Frozen copies on (default) or off (GCRT_GX_FREEZE=0: Aurora reads guest memory itself, former behavior).
+  // Frozen copies on (default) or off (GCRT_GX_FREEZE=0: no array or texture copies, Aurora reads that guest memory
+  // itself; TLUTs are still copied at every load, so this is not the behavior before the fix).
   bool freeze_enabled() const { return m_freeze; }
   // Draws published to Aurora's thread per wake-up (GCRT_GX_PUBLISH_BATCH; default 128, 1 with GCRT_GX_FREEZE=0).
   static uint32_t publish_batch_size();

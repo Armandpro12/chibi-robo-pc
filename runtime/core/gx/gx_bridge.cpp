@@ -233,7 +233,8 @@ void write_aurora_header(uint16_t sub) {
 uint64_t g_frozenLiveBytes = 0;
 uint64_t g_frozenPeakBytes = 0;
 
-// GCRT_GX_FREEZE=0 turns the frozen copies off (diagnostic: Aurora's thread reads guest memory itself, as before).
+// GCRT_GX_FREEZE=0 turns the frozen vertex array and texture copies off (diagnostic: Aurora's thread reads that guest
+// memory itself). TLUTs are still copied into a fresh block at every load, so this is not the behavior before the fix.
 bool freeze_from_env() {
   const char* env = std::getenv("GCRT_GX_FREEZE");
   return env == nullptr || std::strcmp(env, "0") != 0;
