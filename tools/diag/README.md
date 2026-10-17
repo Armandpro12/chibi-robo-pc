@@ -18,7 +18,7 @@ PowerShell 5.1, which ships with Windows 10 and 11.
 | Processor name, cores, clocks | `Win32_Processor` (CIM) |
 | Microcode revision (current and previous) | registry `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0`, values `Update Revision` / `Previous Update Revision` |
 | BIOS vendor, version, date; motherboard maker and model | `Win32_BIOS`, `Win32_BaseBoard` (no serial number) |
-| Memory modules: size, maker, part number, rated and configured speed (XMP/EXPO) | `Win32_PhysicalMemory` (no serial number) |
+| Memory modules: size, maker, part number, reported and configured speed (to compare with the JEDEC speed of the part number: higher means an XMP/EXPO profile) | `Win32_PhysicalMemory` (no serial number) |
 | Windows edition, version, build, last boot | `Win32_OperatingSystem`, registry `...\Windows NT\CurrentVersion` (`DisplayVersion`, `UBR`) |
 | Graphics adapters: name, GPU, chipset vendor, driver version and date, hardware id (vendor, device, board, revision) | `Win32_VideoController` (`Name`, `VideoProcessor`, `AdapterCompatibility`, `DriverVersion`, `DriverDate`, `PNPDeviceID` without its instance suffix; Microsoft Learn, *Win32_VideoController class*) |
 | Version of the NVIDIA capture helper `nvspcap64.dll` if installed | file version information in `System32` |

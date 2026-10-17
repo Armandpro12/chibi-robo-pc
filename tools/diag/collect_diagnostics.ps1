@@ -177,7 +177,7 @@ foreach ($b in Try-Cim "Win32_BaseBoard") {
     Add-Line ("Motherboard: {0} {1}" -f $b.Manufacturer, $b.Product)
 }
 
-Add-Section "Memory modules (rated speed vs configured speed shows XMP/EXPO profiles)"
+Add-Section "Memory modules (a configured speed above the JEDEC speed of the part number means an XMP/EXPO profile)"
 foreach ($m in Try-Cim "Win32_PhysicalMemory") {
     Add-Line ("{0}: {1} GiB, {2} {3}, speed {4} MT/s, configured {5} MT/s" -f $m.DeviceLocator,[math]::Round($m.Capacity / 1GB, 1), $m.Manufacturer, ("" + $m.PartNumber).Trim(), $m.Speed, $m.ConfiguredClockSpeed)
 }
