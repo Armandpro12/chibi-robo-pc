@@ -91,6 +91,14 @@ saved in `game_config.ini` in the same folder as `controls.ini` (see below). Tic
 to start the game directly; hold Shift while the game starts to show the menu again, or set `skipMenu=0` in
 `game_config.ini`. Values outside the menu's choices fall back to the defaults.
 
+The game no longer opens a console window by itself. "Show console" (checked by default) opens one with the game's
+log when the game starts, never while the menu is up; the output written before that moment is shown in it. If the
+game was launched from a terminal, it prints in that terminal instead of a new window (Windows does not wait for it,
+so the output follows the prompt). The choice is saved as `console=1` or `console=0` in
+`game_config.ini`; with "Skip this menu next time", the saved value applies. `--console` and `--no-console` decide
+for one launch only: the box starts checked or unchecked and the file is changed only if you toggle the box. When the
+output is redirected (to a file or a pipe, as `tools/run.py` and the test benches do), no console is ever opened.
+
 ### Controls
 
 On first launch the game writes a commented `controls.ini` into

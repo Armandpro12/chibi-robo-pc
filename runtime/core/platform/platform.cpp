@@ -28,7 +28,10 @@
 
 extern "C" {
 #include "../hle/gcrt_native.h"
+#include "gcrt_console.h"
+#include "gcrt_focus.h"
 #include "gcrt_crash.h"
+#include "gcrt_game_config.h"
 #include "gcrt_user_dir.h"
 #include "trace.h"
 }
@@ -859,6 +862,9 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   {
     const std::string window = env("GCRT_WINDOW", "normal");
     host.windowMode = window == "background" ? 1 : window == "minimized" ? 2 : 0;
+    if (gcrt_no_focus() && host.windowMode == 0) {
+      host.windowMode = 1; // "no focus" test mode (gcrt_focus.h): never activated, at least shown in the background
+    }
   }
   host.viewportFit = env("GCRT_VIEWPORT", "stretch") == "fit";
   {
@@ -887,6 +893,16 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
     std::fflush(nullptr);
     std::exit(0);
+  }
+  // Console window (gcrt_console.h), opened or not now that the game starts. With the setup menu: its box (or the saved
+  // value when the menu is skipped), in which --console / --no-console already set this launch's value. Without the
+  // menu (automated launches): those options, otherwise the console of the parent process only (a launch from a
+  // terminal prints there, like the former console program). Nothing happens when the parent redirected the output.
+  if (host.setupMenu) {
+    gcrt_console_start(gcrt_game_config()->console ? GCRT_CONSOLE_OPEN : GCRT_CONSOLE_NONE);
+  } else {
+    const int request = gcrt_console_request();
+    gcrt_console_start(request == 1 ? GCRT_CONSOLE_OPEN : request == 0 ? GCRT_CONSOLE_NONE : GCRT_CONSOLE_PARENT);
   }
   // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
   if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
