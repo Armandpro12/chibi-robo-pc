@@ -130,9 +130,13 @@ folder is known. Only the 5 most recent reports are kept. A report has three fil
 
 - `crash-<date>-<time>-<pid>.txt`: a text summary (exception, registers, call stacks of every thread, executable,
   processor and its microcode revision, firmware version, graphics adapter and driver, memory use, the last game
-  events and log lines, and whether the same crash already happened on this computer). It names files by their file
-  name only and replaces your user-profile folder and user name with `%USERPROFILE%` and `%USERNAME%`. **This is the
-  only file you may share**, for example in a public issue.
+  events and log lines, the command line, the `GCRT_*` environment variables, and whether the same crash already
+  happened on this computer). It names executables and libraries by their file name only, shortens every absolute
+  path it prints to its last part (`<path>\game.iso`; the text between two paths on the same log line may be cut as
+  well), and replaces your user-profile folder and user name with `%USERPROFILE%` and `%USERNAME%`. **This is the
+  only file you may share**, for example in a public issue, but **read it before you publish it**: a file or folder
+  name of your own (disc image, mods, installation folder) can still appear, as can anything you typed in the command
+  line or in a `GCRT_*` variable.
 - `crash-<date>-<time>-<pid>.dmp` (minidump) and `crash-<date>-<time>-<pid>-guest-ram.bin` (game memory): they
   contain game data and local paths. **Never publish them**; if a developer asks for them, send them privately.
 

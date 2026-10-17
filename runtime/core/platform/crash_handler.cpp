@@ -3,9 +3,16 @@
 // Robustness rules (a crash report must be written whatever state the process is in):
 //  - the work is done by a reporting thread created at installation (1 MiB stack): the faulting thread may have
 //    almost no stack left (stack overflow) and only signals it, then waits (bounded);
-//  - phase 1 uses no heap allocation and no loader lock: preallocated buffers, file opened first, other threads
-//    suspended only while their contexts are read and phase 1 is composed and written; machine information, the
-//    environment and the command line are read at installation;
+//  - the header (cause, exception, registers, code bytes, raw stack, guest state of a faulting game thread) is composed
+//    and written before anything that may use the heap: the faulting thread may hold the heap lock (a fault inside
+//    the heap code, heap corruption). The .txt is created with NtCreateFile relative to a handle on the crash folder
+//    opened in advance (CreateFileW converts the path on the process heap);
+//  - phase 0 (may allocate: module and thread snapshots) comes after that header; phase 1 uses no heap allocation
+//    and no loader lock: preallocated buffers, other threads suspended only while their contexts are read and
+//    phase 1 is composed and written; machine information, the environment and the command line are read at
+//    installation;
+//  - if the reporting thread does not finish phase 1 within 60 s (blocked), the faulting thread writes what is left
+//    to stderr, marks the .txt as incomplete and lets the process end as usual;
 //  - the text report is written first, section by section (whatever was composed is on disk if a later step hangs or
 //    faults), then the minidump, then the guest memory; the risky steps of phase 2 are guarded by SEH;
 //  - if the folder cannot be written, the temporary folder is tried, then the report goes to stderr only; if the
@@ -37,6 +44,7 @@ extern "C" {
 #include <intrin.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 #include <csignal>
 #include <exception>
 
@@ -53,6 +61,13 @@ bool g_installed = false;
 wchar_t g_dir[MAX_PATH * 2] = L"";      // final folder, with a trailing separator
 wchar_t g_temp_dir[MAX_PATH * 2] = L""; // fallback folder (%TEMP%\gcrt-crashes\)
 bool g_dir_from_env = false;
+// Handle on g_dir opened in advance, so that the report can be created without the heap (open_report_file).
+HANDLE g_dir_handle = INVALID_HANDLE_VALUE;
+// NtCreateFile (winternl.h, ntdll), resolved at installation.
+using NtCreateFileFn = NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER,
+                                        ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+NtCreateFileFn g_nt_create_file = nullptr;
+constexpr NTSTATUS kStatusNameCollision = static_cast<NTSTATUS>(0xC0000035L); // STATUS_OBJECT_NAME_COLLISION
 
 // --- Text buffer -------------------------------------------------------------------------------------------------
 // Report text, assembled in a fixed buffer (no allocation once the crash has happened). Flushed to the open .txt
@@ -93,12 +108,17 @@ bool env_set(const wchar_t* name, wchar_t* buf, DWORD size) {
 }
 
 // --- Privacy of the text report --------------------------------------------------------------------------------------
-// The .txt is the file players share: it must not reveal the Windows user name. The report writes file names only
-// (executable, host modules); as a second barrier, every occurrence of the user-profile folder (USERPROFILE, long and
-// 8.3 short forms) left in the text (command line, environment, log lines) is replaced by the literal "%USERPROFILE%",
-// and so is the bare user name (USERNAME) when it appears as a path component. Prepared at installation.
+// The .txt is the file players share: it should not reveal the Windows user name nor local folders. The report writes
+// file names only (executable, host modules). In the rest of the text (command line, environment, log lines):
+//  - every absolute path ("X:\..." or "\\server\...") loses its folders: "<path>\" + its last component. A path may
+//    contain spaces, so the folders end at the last separator before the end of the line, ", " or a character that
+//    cannot be in a path (quote, tab, | < > * ?): text between two paths of the same line may be lost with them;
+//  - then, as a second barrier, the user-profile folder (USERPROFILE, long and 8.3 short forms) is replaced by the
+//    literal "%USERPROFILE%", and the bare user name (USERNAME) by "%USERNAME%" when it is a path component.
+// Prepared at installation.
 constexpr const char kProfileToken[] = "%USERPROFILE%";
 constexpr const char kUserToken[] = "%USERNAME%";
+constexpr const char kPathToken[] = "<path>";
 char g_profile[2][MAX_PATH * 4] = {}; // UTF-8, without a trailing separator; empty if unknown
 char g_user[256] = "";                 // UTF-8 user name; empty if unknown or too short to replace safely
 char g_clean[kReportSize];             // scrubbed copy of a chunk of g_report
@@ -167,11 +187,49 @@ size_t profile_match(const char* text, size_t avail, const char* prefix) {
   return i;
 }
 
+bool path_end_char(char c) {
+  return c == '\n' || c == '\r' || c == '\t' || c == '"' || c == '|' || c == '<' || c == '>' || c == '*' || c == '?' ||
+         c == 0;
+}
+
+// If an absolute path starts at text[0] ("X:\" or "\\name"), length of its folder part (up to and including the last
+// separator before the end of the path span), 0 otherwise. `prev`: the character before, 0 at the start.
+size_t path_folders(const char* text, size_t avail, char prev) {
+  if (name_char(prev) || prev == '\\' || prev == '/' || prev == ':') {
+    return 0;
+  }
+  const bool drive = avail >= 4 && ((text[0] >= 'A' && text[0] <= 'Z') || (text[0] >= 'a' && text[0] <= 'z')) &&
+                     text[1] == ':' && (text[2] == '\\' || text[2] == '/');
+  const bool unc = avail >= 3 && text[0] == '\\' && text[1] == '\\' && name_char(text[2]);
+  if (!drive && !unc) {
+    return 0;
+  }
+  size_t last_sep = 0;
+  // ", " also ends the span (log lines such as "image X:\...\disc.iso, rate 3145728 B/s"): a folder name containing
+  // ", " would then show its end, which is accepted.
+  for (size_t k = 2; k < avail && !path_end_char(text[k]) && !(text[k] == ',' && k + 1 < avail && text[k + 1] == ' ');
+       k++) {
+    if (text[k] == '\\' || text[k] == '/') {
+      last_sep = k;
+    }
+  }
+  return last_sep + 1;
+}
+
 // Scrubs g_report[from, to) into g_clean; returns the scrubbed length.
 size_t scrub_range(size_t from, size_t to) {
   size_t n = 0;
   size_t i = from;
   while (i < to && n < kReportSize - 32) {
+    const size_t folders = path_folders(g_report + i, to - i, i > 0 ? g_report[i - 1] : 0);
+    if (folders != 0) {
+      for (const char* t = kPathToken; *t != 0; t++) {
+        g_clean[n++] = *t;
+      }
+      g_clean[n++] = g_report[i + folders - 1]; // the separator, as written
+      i += folders;
+      continue;
+    }
     size_t matched = 0;
     const char* token = kProfileToken;
     for (const char* prefix : g_profile) {
@@ -224,6 +282,27 @@ void set_dir(const wchar_t* dir, wchar_t* target = g_dir) {
   }
 }
 
+// Opens the handle on g_dir used to create reports without the heap. `create`: create the folder first (the user's
+// crash folder); otherwise (the temporary folder, before the user folder is known) only an existing folder is opened,
+// and a report there goes through the path-based fallback of open_report_file.
+void open_dir_handle(bool create) {
+  if (g_dir_handle != INVALID_HANDLE_VALUE) {
+    CloseHandle(g_dir_handle);
+    g_dir_handle = INVALID_HANDLE_VALUE;
+  }
+  if (g_dir[0] == 0) {
+    return;
+  }
+  if (create) {
+    CreateDirectoryW(g_dir, nullptr);
+  }
+  // FILE_FLAG_BACKUP_SEMANTICS is required to open a folder (CreateFileW, Microsoft Learn); every sharing mode so
+  // that the folder can still be renamed or deleted by the user (deletion completes when the game ends).
+  g_dir_handle = CreateFileW(g_dir, FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+}
+
 // Number of reports of each kind (crash-, hang-) kept in the crash folder. Each crash report holds the guest memory
 // (about 25 MiB) and a minidump, so older ones are deleted. Called at startup when the folder is chosen, never from
 // the handler.
@@ -236,9 +315,13 @@ void prune_old_reports(const wchar_t* prefix) {
   if (h == INVALID_HANDLE_VALUE) {
     return;
   }
+  const size_t prefix_len = wcslen(prefix);
   do {
     std::wstring name = fd.cFileName;
-    stems.push_back(name.substr(0, name.size() - 4)); // without ".txt"
+    // Reports only (<prefix><digit>...): not crash-signatures.txt, which shares the prefix.
+    if (name.size() > prefix_len && name[prefix_len] >= L'0' && name[prefix_len] <= L'9') {
+      stems.push_back(name.substr(0, name.size() - 4)); // without ".txt"
+    }
   } while (FindNextFileW(h, &fd));
   FindClose(h);
   if (stems.size() <= kMaxReports) {
@@ -370,8 +453,10 @@ void read_machine_info() {
   append_machine("windows %s %s, build %s.%lu\n", product[0] ? product : "?", display, build[0] ? build : "?",
                  have_ubr ? static_cast<unsigned long>(ubr) : 0ul);
   // Processor microcode (HARDWARE\DESCRIPTION\System\CentralProcessor\0): "Update Revision" is the revision in use,
-  // "Previous Update Revision" the one loaded by the firmware (REG_BINARY, 4 or 8 bytes; with 8 bytes the revision
-  // is the high 32 bits). Raw bytes printed as well, since this layout is not documented by Microsoft.
+  // "Previous Update Revision" the one loaded by the firmware (REG_BINARY, 4 or 8 bytes). [hypothesis] With 8 bytes
+  // the revision is the high 32 bits: this layout is not documented by Microsoft (it is the one read by Mozilla's
+  // "Updating processor microcode" help page and by OpenJDK's os_windows_x86.cpp), so the report says "layout
+  // assumed" and prints the raw bytes as well.
   const wchar_t* cpu0 = L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0";
   const wchar_t* names[2] = {L"Update Revision", L"Previous Update Revision"};
   const char* labels[2] = {"microcode revision", "previous (firmware)"};
@@ -386,7 +471,7 @@ void read_machine_info() {
       for (DWORD b = 0; b < size; b++) {
         append_machine(" %02X", raw[b]);
       }
-      append_machine(")");
+      append_machine(size == 8 ? ", layout assumed: high 32 bits)" : ")");
     } else {
       append_machine("%s%s ?", i == 0 ? "cpu " : ", ", labels[i]);
     }
@@ -1057,8 +1142,44 @@ void write_file(const wchar_t* path, const void* data, size_t size) {
   CloseHandle(f);
 }
 
-// Opens <dir><prefix><date>-<pid>[-n].txt without overwriting; tries the crash folder, then the temporary folder.
+// Opens <dir><prefix><date>-<pid>[-n].txt without overwriting. First without the heap: NtCreateFile relative to the
+// handle on the crash folder opened in advance (FILE_CREATE: fails on an existing name). Then by path (CreateFileW,
+// which may allocate): the crash folder, then the temporary folder.
 bool open_report_file(const wchar_t* prefix, const SYSTEMTIME& st) {
+  if (g_dir_handle != INVALID_HANDLE_VALUE && g_nt_create_file != nullptr) {
+    for (int n = 1; n <= 9; n++) {
+      wchar_t suffix[8] = L"";
+      if (n > 1) {
+        swprintf_s(suffix, L"-%d", n);
+      }
+      static wchar_t name[96];
+      swprintf_s(name, L"%s%04u%02u%02u-%02u%02u%02u-%lu%s.txt", prefix, st.wYear, st.wMonth, st.wDay, st.wHour,
+                 st.wMinute, st.wSecond, GetCurrentProcessId(), suffix);
+      UNICODE_STRING us;
+      us.Buffer = name;
+      us.Length = static_cast<USHORT>(wcslen(name) * sizeof(wchar_t));
+      us.MaximumLength = static_cast<USHORT>(sizeof(name));
+      OBJECT_ATTRIBUTES oa{};
+      oa.Length = sizeof(oa);
+      oa.RootDirectory = g_dir_handle;
+      oa.ObjectName = &us;
+      oa.Attributes = OBJ_CASE_INSENSITIVE;
+      IO_STATUS_BLOCK io{};
+      HANDLE h = nullptr;
+      const NTSTATUS status = g_nt_create_file(&h, FILE_GENERIC_WRITE, &oa, &io, nullptr, FILE_ATTRIBUTE_NORMAL,
+                                               FILE_SHARE_READ, FILE_CREATE,
+                                               FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, nullptr, 0);
+      if (status >= 0) {
+        g_txt = h;
+        name[wcslen(name) - 4] = 0; // without ".txt"
+        swprintf_s(g_in.stem, L"%s%s", g_dir, name);
+        return true;
+      }
+      if (status != kStatusNameCollision) {
+        break;
+      }
+    }
+  }
   const wchar_t* dirs[2] = {g_dir, g_temp_dir};
   for (const wchar_t* dir : dirs) {
     if (dir[0] == 0) {
@@ -1148,13 +1269,9 @@ void do_report() {
   g_report_flushed = 0;
   g_phase1_done = 0;
 
-  // Phase 0 (may allocate): file, module and thread snapshots.
+  // Header, without the heap (the faulting thread may hold its lock): file created relative to the folder handle,
+  // text in the fixed buffer, host addresses described with the module list of the startup (refreshed below).
   open_report_file(hang ? L"hang-" : L"crash-", st);
-  snapshot_modules();
-  snapshot_threads(GetCurrentThreadId());
-  // Phase 1 (no allocation): other threads suspended while their state and the report are captured.
-  suspend_and_capture(hang ? 0 : g_in.thread);
-
   out("== gcrt %s report\n", hang ? "hang" : "crash");
   out("time %04u-%02u-%02u %02u:%02u:%02u, process %lu, cause: %s\n", st.wYear, st.wMonth, st.wDay, st.wHour,
       st.wMinute, st.wSecond, GetCurrentProcessId(), cause_name(g_in.cause));
@@ -1179,6 +1296,36 @@ void do_report() {
   } else {
     out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game keeps running\n",
         g_in.hang_seconds);
+  }
+  const bool game_faulted = !hang && g_in.thread == g_game_thread;
+  out("%s thread id %lu%s\n", hang ? "watched" : "faulting", static_cast<unsigned long>(g_in.thread),
+      g_in.thread == g_game_thread ? " (game thread)" : "");
+  if (ctx != nullptr) {
+    out("rip %016llX rsp %016llX rbp %016llX\n", ctx->Rip, ctx->Rsp, ctx->Rbp);
+    out("rax %016llX rbx %016llX rcx %016llX rdx %016llX\n", ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
+    out("rsi %016llX rdi %016llX r8  %016llX r9  %016llX\n", ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9);
+    out("r10 %016llX r11 %016llX r12 %016llX r13 %016llX\n", ctx->R10, ctx->R11, ctx->R12, ctx->R13);
+    out("r14 %016llX r15 %016llX eflags %08lX mxcsr %08lX\n", ctx->R14, ctx->R15,
+        static_cast<unsigned long>(ctx->EFlags), static_cast<unsigned long>(ctx->MxCsr));
+    report_code_bytes(ctx->Rip);
+    static DWORD64 frames[64];
+    const int n = unwind_stack(ctx, frames, 64);
+    out("host call stack (raw unwind, module + offset):\n");
+    report_frames(frames, n);
+  }
+  if (game_faulted) {
+    report_guest(true); // the game thread is the faulting thread: stopped in the handler
+  }
+  flush_text();
+
+  // Phase 0 (may allocate): module and thread snapshots. The header above is already on disk if this blocks.
+  snapshot_modules();
+  snapshot_threads(GetCurrentThreadId());
+  // Phase 1 (no allocation): other threads suspended while their state and the rest of the report are captured.
+  suspend_and_capture(hang ? 0 : g_in.thread);
+  out("\n== Process and machine\n");
+  if (rec != nullptr) {
+    describe_host_address(fault_address, where, sizeof(where)); // with the refreshed module list
   }
   // Recurrence.
   if (!hang) {
@@ -1209,22 +1356,11 @@ void do_report() {
   if (g_rearm_note[0] != 0) {
     out("%s\n", g_rearm_note);
   }
-  if (ctx != nullptr) {
-    out("rip %016llX rsp %016llX rbp %016llX\n", ctx->Rip, ctx->Rsp, ctx->Rbp);
-    out("rax %016llX rbx %016llX rcx %016llX rdx %016llX\n", ctx->Rax, ctx->Rbx, ctx->Rcx, ctx->Rdx);
-    out("rsi %016llX rdi %016llX r8  %016llX r9  %016llX\n", ctx->Rsi, ctx->Rdi, ctx->R8, ctx->R9);
-    out("r10 %016llX r11 %016llX r12 %016llX r13 %016llX\n", ctx->R10, ctx->R11, ctx->R12, ctx->R13);
-    out("r14 %016llX r15 %016llX eflags %08lX mxcsr %08lX\n", ctx->R14, ctx->R15,
-        static_cast<unsigned long>(ctx->EFlags), static_cast<unsigned long>(ctx->MxCsr));
-    report_code_bytes(ctx->Rip);
-    static DWORD64 frames[64];
-    const int n = unwind_stack(ctx, frames, 64);
-    out("host call stack (raw unwind, module + offset):\n");
-    report_frames(frames, n);
+  flush_text();
+  if (!game_faulted) {
+    report_guest(g_in.thread == g_game_thread);
+    flush_text();
   }
-  flush_text();
-  report_guest(g_in.thread == g_game_thread);
-  flush_text();
   report_threads(hang ? 0 : g_in.thread);
   flush_text();
   out("\n== Recent native events\n");
@@ -1238,9 +1374,23 @@ void do_report() {
   }
   out("\n== Environment\ncommand line: %s\nGCRT_* variables:\n%s", g_cmdline, g_env_text);
   {
+    // The folder this report was actually written to (the temporary folder when the crash folder failed), from the
+    // file stem; its parent folders are reduced to "<path>" by the scrubbing, like every absolute path.
+    static wchar_t used[MAX_PATH * 2];
+    wcsncpy_s(used, g_in.stem, _TRUNCATE);
+    wchar_t* sep = wcsrchr(used, L'\\');
+    wchar_t* slash = wcsrchr(used, L'/');
+    if (sep == nullptr || (slash != nullptr && slash > sep)) {
+      sep = slash;
+    }
+    if (sep != nullptr) {
+      *sep = 0;
+    }
     char dir_utf8[MAX_PATH * 4] = "";
-    WideCharToMultiByte(CP_UTF8, 0, g_dir, -1, dir_utf8, sizeof(dir_utf8), nullptr, nullptr);
-    out("report folder: %s\n", dir_utf8);
+    WideCharToMultiByte(CP_UTF8, 0, used, -1, dir_utf8, sizeof(dir_utf8), nullptr, nullptr);
+    const bool temp = used[0] != 0 && g_temp_dir[0] != 0 && wcsncmp(g_in.stem, g_temp_dir, wcslen(g_temp_dir)) == 0;
+    out("report folder: %s%s\n", used[0] != 0 ? dir_utf8 : "(none: standard error only)",
+        temp ? " (temporary folder)" : "");
   }
   if (g_context_fn != nullptr) {
     out("\n== Platform\n");
@@ -1360,9 +1510,15 @@ DWORD WINAPI reporter_main(LPVOID) {
       return 0;
     }
     do_report();
-    SetEvent(g_done);
+    const bool hang = g_in.cause == Cause::Hang;
+    SetEvent(g_done); // before g_reporting is released: the next report resets g_done once it owns g_reporting
+    if (hang) {
+      InterlockedExchange(&g_reporting, 0); // the game keeps running: later hangs or crashes can be reported
+    }
   }
 }
+
+constexpr int kReportWaitMs = 60000; // bound of every wait on the reporting thread
 
 // Called by the faulting thread (or the watchdog): hands the work to the reporting thread and waits (bounded).
 void run_report(EXCEPTION_POINTERS* info, Cause cause, DWORD thread, unsigned hang_seconds) {
@@ -1373,14 +1529,24 @@ void run_report(EXCEPTION_POINTERS* info, Cause cause, DWORD thread, unsigned ha
   LONG prev = InterlockedCompareExchange(&g_reporting, want, 0);
   if (prev == 2 && want == 1) {
     // A hang report is being written: wait for it (bounded), then report the crash.
-    for (int i = 0; i < 600 && (prev = InterlockedCompareExchange(&g_reporting, want, 0)) != 0; i++) {
+    for (int i = 0; i < kReportWaitMs / 100 && (prev = InterlockedCompareExchange(&g_reporting, want, 0)) != 0; i++) {
       Sleep(100);
+    }
+    if (prev == 2) {
+      // The reporting thread is still blocked in the hang report: this crash cannot be reported.
+      static const char kMsg[] = "\ngcrt: crash not reported: the reporting thread is blocked in a hang report\n";
+      DWORD written = 0;
+      HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+      if (err != nullptr && err != INVALID_HANDLE_VALUE) {
+        WriteFile(err, kMsg, sizeof(kMsg) - 1, &written, nullptr);
+      }
+      return;
     }
   }
   if (prev != 0) {
     // Another crash is being reported: wait for it to finish so that the process does not end under it.
     if (want == 1) {
-      for (int i = 0; i < 600 && g_reporting != 0 && !g_crash_finished; i++) {
+      for (int i = 0; i < kReportWaitMs / 100 && g_reporting != 0 && !g_crash_finished; i++) {
         Sleep(100);
       }
     }
@@ -1391,25 +1557,39 @@ void run_report(EXCEPTION_POINTERS* info, Cause cause, DWORD thread, unsigned ha
   g_in.cause = cause;
   g_in.hang_seconds = hang_seconds;
   if (g_request != nullptr && g_done != nullptr) {
+    ResetEvent(g_done); // a late end of an earlier report (after its wait expired) must not end this wait
     SetEvent(g_request);
-    if (WaitForSingleObject(g_done, 60000) != WAIT_OBJECT_0 && !g_phase1_done) {
-      // The reporting thread did not finish phase 1: give what was composed to stderr ourselves.
-      static const char kMsg[] = "\ngcrt: the crash reporting thread did not answer; partial report above\n";
+    if (WaitForSingleObject(g_done, kReportWaitMs) != WAIT_OBJECT_0 && !g_phase1_done) {
+      // The reporting thread did not finish phase 1 (blocked, e.g. on a lock held by the faulting thread): what is
+      // not written yet goes to stderr (unscrubbed), and the .txt says that it stops there. No heap used here.
+      static const char kMsg[] = "\ngcrt: report incomplete: the reporting thread was blocked here for 60 s; any text "
+                                 "below was written after that\n";
       DWORD written = 0;
       HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
       if (err != nullptr && err != INVALID_HANDLE_VALUE) {
-        WriteFile(err, g_report, static_cast<DWORD>(g_report_len), &written, nullptr);
+        const size_t flushed = g_report_flushed;
+        const size_t len = g_report_len;
+        if (len > flushed) {
+          WriteFile(err, g_report + flushed, static_cast<DWORD>(len - flushed), &written, nullptr);
+        }
         WriteFile(err, kMsg, sizeof(kMsg) - 1, &written, nullptr);
+      }
+      if (g_txt != INVALID_HANDLE_VALUE) {
+        WriteFile(g_txt, kMsg, sizeof(kMsg) - 1, &written, nullptr);
+        FlushFileBuffers(g_txt);
       }
     }
   } else {
     do_report(); // no reporting thread (creation failed at installation): best effort on this stack
+    if (cause == Cause::Hang) {
+      InterlockedExchange(&g_reporting, 0);
+    }
   }
-  if (cause == Cause::Hang) {
-    InterlockedExchange(&g_reporting, 0); // the game keeps running: later hangs or crashes can be reported
-  } else {
+  if (cause != Cause::Hang) {
     InterlockedExchange(&g_crash_finished, 1);
   }
+  // A hang report releases g_reporting in the reporting thread once really finished (reporter_main): if that thread
+  // is still blocked after the wait above, no other report starts over it.
 }
 
 LONG WINAPI unhandled_filter(EXCEPTION_POINTERS* info) {
@@ -1516,11 +1696,16 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
     g_dir_from_env = true;
     prune_old_reports(L"crash-");
     prune_old_reports(L"hang-");
+    open_dir_handle(true);
   } else {
     // Until the platform gives the user folder: the system temporary folder, never the current folder (which may
     // be a source tree, where a report holding guest memory must not end up).
     set_dir(g_temp_dir);
+    open_dir_handle(false);
   }
+  g_nt_create_file = reinterpret_cast<NtCreateFileFn>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile")));
+  snapshot_modules(); // used by the header of a report (written before the list is refreshed); refreshed at rearm
   load_signatures();
   g_get_thread_description = reinterpret_cast<GetThreadDescriptionFn>(
       reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription")));
@@ -1566,9 +1751,9 @@ extern "C" void gcrt_crash_handler_rearm(void) {
   // A library initialized after the handler (window, renderer, audio) may have replaced the unhandled exception
   // filter: put ours back, and say so in the trace and in later reports.
   const LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(unhandled_filter);
+  snapshot_modules(); // the libraries of the window and the renderer are loaded now (header of a report)
   if (previous != unhandled_filter) {
     char where[300];
-    snapshot_modules();
     describe_host_address(reinterpret_cast<DWORD64>(previous), where, sizeof(where));
     std::snprintf(g_rearm_note, sizeof(g_rearm_note),
                   "note: the unhandled exception filter had been replaced by %s, restored at startup", where);
@@ -1585,6 +1770,7 @@ extern "C" void gcrt_crash_handler_set_default_dir(const char* dir_utf8) {
     set_dir(buf);
     prune_old_reports(L"crash-");
     prune_old_reports(L"hang-");
+    open_dir_handle(true);
     load_signatures();
   }
 }

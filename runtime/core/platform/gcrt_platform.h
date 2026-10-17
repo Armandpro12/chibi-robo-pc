@@ -112,7 +112,9 @@
  *                      protection fault), write (NULL), abort, terminate (std::terminate), stack (stack overflow of the
  *                      game thread), purecall, invalid (invalid parameter to a C runtime function), thread (access
  *                      violation in a new host thread), render (access violation in Aurora's render worker thread),
- *                      hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
+ *                      heaplock (fault while the game thread holds the process heap lock), hangheap (the game thread
+ *                      holds the heap lock for GCRT_CRASH_TEST_HANG seconds, then faults: hang report, then crash
+ *                      report), hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
  *                      the watchdog)
  *   GCRT_WATCHDOG      seconds without progress of the game loop (one heartbeat per emulated frame) before a hang
  *                      report (hang-*.txt/.dmp in the crash folder, threads and their stacks); default 60, 0 = off;

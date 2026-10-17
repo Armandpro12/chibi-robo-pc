@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "audio_trace.hpp"
+#include "../platform/gcrt_diag.h"
 
 namespace gcrt::audio {
 
@@ -83,6 +84,8 @@ bool SdlAudioOutput::open(const SdlOutputConfig& config, uint32_t rate_hz) {
                    SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", rate_hz, dev.freq, dev.channels,
                    dev_frames, qc.target_ms, qc.max_ms, qc.drift_control ? "compensated" : "not compensated",
                    qc.max_ratio_deviation * 100.0, m_mute ? ", MUTED" : "", m_capture ? ", capture" : "");
+  gcrt_diag_event(GCRT_EV_AUDIO, GCRT_EVA_OUTPUT_OPENED, (static_cast<uint64_t>(rate_hz) << 32) |
+                                                          static_cast<uint32_t>(dev.freq));
   // The device runs from now on: silence until the queue has reached its target.
   SDL_ResumeAudioStreamDevice(m_stream);
   return true;

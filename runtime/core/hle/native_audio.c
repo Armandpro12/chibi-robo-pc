@@ -1064,6 +1064,7 @@ static bool hle_dsp_init(GcrtCpu* g, u32 address) {
     W32(s_au.v_first_task, 0);
     W32(s_au.v_dsp_init_flag, 1);
     GCRT_TRACE(GCRT_TRACE_DSP, "native DSPInit");
+    gcrt_diag_event(GCRT_EV_AUDIO, GCRT_EVA_DSP_INIT, 0);
     gcrt_native_return(g, 0);
     return true;
 }

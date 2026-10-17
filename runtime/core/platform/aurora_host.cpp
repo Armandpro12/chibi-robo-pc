@@ -21,7 +21,15 @@
 #include <cstring>
 #include <thread>
 
-#include "gfx/render_worker.hpp" // Aurora's internal API (external/aurora/lib): crash test on its worker thread
+// Aurora's internal API (external/aurora/lib), only for the crash-handler test GCRT_CRASH_TEST=render (fault on Aurora's
+// worker thread). Behind the CMake option GCRT_RENDER_CRASH_TEST (platform/sources.cmake): if an Aurora update changes
+// or removes this header, turning the option off keeps the build working; only that test is lost.
+#if defined(GCRT_RENDER_CRASH_TEST) && __has_include("gfx/render_worker.hpp")
+#include "gfx/render_worker.hpp"
+#define GCRT_HAVE_RENDER_CRASH_TEST 1
+#else
+#define GCRT_HAVE_RENDER_CRASH_TEST 0
+#endif
 
 extern "C" {
 #include "trace.h"
@@ -196,10 +204,15 @@ double host_wait_pipelines(double timeoutSeconds) {
 }
 
 void host_crash_in_render_thread() {
+#if GCRT_HAVE_RENDER_CRASH_TEST
   aurora::gfx::render_worker::enqueue_work([] {
     volatile int* bad = nullptr;
     *bad = 1;
   });
+#else
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                    "GCRT_CRASH_TEST=render: not available in this build (CMake option GCRT_RENDER_CRASH_TEST off)");
+#endif
 }
 
 uint32_t host_pending_pipelines() {

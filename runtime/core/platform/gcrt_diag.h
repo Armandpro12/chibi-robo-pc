@@ -26,7 +26,8 @@ extern "C" {
 typedef enum GcrtDiagKind {
   GCRT_EV_NONE = 0,
   GCRT_EV_FRAME_PRESENTED, /* a = frame number (1 = first), b = VI fields */
-  GCRT_EV_FRAME_SKIPPED,   /* a = skipped frames so far, b = VI fields */
+  GCRT_EV_FRAME_SKIPPED,   /* first skipped frame of a run, then one in 64: a = skipped frames so far,
+                              b = length of the current run of skipped frames */
   GCRT_EV_DISPLAY_COPY,    /* a = XFB physical address, b = (width << 16) | height */
   GCRT_EV_EFB_COPY,        /* EFB -> texture copy: a = destination physical address, b = (width << 16) | height */
   GCRT_EV_PIPELINE_WAIT,   /* a = microseconds waited, b = pipelines still queued */
@@ -59,8 +60,8 @@ typedef enum GcrtDiagSetting {
 } GcrtDiagSetting;
 
 typedef enum GcrtDiagAudio {
-  GCRT_EVA_OUTPUT_OPENED = 1, /* b = sample rate */
-  GCRT_EVA_DSP_INIT = 2,
+  GCRT_EVA_OUTPUT_OPENED = 1, /* host output opened: b = (input rate << 32) | device rate, in Hz */
+  GCRT_EVA_DSP_INIT = 2,      /* first DSPInit of the game (native replacement) */
 } GcrtDiagAudio;
 
 /* One slot of the ring (40 bytes). `seq` = index + 1 once published. */

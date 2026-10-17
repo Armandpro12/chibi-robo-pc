@@ -33,9 +33,13 @@ target_sources(gcrt PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/console.cpp"
 )
 # aurora_host.cpp uses Aurora's internal render worker (lib/gfx/render_worker.hpp) for one crash-handler test
-# (GCRT_CRASH_TEST=render): include path limited to this file, as for the GX bridge (gx/sources.cmake).
-set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/aurora_host.cpp" PROPERTIES
-  INCLUDE_DIRECTORIES "${GCRT_AURORA_DIR}/lib")
+# (GCRT_CRASH_TEST=render): include path limited to this file, as for the GX bridge (gx/sources.cmake). Turn the option
+# off if an Aurora update changes that internal header: only the test is lost.
+option(GCRT_RENDER_CRASH_TEST "Crash-handler test on Aurora's render worker thread (uses an internal Aurora header)" ON)
+if(GCRT_RENDER_CRASH_TEST)
+  set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/aurora_host.cpp" PROPERTIES
+    INCLUDE_DIRECTORIES "${GCRT_AURORA_DIR}/lib" COMPILE_DEFINITIONS GCRT_RENDER_CRASH_TEST=1)
+endif()
 # PRIVATE: Aurora's compile options (C++20, /Zc:__cplusplus...) do not propagate
 # to the generated code; linking, however, does follow (static library).
 target_link_libraries(gcrt PRIVATE aurora::core aurora::gx aurora::vi aurora::pad)

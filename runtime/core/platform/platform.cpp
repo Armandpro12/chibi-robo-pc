@@ -96,6 +96,7 @@ struct GcrtPlatform {
   bool stopRequested = false;
   uint64_t framesPresented = 0;
   uint64_t framesSkipped = 0;
+  uint64_t skipRun = 0; // consecutive skipped frames (event ring: GCRT_EV_FRAME_SKIPPED is sampled)
   uint32_t efbWidth = 0;
   uint32_t efbHeight = 0;
   uint32_t efbLines = kConsoleEfbLines; // GCRT_EFB_HEIGHT: 0 = the display copy's height
@@ -511,6 +512,7 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     ++p->framesPresented;
     p->input.framesPresented = p->framesPresented;
     gcrt_diag_event(GCRT_EV_FRAME_PRESENTED, p->framesPresented, vi_fields(p));
+    p->skipRun = 0;
     if (p->timingLog != nullptr) {
       const int64_t tEnd = steady_us();
       std::fprintf(p->timingLog, "P,%lld,%lld,%lld,%lld,%lld,%lld,%llu\n", static_cast<long long>(tFrame),
@@ -530,7 +532,11 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     }
   } else {
     ++p->framesSkipped;
-    gcrt_diag_event(GCRT_EV_FRAME_SKIPPED, p->framesSkipped, vi_fields(p));
+    // Sampled: the first skipped frame of a run, then one in 64. A minimized window or an uncapped frame rate skips
+    // every frame, which would otherwise fill the event ring within seconds.
+    if (++p->skipRun == 1 || (p->skipRun & 63u) == 0) {
+      gcrt_diag_event(GCRT_EV_FRAME_SKIPPED, p->framesSkipped, p->skipRun);
+    }
   }
   // Between two frames: the only safe point for Aurora's window events (resize, display scale, close).
   poll_window(p);
@@ -565,6 +571,19 @@ void crash_test(GcrtPlatform* p) {
   const std::string& kind = p->crashTestKind;
   gcrt_diag_event(GCRT_EV_NOTE, 0xC4A5, p->framesPresented);
   std::fflush(nullptr);
+#if defined(_WIN32)
+  if (kind == "hangheap") {
+    // Hang while holding the process heap lock for GCRT_CRASH_TEST_HANG seconds, then a fault: the hang report
+    // blocks where it first needs the heap, the watchdog stops waiting after 60 s, the reporting thread finishes the
+    // hang report once the lock is released, and the crash that follows must still get its own complete report.
+    const double seconds = std::strtod(env("GCRT_CRASH_TEST_HANG", "15").c_str(), nullptr);
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: game thread stopped for %.0f s, heap locked", seconds);
+    HeapLock(GetProcessHeap());
+    Sleep(static_cast<DWORD>(seconds * 1000.0));
+    HeapUnlock(GetProcessHeap());
+    crash_fault("read");
+  }
+#endif
   if (kind == "hang") {
     // The game thread stops for GCRT_CRASH_TEST_HANG seconds (default 15), then the game goes on: the watchdog must
     // write a hang report (GCRT_WATCHDOG lower than that) without ending the game.
@@ -601,6 +620,14 @@ void crash_test(GcrtPlatform* p) {
     gcrt::platform::host_crash_in_render_thread();
     std::this_thread::sleep_for(std::chrono::seconds(30));
   }
+#if defined(_WIN32)
+  if (kind == "heaplock") {
+    // Fault while holding the lock of the process heap (also the C runtime heap): what a fault inside the heap code
+    // (heap corruption) looks like to the crash handler. The report must not need the heap to get its header out.
+    HeapLock(GetProcessHeap());
+    crash_fault("read");
+  }
+#endif
   crash_fault(kind);
 }
 
