@@ -12,6 +12,7 @@
 #define GCRT_PLATFORM_TRACE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -58,6 +59,10 @@ void gcrt_trace_printf(GcrtTraceCat cat, const char* fmt, ...)
     __attribute__((format(printf, 2, 3)))
 #endif
     ;
+
+/* Copies the last lines written by gcrt_trace_printf (at most 32 KiB, oldest first, starting at a line boundary) into
+   `out` (NUL-terminated); returns the length. Used by the crash report; no allocation. */
+size_t gcrt_trace_tail(char* out, size_t size);
 
 #define GCRT_TRACE_ON(cat) ((g_gcrt_trace_mask >> (unsigned)(cat)) & 1u)
 #define GCRT_TRACE(cat, ...)                                                                                           \

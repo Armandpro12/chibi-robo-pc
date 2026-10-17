@@ -20,6 +20,7 @@ add_subdirectory("${GCRT_AURORA_DIR}" "${CMAKE_BINARY_DIR}/aurora" EXCLUDE_FROM_
 
 target_sources(gcrt PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/trace.c"
+  "${CMAKE_CURRENT_LIST_DIR}/diag.c"
   "${CMAKE_CURRENT_LIST_DIR}/png_writer.c"
   "${CMAKE_CURRENT_LIST_DIR}/aurora_host.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/platform.cpp"
@@ -31,12 +32,18 @@ target_sources(gcrt PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/gcrt_game_config.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/console.cpp"
 )
+# aurora_host.cpp uses Aurora's internal render worker (lib/gfx/render_worker.hpp) for one crash-handler test
+# (GCRT_CRASH_TEST=render): include path limited to this file, as for the GX bridge (gx/sources.cmake).
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/aurora_host.cpp" PROPERTIES
+  INCLUDE_DIRECTORIES "${GCRT_AURORA_DIR}/lib")
 # PRIVATE: Aurora's compile options (C++20, /Zc:__cplusplus...) do not propagate
 # to the generated code; linking, however, does follow (static library).
 target_link_libraries(gcrt PRIVATE aurora::core aurora::gx aurora::vi aurora::pad)
 target_compile_features(gcrt PRIVATE cxx_std_20)
 if(WIN32)
-  target_link_libraries(gcrt PRIVATE bcrypt) # SHA-1 of the executable in crash reports (crash_handler.cpp)
+  # SHA-1 of the executable (bcrypt), registry reads (advapi32) and process memory (psapi) in crash reports
+  # (crash_handler.cpp).
+  target_link_libraries(gcrt PRIVATE bcrypt advapi32 psapi)
 endif()
 
 # Build identification printed by crash reports: commit of the source tree (cmake/GcrtBuildInfo.cmake). Written once at

@@ -36,6 +36,7 @@
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native_modules.h"
 #include "platform/trace.h"
+#include "platform/gcrt_diag.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -632,6 +633,7 @@ static void boot_task(GcrtCpu* g, u32 task) {
     GCRT_TIMELINE("dsp task start %08X iram %08X length %u", task, iram, length);
     if (s_au.have_backend && s_au.backend.boot) {
         const u32 crc = s_au.backend.boot(s_au.backend.user, iram, length, vector);
+        gcrt_diag_event(GCRT_EV_DSP_TASK, crc, task);
         GCRT_TRACE(GCRT_TRACE_DSP, "DSP task %08X started: IRAM %08X (%u bytes), entry %04X, fingerprint %08X (%s)",
                    task, iram, length, vector, crc, s_au.backend.name ? s_au.backend.name(s_au.backend.user) : "?");
     } else {

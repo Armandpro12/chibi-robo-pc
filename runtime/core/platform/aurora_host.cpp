@@ -18,10 +18,15 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
+
+#include "gfx/render_worker.hpp" // Aurora's internal API (external/aurora/lib): crash test on its worker thread
 
 extern "C" {
 #include "trace.h"
+#include "gcrt_crash.h"
+#include "gcrt_diag.h"
 #include "gcrt_focus.h"
 #include "gcrt_game_config.h"
 }
@@ -37,6 +42,11 @@ uint32_t g_efbLines = 0;
 GXRenderModeObj g_renderMode{};
 
 void log_callback(AuroraLogLevel level, const char* module, const char* message, unsigned int) {
+  // Graphics adapter and driver chosen by Aurora (lib/webgpu/gpu.cpp logs them at the info level): kept for crash
+  // reports.
+  if (level == LOG_INFO && std::strncmp(message, "Graphics adapter information", 28) == 0) {
+    gcrt_crash_handler_set_gpu_info(message + 28);
+  }
   if (level >= LOG_WARNING) {
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora %s (%s): %s", level == LOG_WARNING ? "warning" : "error",
                       module, message);
@@ -87,6 +97,8 @@ bool host_init(const HostConfig& config) {
     SDL_MinimizeWindow(info.window);
   }
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
+  gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_OPENED,
+                  (static_cast<uint64_t>(info.windowSize.fb_width) << 32) | info.windowSize.fb_height);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d, %ux%u, %s", static_cast<int>(info.backend),
                     info.windowSize.fb_width, info.windowSize.fb_height,
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
@@ -143,9 +155,12 @@ bool host_poll_events() {
   bool keepRunning = true;
   while (ev != nullptr && ev->type != AURORA_NONE) {
     if (ev->type == AURORA_EXIT) {
+      gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_CLOSE_REQUESTED, 0);
       keepRunning = false;
     } else if (ev->type == AURORA_WINDOW_RESIZED || ev->type == AURORA_DISPLAY_SCALE_CHANGED) {
       const AuroraWindowSize& s = ev->windowSize;
+      gcrt_diag_event(GCRT_EV_WINDOW, ev->type == AURORA_WINDOW_RESIZED ? GCRT_EVW_RESIZED : GCRT_EVW_SCALE_CHANGED,
+                      (static_cast<uint64_t>(s.width) << 32) | s.height);
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window %s: %ux%u, frame buffer %ux%u, surface %ux%u, scale %.2f",
                         ev->type == AURORA_WINDOW_RESIZED ? "resized" : "display scale changed", s.width, s.height,
                         s.fb_width, s.fb_height, s.native_fb_width, s.native_fb_height, static_cast<double>(s.scale));
@@ -178,6 +193,13 @@ double host_wait_pipelines(double timeoutSeconds) {
     }
   }
   return waited;
+}
+
+void host_crash_in_render_thread() {
+  aurora::gfx::render_worker::enqueue_work([] {
+    volatile int* bad = nullptr;
+    *bad = 1;
+  });
 }
 
 uint32_t host_pending_pipelines() {

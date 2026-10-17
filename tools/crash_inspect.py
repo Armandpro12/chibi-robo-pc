@@ -1,12 +1,21 @@
 """Reads a Windows minidump (crash report .dmp) and explains the faulting instruction. Generic: any x86-64 program.
 
 Usage:
-  py -3 tools/crash_inspect.py <crash.dmp> [--find-in EXE [EXE ...]] [--window N]
+  py -3 tools/crash_inspect.py <crash.dmp> [--find-in EXE [EXE ...]] [--window N] [--regions N] [--events N]
+  py -3 tools/crash_inspect.py [<crash.dmp>] --report <crash.txt>
   py -3 tools/crash_inspect.py --self-test
 
 Prints:
   - system (Windows version, processor family/model/stepping, logical processors) and the faulting module (path, PE time
     stamp, image size), so that the exact build can be found again;
+  - the memory regions (MemoryInfoList stream, when the dump has it): committed and reserved bytes per type (private,
+    mapped, image) and the largest committed private regions (--regions N);
+  - the thread information (ThreadInfoList stream): start address (module + offset), creation time, CPU time, exit
+    status of every thread;
+  - with --events N: the last N native events stored by the gcrt crash handler in the comment stream;
+  - with --report TXT: the key lines of a gcrt text report (cause, recurrence, signature, executable, processor,
+    microcode, firmware, graphics adapter, memory) and whether every section is present (alone: exit 0 if so, 1 if
+    not);
   - the exception and the registers of the faulting thread;
   - the code around the faulting instruction (disassembled with Capstone if it is installed: `py -3 -m pip install
     capstone`; hex otherwise);
@@ -52,6 +61,14 @@ import sys
 from pathlib import Path
 
 THREAD_LIST, MODULE_LIST, MEMORY_LIST, EXCEPTION, SYSTEM_INFO, MEMORY64_LIST = 3, 4, 5, 6, 7, 9
+COMMENT_A, MEMORY_INFO_LIST, THREAD_INFO_LIST = 10, 16, 17
+MEM_COMMIT, MEM_RESERVE, MEM_FREE = 0x1000, 0x2000, 0x10000
+MEM_TYPES = {0x20000: "private", 0x40000: "mapped", 0x1000000: "image"}
+# Sections of the gcrt text report (runtime/core/platform/crash_handler.cpp), checked by --report.
+REPORT_SECTIONS = ["== gcrt ", "== Guest state", "== Threads at the time of the report", "== Recent native events",
+                   "== Recent log lines", "== Environment", "== Modules", "== end of report"]
+REPORT_KEYS = ["cause:", "exception ", "recurrence:", "signature ", "executable sha1", "cpu ", "windows ",
+               "cpu microcode", "bios", "gpu ", "process memory:", "address space", "minidump:"]
 CTX_NAMES = "rax rcx rdx rbx rsp rbp rsi rdi r8 r9 r10 r11 r12 r13 r14 r15 rip".split()
 
 # Legacy SSE instructions whose 16-byte memory operand does not have to be aligned (all others do).
@@ -143,6 +160,38 @@ class Minidump:
                 base, size, _cks, stamp, name_rva = struct.unpack_from("<QIIII", self.d, srva + 4 + 108 * i)
                 out.append((base, size, stamp, self.string(name_rva)))
         return out
+
+    def memory_info(self) -> list[tuple[int, int, int, int, int, int]]:
+        """MemoryInfoListStream (MiniDumpWithFullMemoryInfo): (base, allocation base, size, state, protect, type)."""
+        out = []
+        if MEMORY_INFO_LIST in self.streams:
+            _, srva = self.streams[MEMORY_INFO_LIST]
+            hsize, esize, n = struct.unpack_from("<IIQ", self.d, srva)
+            for i in range(n):
+                base, abase, _aprot, _a1, size, state, prot, typ = struct.unpack_from(
+                    "<QQIIQIII", self.d, srva + hsize + esize * i)
+                out.append((base, abase, size, state, prot, typ))
+        return out
+
+    def thread_info(self) -> list[tuple[int, int, int, int, int, int, int, int]]:
+        """ThreadInfoListStream (MiniDumpWithThreadInfo): (thread id, dump flags, dump error, exit status, create time,
+        kernel time, user time, start address); times in 100 ns units (create time: FILETIME)."""
+        out = []
+        if THREAD_INFO_LIST in self.streams:
+            _, srva = self.streams[THREAD_INFO_LIST]
+            hsize, esize, n = struct.unpack_from("<III", self.d, srva)
+            for i in range(n):
+                tid, flags, err, status, create, _exit, kern, user, start = struct.unpack_from(
+                    "<IIIIQQQQQ", self.d, srva + hsize + esize * i)
+                out.append((tid, flags, err, status, create, kern, user, start))
+        return out
+
+    def comment(self) -> str:
+        """CommentStreamA: the gcrt crash handler stores the whole native event ring there."""
+        if COMMENT_A not in self.streams:
+            return ""
+        size, srva = self.streams[COMMENT_A]
+        return self.d[srva: srva + size].split(b"\0", 1)[0].decode("utf-8", errors="replace")
 
     def threads(self) -> dict[int, tuple[int, int, int]]:
         """thread id -> (TEB, stack start, stack size)."""
@@ -456,11 +505,83 @@ def result(status: int, text: str) -> int:
     return status
 
 
+def describe_memory(md: Minidump, largest: int) -> None:
+    info = md.memory_info()
+    if not info:
+        print("memory regions: no MemoryInfoList stream (dump written without MiniDumpWithFullMemoryInfo)")
+        return
+    totals: dict[tuple[str, str], list[int]] = {}
+    for base, _abase, size, state, prot, typ in info:
+        if state == MEM_FREE:
+            continue
+        key = (MEM_TYPES.get(typ, f"type {typ:X}"), "committed" if state == MEM_COMMIT else "reserved")
+        t = totals.setdefault(key, [0, 0])
+        t[0] += size
+        t[1] += 1
+    parts = [f"{k[0]} {k[1]} {v[0] / 1048576:.1f} MiB in {v[1]}" for k, v in sorted(totals.items())]
+    print(f"memory regions: {len(info)} entries; " + "; ".join(parts))
+    private = sorted((r for r in info if r[3] == MEM_COMMIT and r[5] == 0x20000), key=lambda r: -r[2])
+    for base, abase, size, _state, prot, _typ in private[:largest]:
+        print(f"  private committed 0x{base:016X} {size / 1048576:8.1f} MiB protect 0x{prot:X} "
+              f"(allocation 0x{abase:016X})")
+
+
+def describe_threads(md: Minidump, mods) -> None:
+    info = md.thread_info()
+    if not info:
+        print("thread information: no ThreadInfoList stream (dump written without MiniDumpWithThreadInfo)")
+        return
+    first = min(r[4] for r in info if r[4]) if any(r[4] for r in info) else 0
+    print(f"thread information: {len(info)} threads (created = seconds after the first thread; CPU = user + kernel)")
+    for tid, flags, err, status, create, kern, user, start in info:
+        mod = module_of(mods, start)
+        where = f"{os.path.basename(mod[3])}+0x{start - mod[0]:X}" if mod else f"0x{start:X}"
+        extra = f", dump flags 0x{flags:X} error 0x{err:X}" if flags or err else ""
+        print(f"  thread {tid:6}: start {where}, created +{(create - first) / 1e7:.3f} s, CPU "
+              f"{(user + kern) / 1e7:.3f} s, exit status 0x{status:X}{extra}")
+
+
+def print_events(md: Minidump, last: int) -> None:
+    text = md.comment()
+    if not text:
+        print("native events: no comment stream in this dump")
+        return
+    lines = text.splitlines()
+    print(f"native events (comment stream): {lines[0] if lines else ''}")
+    for line in lines[1:][-last:]:
+        print(line)
+
+
+def check_report(path: Path) -> int:
+    """Summary of a gcrt text report: key lines and sections present. Exit 0 if every section is there, 1 otherwise."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    print(f"text report {path.name}: {len(text)} bytes, {len(lines)} lines")
+    for key in REPORT_KEYS:
+        hit = next((line for line in lines if line.startswith(key)), None)
+        if hit is not None:
+            print(f"  {hit[:200]}")
+    missing = [s for s in REPORT_SECTIONS if not any(line.startswith(s) for line in lines)]
+    threads = sum(1 for line in lines if line.startswith("thread "))
+    events = sum(1 for line in lines if line.startswith("  -"))
+    print(f"  {threads} thread lines, {events} event lines")
+    if missing:
+        print(f"  missing sections: {missing}")
+        return EXIT_ERROR
+    print("  every section present")
+    return EXIT_EXPLAINED
+
+
 def inspect_dump(args) -> int:
     md = Minidump(args.dump)
     describe_system(md)
+    mods = md.modules()
+    describe_memory(md, args.regions)
+    describe_threads(md, mods)
+    if args.events:
+        print_events(md, args.events)
     if EXCEPTION not in md.streams:
-        print("no exception stream: not a crash dump")
+        print("no exception stream: a hang report (gcrt watchdog) or not a crash dump")
         return EXIT_ERROR
     _, rva = md.streams[EXCEPTION]
     tid = struct.unpack_from("<I", md.d, rva)[0]
@@ -527,11 +648,25 @@ def main() -> int:
     ap.add_argument("--find-in", nargs="+", default=[], metavar="EXE", help="local executables to search")
     ap.add_argument("--window", type=int, default=96, help="bytes disassembled before rip (default 96)")
     ap.add_argument("--self-test", action="store_true", help="check the verdicts on synthetic instructions")
+    ap.add_argument("--regions", type=int, default=8, metavar="N",
+                    help="largest committed private regions listed (default 8)")
+    ap.add_argument("--events", type=int, default=0, metavar="N",
+                    help="last N native events of the comment stream (gcrt dumps)")
+    ap.add_argument("--report", type=Path, metavar="TXT",
+                    help="gcrt text report to summarize (key lines, sections present); alone or with a dump")
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.report is not None:
+        try:
+            status = check_report(args.report)
+        except OSError as e:
+            print(f"{args.report}: cannot read the report: {e}", file=sys.stderr)
+            return EXIT_ERROR
+        if args.dump is None:
+            return status
     if args.dump is None:
-        ap.error("a minidump is required (or --self-test)")
+        ap.error("a minidump is required (or --self-test, or --report)")
     try:
         return inspect_dump(args)
     except (OSError, struct.error, IndexError, ValueError) as e:

@@ -155,7 +155,10 @@ and assets are read from the player's files.
     earlier). This suggests, as a hypothesis only, a fault outside the program; more reports are needed before
     drawing any conclusion. Crash reports now identify the exact executable (file name, SHA-1, build commit), the
     processor and the faulting code bytes, without any local path, and `tools/crash_inspect.py` checks whether a
-    fault is explained by its instruction;
+    fault is explained by its instruction. They also give the microcode and firmware versions, the graphics driver,
+    the memory regions, the call stacks of every thread at the time of the fault, the last native events and log
+    lines, and whether the same crash already happened on that computer; a watchdog writes a report when the game
+    freezes;
   - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
     a texture). Dolphin does not show them; the cause is under investigation;
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays

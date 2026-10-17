@@ -31,6 +31,7 @@ extern "C" {
 #include "gcrt_console.h"
 #include "gcrt_focus.h"
 #include "gcrt_crash.h"
+#include "gcrt_diag.h"
 #include "gcrt_game_config.h"
 #include "gcrt_user_dir.h"
 #include "trace.h"
@@ -152,7 +153,7 @@ struct GcrtPlatform {
 
 namespace {
 GcrtPlatform* g_platform = nullptr;
-[[noreturn]] void crash_test(const std::string& kind);
+void crash_test(GcrtPlatform* p);
 
 double emulated_seconds(const GcrtPlatform* p) {
   return static_cast<double>(gcrt_cpu_ticks(p->g)) / static_cast<double>(GCRT_TB_HZ);
@@ -351,6 +352,7 @@ double wait_for_pipelines(GcrtPlatform* p, bool beforeTextureCopy) {
   }
   ++p->pipelineStalls;
   p->pipelineWait += waited;
+  gcrt_diag_event(GCRT_EV_PIPELINE_WAIT, static_cast<uint64_t>(waited * 1e6), gcrt::platform::host_pending_pipelines());
   if (beforeTextureCopy) {
     ++p->pipelineStallsCopy;
     p->pipelineWaitCopy += waited;
@@ -508,6 +510,7 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     gcrt::platform::host_end_frame();
     ++p->framesPresented;
     p->input.framesPresented = p->framesPresented;
+    gcrt_diag_event(GCRT_EV_FRAME_PRESENTED, p->framesPresented, vi_fields(p));
     if (p->timingLog != nullptr) {
       const int64_t tEnd = steady_us();
       std::fprintf(p->timingLog, "P,%lld,%lld,%lld,%lld,%lld,%lld,%llu\n", static_cast<long long>(tFrame),
@@ -523,23 +526,31 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     }
     p->capturesWritten += static_cast<uint32_t>(gcrt::gx::poll_efb_captures());
     if (p->crashTestFrame > 0 && p->framesPresented >= p->crashTestFrame) {
-      crash_test(p->crashTestKind);
+      crash_test(p);
     }
   } else {
     ++p->framesSkipped;
+    gcrt_diag_event(GCRT_EV_FRAME_SKIPPED, p->framesSkipped, vi_fields(p));
   }
   // Between two frames: the only safe point for Aurora's window events (resize, display scale, close).
   poll_window(p);
+  gcrt_diag_heartbeat(); // progress of the game loop, watched by the hang watchdog (gcrt_crash.h)
   open_frame(p);
 }
 
-// Deliberate fault (test of the crash handler, GCRT_CRASH_TEST): read of a non-canonical address, write to NULL or
-// abort().
-[[noreturn]] void crash_test(const std::string& kind) {
-  std::fflush(nullptr);
-  if (kind == "abort") {
-    std::abort();
-  }
+// Deliberate faults (test of the crash handler and of the watchdog, GCRT_CRASH_TEST, see gcrt_platform.h).
+__declspec(noinline) int crash_recurse(int depth) {
+  volatile char frame[512];
+  frame[depth & 511] = static_cast<char>(depth);
+  return crash_recurse(depth + 1) + frame[(depth + 1) & 511];
+}
+
+} // namespace
+// C runtime entry called by a pure virtual call (vcruntime); called directly by the "purecall" test.
+extern "C" int __cdecl _purecall(void);
+namespace {
+
+[[noreturn]] void crash_fault(const std::string& kind) {
   // 0x8000000000000000 is non-canonical on x86-64 (bits 63..47 differ): a general protection fault, as described.
   volatile uintptr_t bad = kind == "write" ? 0 : static_cast<uintptr_t>(1) << (sizeof(uintptr_t) * 8 - 1);
   if (kind == "write") {
@@ -548,6 +559,49 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
     (void)*reinterpret_cast<volatile int*>(bad);
   }
   std::abort();
+}
+
+void crash_test(GcrtPlatform* p) {
+  const std::string& kind = p->crashTestKind;
+  gcrt_diag_event(GCRT_EV_NOTE, 0xC4A5, p->framesPresented);
+  std::fflush(nullptr);
+  if (kind == "hang") {
+    // The game thread stops for GCRT_CRASH_TEST_HANG seconds (default 15), then the game goes on: the watchdog must
+    // write a hang report (GCRT_WATCHDOG lower than that) without ending the game.
+    p->crashTestFrame = 0;
+    const double seconds = std::strtod(env("GCRT_CRASH_TEST_HANG", "15").c_str(), nullptr);
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: game thread stopped for %.0f s", seconds);
+    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: game thread resumed");
+    return;
+  }
+  if (kind == "abort") {
+    std::abort();
+  }
+  if (kind == "terminate") {
+    std::terminate();
+  }
+  if (kind == "stack") {
+    crash_recurse(0);
+  }
+  if (kind == "purecall") {
+    _purecall();
+  }
+  if (kind == "invalid") {
+    char buf[4];
+    volatile size_t zero = 0;
+    strcpy_s(buf, zero, "x"); // invalid parameter: size 0
+  }
+  if (kind == "thread") {
+    // Access violation in a thread of the runtime that is not the game thread.
+    std::thread([] { crash_fault("write"); }).join();
+  }
+  if (kind == "render") {
+    // Access violation in the renderer's own worker thread (Aurora).
+    gcrt::platform::host_crash_in_render_thread();
+    std::this_thread::sleep_for(std::chrono::seconds(30));
+  }
+  crash_fault(kind);
 }
 
 void report(GcrtPlatform* p, const char* label) {
@@ -610,6 +664,17 @@ void crash_context(void* user, GcrtCrashAppend append, void* sink) {
                 static_cast<unsigned long long>(p->framesPresented), static_cast<unsigned long long>(p->framesSkipped),
                 static_cast<unsigned long long>(vi_fields(p)), static_cast<unsigned long long>(p->pipelineStalls),
                 p->pipelineWait, p->efbWidth, p->efbHeight);
+  append(sink, line);
+  static const char* const kPacing[] = {"host", "throttle", "free"};
+  static const char* const kPipelines[] = {"sync", "frame", "async"};
+  const GcrtGameConfig* gc = gcrt_game_config();
+  std::snprintf(line, sizeof(line),
+                "settings: window %dx%d, fullscreen %d, render scale %.2f, EFB lines %u, pacing %s, pipelines %s, "
+                "XFB filter %d, copy filter %d; heartbeat %llu\n",
+                gc->windowWidth, gc->windowHeight, gc->fullscreen ? 1 : 0, static_cast<double>(gc->renderScale),
+                p->efbLines, kPacing[static_cast<int>(p->pacing)], kPipelines[static_cast<int>(p->pipelineMode)],
+                p->xfbFilter ? 1 : 0, static_cast<int>(p->copyFilterMode),
+                static_cast<unsigned long long>(g_gcrt_heartbeat));
   append(sink, line);
 }
 
@@ -913,6 +978,15 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
     std::fflush(nullptr);
     std::exit(0);
+  }
+  // Libraries initialized with the window (SDL, Dawn) may have replaced the crash filter: put it back.
+  gcrt_crash_handler_rearm();
+  {
+    const GcrtGameConfig* gc = gcrt_game_config();
+    gcrt_diag_event(GCRT_EV_SETTING, GCRT_EVS_RENDER_SCALE, static_cast<uint64_t>(gc->renderScale * 1000.0f));
+    gcrt_diag_event(GCRT_EV_SETTING, GCRT_EVS_FULLSCREEN, gc->fullscreen ? 1u : 0u);
+    gcrt_diag_event(GCRT_EV_SETTING, GCRT_EVS_WINDOW_SIZE,
+                    (static_cast<uint64_t>(gc->windowWidth) << 32) | static_cast<uint32_t>(gc->windowHeight));
   }
   // Console window (gcrt_console.h), opened or not now that the game starts. With the setup menu: its box (or the saved
   // value when the menu is skipped), in which --console / --no-console already set this launch's value. Without the

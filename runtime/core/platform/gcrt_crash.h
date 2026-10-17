@@ -1,26 +1,43 @@
 /*
- * Crash handler of the runtime (generic GameCube, diagnostic).
+ * Crash handler and hang watchdog of the runtime (generic GameCube, diagnostic).
  *
- * On a fatal host exception (access violation for a read or a write, illegal instruction, stack overflow...) or on
- * abort(), writes into the crash folder:
- *   crash-<date>-<pid>.txt           exception code and name, faulting address (module + offset), accessed address,
- *                                    thread (name, game thread or not), host registers and call stack (module + offset,
- *                                    function if a PDB is present), guest state (pc, lr, registers, call stack read from
- *                                    the guest stack frames, last blocks, function names known to the runtime), process
- *                                    memory (working set, private bytes, handles), lines added by the platform;
- *   crash-<date>-<pid>.dmp           minidump (MiniDumpWriteDump: threads, indirectly referenced memory, handles);
- *   crash-<date>-<pid>-guest-ram.bin guest main memory (MEM1 and the area of the REL modules), raw, big-endian.
- * The same summary goes to stderr. The exception is then passed on (process exit code = exception code).
+ * Causes covered: unhandled host exception in any thread (access violation, illegal instruction, stack overflow...,
+ * game thread, renderer, audio or any other thread), abort(), std::terminate (game thread; elsewhere it ends in
+ * abort()), pure virtual call, invalid parameter given to a C runtime function. Not covered: fast-fail exits
+ * (__fastfail, /GS failures, heap corruption detected by Windows), which bypass every in-process handler.
+ *
+ * Files written into the crash folder, never overwriting (a -2, -3... suffix if needed):
+ *   crash-<date>-<pid>.txt           text report, written first and section by section (see notes below);
+ *   crash-<date>-<pid>.dmp           minidump (MiniDumpWriteDump: threads and thread information, memory region list,
+ *                                    indirectly referenced memory, unloaded modules, handles; comment stream = the
+ *                                    whole native event ring);
+ *   crash-<date>-<pid>-guest-ram.bin guest main memory (MEM1 and the area of the REL modules), raw, big-endian;
+ *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game keeps running;
+ *   crash-signatures.txt             one line per crash (signature, date): recurrence detection.
+ * Text report: cause, exception, faulting address (module + offset), recurrence ("same signature as the crash of
+ * <date>"), executable (name, SHA-1, PE time stamp, build commit), processor, microcode revision and firmware (read
+ * from the registry), Windows version, graphics adapter and driver (as reported by the renderer), process memory
+ * (working set, private bytes and their peaks, handles), address space by region type and the largest committed
+ * private regions, registers, code bytes around rip, host call stack (raw unwind, then dbghelp names when a PDB is
+ * present), guest state (pc, lr, registers, guest call stack, last blocks: GCRT_GUEST_HISTORY), every thread with
+ * its call stack at the time of the report (threads suspended while it is captured), the last native events
+ * (platform/gcrt_diag.h, GCRT_DIAG_EVENTS), the last log lines, command line, GCRT_* variables, platform lines
+ * (frames, settings), loaded modules. The same text goes to stderr. The exception is then passed on (process exit
+ * code = exception code).
  *
  * Folder: GCRT_CRASH_DIR, otherwise GCRT_CAPTURE_DIR (automated runs: run folder), otherwise the default given by the
  * platform (<user folder>/crashes/), otherwise the system temporary folder (%TEMP%\gcrt-crashes), never the current
- * folder. Only the 5 most recent reports are kept (older ones are deleted at startup when the folder is chosen).
+ * folder; if the folder cannot be written, the temporary folder, then stderr only. The 5 most recent reports of each
+ * kind are kept (older ones are deleted at startup when the folder is chosen).
  * Only the .txt may be shared: it names the executable and the host modules by their file name only, and any
- * user-profile folder left in it is replaced by the literal %USERPROFILE%, so that it does not reveal the Windows user
- * name. The guest memory file holds game data and the minidump holds local paths: they stay on the user's machine and
- * must not be attached to public issues. GCRT_CRASH_HANDLER=0 disables the handler
- * (to let a debugger or Windows Error Reporting see the exception first). Windows only; elsewhere the functions do
- * nothing.
+ * user-profile folder (or the user name as a path component) left in it is replaced by %USERPROFILE% / %USERNAME%.
+ * The guest memory file holds game data and the minidump holds local paths: they stay on the user's machine and must
+ * not be attached to public issues.
+ *
+ * Variables: GCRT_CRASH_HANDLER=0 disables the handler and the watchdog (to let a debugger or Windows Error Reporting
+ * see the exception first); GCRT_WATCHDOG=<seconds> without progress of the game loop before a hang report (default
+ * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached).
+ * Windows only; elsewhere the functions do nothing.
  */
 #ifndef GCRT_CRASH_H
 #define GCRT_CRASH_H
@@ -33,6 +50,10 @@ extern "C" {
 
 /* Installs the handler (once, from the game thread, before the game runs). `g`: guest state to report. */
 void gcrt_crash_handler_install(GcrtCpu* g);
+/* Installs our unhandled exception filter again if a library initialized later replaced it (noted in reports). */
+void gcrt_crash_handler_rearm(void);
+/* Graphics adapter and driver as reported by the renderer (free text, newlines allowed), printed in reports. */
+void gcrt_crash_handler_set_gpu_info(const char* text);
 /* Default crash folder (UTF-8), used when neither GCRT_CRASH_DIR nor GCRT_CAPTURE_DIR is set. */
 void gcrt_crash_handler_set_default_dir(const char* dir_utf8);
 /* Name of the guest function containing `address` (game layer: symbol map), NULL if unknown; `start` receives its
