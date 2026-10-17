@@ -167,7 +167,10 @@ void gcrt_console_start(GcrtConsoleChoice choice) {
   const HWND foreground = GetForegroundWindow();
   bool attached = false, created = false;
   if (choice != GCRT_CONSOLE_NONE) {
-    attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0; // started from a terminal: print there
+    // Started from a terminal: print there. If a console is already attached (e.g. by a library since early_init),
+    // AttachConsole fails with ERROR_ACCESS_DENIED (and AllocConsole would fail too): use that console.
+    attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0 || GetLastError() == ERROR_ACCESS_DENIED ||
+               GetConsoleWindow() != nullptr;
     if (!attached && choice == GCRT_CONSOLE_OPEN) {
       created = AllocConsole() != 0;
     }

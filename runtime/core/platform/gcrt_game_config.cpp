@@ -112,6 +112,10 @@ void gcrt_game_config_load(void) {
   }
   std::string line;
   while (std::getline(f, line)) {
+    // A file edited by hand on Windows has CRLF line ends: "console=0\r" must still read as "0".
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
+      line.pop_back();
+    }
     const auto eq = line.find('=');
     if (eq == std::string::npos) {
       continue;
