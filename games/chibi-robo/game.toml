@@ -138,3 +138,11 @@ scenarios = ["title-boot", "intro-no-card"]
 # for the address-based replacements installed in games/chibi-robo/main.c (GcrtGameDesc.install,
 # gcrt_hle_register). SDK functions do not need to be listed here: they are found by signature
 # (runtime/core/hle/sdk_signatures.tsv). See notes/hle.md. Example: GGTP01 = [0x801ABBC0]
+
+# tools/collect_diagnostics.cmd (tools/diag/): where the game's crash reports are and which process to inspect.
+# user_org / user_app must match gcrt_set_user_identity() in main.c: the crash handler writes to
+# %APPDATA%\<user_org>\<user_app>\crashes\ when the game is started normally.
+[diagnostics]
+user_org = "Chibi Robo PC"
+user_app = "Chibi Robo"
+exe_name = "chibi-robo.exe"

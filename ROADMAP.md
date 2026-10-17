@@ -155,7 +155,10 @@ and assets are read from the player's files.
     earlier). This suggests, as a hypothesis only, a fault outside the program; more reports are needed before
     drawing any conclusion. Crash reports now identify the exact executable (file name, SHA-1, build commit), the
     processor and the faulting code bytes, without any local path, and `tools/crash_inspect.py` checks whether a
-    fault is explained by its instruction;
+    fault is explained by its instruction. Two tools help players and testers tell an unstable machine from a bug:
+    `tools/collect_diagnostics.cmd` (read-only, anonymized: hardware error events, BIOS, microcode, drivers,
+    overlays, recent crash reports; nothing is sent) and `tools/cpustress/` (runs the recompiled-code instruction
+    patterns on every core and checks every result; a PASS does not prove the processor is sound);
   - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
     a texture). Dolphin does not show them; the cause is under investigation;
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays
