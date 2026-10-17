@@ -13,8 +13,11 @@ PowerShell 5.1, which ships with Windows 10 and 11. When it is run by hand, File
 
 The output goes by default to `%LOCALAPPDATA%\<user_org>\<user_app>\diagnostics\` (from `games/<game>/game.toml`
 `[diagnostics]`; `%LOCALAPPDATA%\game-diagnostics\` without it), not to the Desktop: the Desktop is often
-synchronised by OneDrive, which would upload the files before the player has read them. `-OutDir` chooses another
-folder; if that folder is inside a OneDrive folder, `summary.txt` says so.
+synchronised by OneDrive, which would upload the files before the player has read them. That `%LOCALAPPDATA%` is
+typically not synchronised by OneDrive is a `[hypothesis]` (OneDrive's folder backup is documented for Desktop,
+Documents and Pictures; we found no statement about AppData). `-OutDir` chooses another folder (created if it does not
+exist; if it cannot be created the tool stops with exit code 2); if that folder is inside a OneDrive folder,
+`summary.txt` says so.
 
 Without the `games/` folder (for example in an installed copy of the game), the crash folder is not known: pass it
 with `-CrashDir "%APPDATA%\<user_org>\<user_app>\crashes"`.
@@ -27,7 +30,7 @@ with `-CrashDir "%APPDATA%\<user_org>\<user_app>\crashes"`.
 | Processor name, cores, clocks | `Win32_Processor` (CIM) |
 | Microcode revision (current and previous) | registry `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0`, values `Update Revision` / `Previous Update Revision` |
 | BIOS vendor, version, date; motherboard maker and model | `Win32_BIOS`, `Win32_BaseBoard` (no serial number) |
-| Memory modules: size, maker, part number, reported and configured speed (to compare with the JEDEC speed of the part number: higher means an XMP/EXPO profile) | `Win32_PhysicalMemory` (no serial number) |
+| Memory modules: size, maker, part number, reported and configured speed (to compare with the JEDEC speed of the part number: a higher configured speed typically indicates an XMP/EXPO profile) | `Win32_PhysicalMemory` (no serial number) |
 | Windows edition, version, build, last boot | `Win32_OperatingSystem`, registry `...\Windows NT\CurrentVersion` (`DisplayVersion`, `UBR`) |
 | Graphics adapters: name, GPU, chipset vendor, driver version and date, hardware id (vendor, device, board, revision) | `Win32_VideoController` (`Name`, `VideoProcessor`, `AdapterCompatibility`, `DriverVersion`, `DriverDate`, `PNPDeviceID` without its instance suffix; Microsoft Learn, *Win32_VideoController class*) |
 | Version of the NVIDIA capture helper `nvspcap64.dll` if installed | file version information in `System32` |
@@ -53,8 +56,9 @@ Guest memory dumps (`*-guest-ram.bin`, about 25 MiB each) are copied only with `
 ## Anonymization
 
 Secrets: the profile folder name, `USERNAME`, the computer name, `USERDOMAIN` / `USERDNSDOMAIN`, the full name of a
-local account (and each of its words of 3 characters or more), account SIDs (`S-1-5-21-...`, string forms, and the
-binary form of the current user's SID).
+local account (and each of its words of 3 characters or more), the 8.3 short form of the profile folder (`JEREMI~1`
+style) if `TEMP` / `TMP` shows one (`[hypothesis]`: not verified on an account with a long name), account SIDs
+(`S-1-5-21-...`, string forms, and the binary form of the current user's SID).
 
 - **Text files** (`summary.txt`, `README.txt`, `whea-*`, crash `.txt`): every name of 2 characters or more is
   replaced by `[user]`, `[computer]`, `[domain]` or `[name]` where it stands alone (no ASCII letter or digit just
@@ -65,14 +69,25 @@ binary form of the current user's SID).
   upper and lower case. A name is replaced only where it stands alone, so that ordinary bytes are not altered (an
   account named `user` leaves `user32.dll` intact). A name of **2 or 3 characters** is replaced only in a context:
   after `\Users\` or `/Users/` (UTF-16 and 8-bit), after `=` (environment block) or `\\` (network name) in UTF-16.
-  SIDs: the digits after `S-1-5-21-` (UTF-16 and 8-bit), and the exact bytes of the current user's binary SID.
+  SIDs: the digits after `S-1-5-21-` (UTF-16 and 8-bit), the exact bytes of the current user's binary SID, and the
+  12 bytes of its three sub-authorities wherever they appear (every other account and group of the machine has the
+  same 12 bytes and differs only by its last number, so they are hidden too). The 12 bytes are random machine values,
+  so a false match in other data is improbable; the replacement keeps the length, so minidumps stay valid.
 - **Check**: after every file is written (`summary.txt` and `README.txt` included), the same rules are run again on
   each output file (text files: every name of 2+ characters in UTF-16, UTF-8 and ANSI form, the `[...]` marks being
   ignored). The verdict (`OK`, or `WARNING` with the file names) is printed and added to the end of `summary.txt`; on a
-  warning no `.zip` is made and the exit code is 1. `-CheckOnly <folder>` runs only this check on an existing folder.
+  warning no `.zip` is made and the exit code is 1. A file that cannot be read (locked, no access) counts as not
+  checked: warning, no `.zip`, exit code 1. Hidden files are checked too. `-CheckOnly <folder>` runs only this check on
+  an existing folder.
 
 Limits (written in `summary.txt` when they apply):
 
+- **A name stuck to a letter or a digit is neither masked nor detected**, in any file (for example a name followed by
+  a number, or inside a longer word): the rules require that no ASCII letter or digit touches the name.
+- The 8.3 short form of the profile folder is searched only through `TEMP` / `TMP` (`[hypothesis]`: not verified on
+  an account with a long name); it can be missed if it appears elsewhere only.
+- Only SIDs of the `S-1-5-21-a-b-c-RID` shape get the 12-byte sub-authority rule; for any other shape (for example an
+  Azure AD account) only the exact SID of this account is hidden, and `summary.txt` says so.
 - A name of 2 or 3 characters outside these contexts in a minidump cannot be told apart from ordinary bytes and is
   left as is; a name of 1 character is not masked at all. The check has the same blind spot.
 - In a minidump, a name of 4 characters or more is replaced wherever it stands alone, including, rarely, in bytes that
@@ -100,7 +115,8 @@ Limits (written in `summary.txt` when they apply):
 
 `-Game <name>` (default: the only folder in `games/`), `-OutDir <folder>` (default: see above), `-Days N`,
 `-MaxCrashes N`, `-CrashDir <folder>[,<folder>]`, `-IncludeGuestRam`, `-NoZip`, `-NoPause`, `-CheckOnly <folder>`.
-Exit code: 0 done, 1 the anonymization check found a name or SID (no `.zip`), 2 `-CheckOnly` on a missing folder.
+Exit code: 0 done, 1 the anonymization check found a name or SID or could not read a file (no `.zip`), 2 `-CheckOnly`
+on a missing folder, or `-OutDir` that does not exist and could not be created.
 
 The tool does not depend on the game version (US or PAL): it reads the machine and whatever crash reports it finds.
 

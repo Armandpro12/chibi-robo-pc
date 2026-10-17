@@ -12,7 +12,8 @@
 
 .PARAMETER Game        Folder name under games/ (default: the only game present).
 .PARAMETER OutDir      Parent folder of the output (default: %LOCALAPPDATA%\<user_org>\<user_app>\diagnostics, a
-                       folder that OneDrive does not synchronise; the Desktop often is).
+                       folder that OneDrive typically does not synchronise [hypothesis]; the Desktop often is). A
+                       folder that does not exist is created; if that fails the tool stops (exit code 2).
 .PARAMETER Days        How far back to read hardware error events (default 30).
 .PARAMETER MaxCrashes  How many of the most recent crash reports to copy (default 5).
 .PARAMETER CrashDir    Extra folders to search for crash reports (crash-*.txt / crash-*.dmp).
@@ -22,7 +23,8 @@
 .PARAMETER CheckOnly   Collect nothing: run the anonymization check on the files of an existing folder (recursively)
                        and exit with code 0 if no name or SID of this account and computer is found, 1 otherwise.
 .NOTES
-  Exit code: 0 done (anonymization check OK), 1 the check found a name or SID left in the output (no .zip is made).
+  Exit code: 0 done (anonymization check OK), 1 the check found a name or SID left in the output or could not read a
+  file (no .zip is made), 2 the folder given to -OutDir could not be created, or the one given to -CheckOnly is missing.
 #>
 param(
     [string]$Game = "",
@@ -80,13 +82,16 @@ $crashDirs += $CrashDir
 
 # --------------------------------------------------------------------------------------------------------------------
 # Anonymization. Secrets: profile folder name, USERNAME, computer name, USERDOMAIN / USERDNSDOMAIN, the full name of a
-# local account (Win32_UserAccount), account SIDs (S-1-5-21-..., string forms; binary form of the current user's SID).
+# local account (Win32_UserAccount), the 8.3 short form of the profile folder if TEMP / TMP shows one (JEREMI~1 style),
+# account SIDs (S-1-5-21-..., string forms; binary form of the current user's SID; the 12 bytes of its three
+# sub-authorities, shared by every other account and group of the machine, which differ only by their last number).
 # Text files: names replaced by [user] / [computer] / [domain] / [name], SIDs by S-1-5-21-[removed].
 # Binary files (minidumps, guest RAM): same-length replacement by 'x' (or 'x' 0x00 pairs), so that their structure,
 # offsets and sizes stay valid. To avoid altering code bytes and ordinary values (an account named "user" must not turn
 # user32.dll into xxxx32.dll), a name is replaced in binary files only when it stands alone (no ASCII letter or digit
 # just before or after it), and, if it is shorter than 4 characters, only in a context: after \Users\ or /Users/
-# (UTF-16 and 8-bit), after "=" (environment block) or "\\" (network name) in UTF-16.
+# (UTF-16 and 8-bit), after "=" (environment block) or "\\" (network name) in UTF-16. A name stuck to a letter or a
+# digit is neither masked nor detected (text files included).
 # --------------------------------------------------------------------------------------------------------------------
 $RxCI = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
 $RxNone = [System.Text.RegularExpressions.RegexOptions]::None
@@ -106,6 +111,11 @@ function Add-Secret([string]$Value, [string]$Label) {
 }
 if ($env:USERPROFILE) { Add-Secret (Split-Path -Leaf $env:USERPROFILE) "user" }
 Add-Secret $env:USERNAME "user"
+# 8.3 short form of a long profile folder name (JEREMI~1 style), as it can appear in TEMP / TMP. [hypothesis]: not
+# verified on an account with a long name; the segment after \Users\ is taken as a secret when it contains "~".
+foreach ($tp in @($env:TEMP, $env:TMP)) {
+    if ($tp -and $tp -match '(?i)\\Users\\([^\\]+)') { if ($Matches[1].Contains("~")) { Add-Secret $Matches[1] "user" } }
+}
 Add-Secret $env:COMPUTERNAME "computer"
 Add-Secret $env:USERDOMAIN "domain"
 Add-Secret $env:USERDNSDOMAIN "domain"
@@ -123,11 +133,19 @@ if ($env:USERNAME) {
 }
 $secrets = @($secrets | Sort-Object { $_.Value.Length } -Descending)
 $userSidBytes = $null
+$sidPrefixBytes = $null
 try {
     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
     $userSidBytes = New-Object byte[] $sid.BinaryLength
     $sid.GetBinaryForm($userSidBytes, 0)
-} catch { $userSidBytes = $null }
+    # Binary SID: revision (1), sub-authority count (1), authority (6), then 32-bit sub-authorities: 21, a, b, c, RID.
+    # The 12 bytes a, b, c are the same for every account and group of the machine (or domain): other accounts and
+    # groups seen in a dump differ only by the RID. Other SID shapes (for example Azure AD): only the exact SID is hidden.
+    if ($userSidBytes.Length -eq 28 -and $userSidBytes[0] -eq 1 -and $userSidBytes[1] -eq 5 -and $userSidBytes[7] -eq 5 -and [BitConverter]::ToUInt32($userSidBytes, 8) -eq 21) {
+        $sidPrefixBytes = New-Object byte[] 12
+        [Array]::Copy($userSidBytes, 12, $sidPrefixBytes, 0, 12)
+    }
+} catch { $userSidBytes = $null; $sidPrefixBytes = $null }
 
 function Hide-Text([string]$s) {
     if ($null -eq $s) { return $s }
@@ -181,6 +199,8 @@ function Get-ByteRules([bool]$Binary) {
     $rules.Add((New-Rule '(?<=S-1-5-21-)\d+(?:-\d+){2,3}' $false "SID" $RxNone))
     $rules.Add((New-Rule '(?<=S\x00-\x001\x00-\x005\x00-\x002\x001\x00-\x00)(?:\d\x00)+(?:-\x00(?:\d\x00)+){2,3}' $true "SID" $RxNone))
     if ($userSidBytes) { $rules.Add((New-Rule ([regex]::Escape($latin1.GetString($userSidBytes))) $false "SID" $RxNone)) }
+    # The 12-byte prefix (a, b, c) of the machine SID: covers the other accounts and groups (same prefix, other RID).
+    if ($sidPrefixBytes) { $rules.Add((New-Rule ([regex]::Escape($latin1.GetString($sidPrefixBytes))) $false "SID" $RxNone)) }
     return $rules
 }
 $binRules = Get-ByteRules $true
@@ -204,7 +224,9 @@ function Find-Leaks($Files, [string]$Root) {
         $rel = $f.FullName
         if ($Root -and $rel.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $rel.Substring($Root.Length).TrimStart('\', '/') }
         if ($f.Name -like "*.zip") { $hits += ("{0} (compressed: not checked)" -f $rel); continue }
-        $t = $latin1.GetString([System.IO.File]::ReadAllBytes($f.FullName))
+        # A file that cannot be read has not been checked: it counts as a possible leak (no OK, no .zip, exit code 1).
+        try { $t = $latin1.GetString([System.IO.File]::ReadAllBytes($f.FullName)) }
+        catch { $hits += ("{0} (could not be read: not checked)" -f $rel); continue }
         if (Test-BinaryFile $f.Name) { $rules = $binRules }
         else { $rules = $textRules; foreach ($m in $MaskTokens) { $t = $t.Replace($m, " ") } }
         $what = @($rules | Where-Object { $_.Rx.IsMatch($t) } | ForEach-Object { $_.Label } | Sort-Object -Unique)
@@ -216,23 +238,38 @@ function Find-Leaks($Files, [string]$Root) {
 if ($CheckOnly) {
     if (-not (Test-Path -LiteralPath $CheckOnly -PathType Container)) { Write-Host ("Not a folder: {0}" -f $CheckOnly); exit 2 }
     $root = (Resolve-Path -LiteralPath $CheckOnly).Path
-    $hits = @(Find-Leaks @(Get-ChildItem -LiteralPath $root -Recurse -File) $root)
-    if ($hits.Count) { Write-Host ("WARNING: a name or SID of this account or computer is still present in: {0}" -f ($hits -join "; ")); exit 1 }
+    $hits = @(Find-Leaks @(Get-ChildItem -LiteralPath $root -Recurse -File -Force) $root)
+    if ($hits.Count) { Write-Host ("WARNING: a name or SID of this account or computer is still present, or a file could not be checked, in: {0}" -f ($hits -join "; ")); exit 1 }
     Write-Host "OK: no name or SID of this account or computer found."
     exit 0
 }
 
 # --------------------------------------------------------------------------------------------------------------------
-# Output folder. Default: the local application data folder of the game (not synchronised by OneDrive, unlike the
-# Desktop when OneDrive folder backup is on).
+# Output folder. Default: the local application data folder of the game (typically not synchronised by OneDrive,
+# unlike the Desktop when OneDrive folder backup is on [hypothesis]). A folder given with -OutDir that does not exist is
+# created; if that fails the tool stops with exit code 2 rather than writing somewhere else without saying so.
 # --------------------------------------------------------------------------------------------------------------------
-if (-not $OutDir -and $env:LOCALAPPDATA) {
-    if ($diag.ContainsKey("user_org") -and $diag.ContainsKey("user_app")) {
-        $OutDir = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA $diag["user_org"]) $diag["user_app"]) "diagnostics"
-    } else { $OutDir = Join-Path $env:LOCALAPPDATA "game-diagnostics" }
-    New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction SilentlyContinue | Out-Null
+$outNote = ""
+if ($OutDir) {
+    if (-not (Test-Path -LiteralPath $OutDir -PathType Container)) {
+        # New-Item -Force can return without error and without creating anything (a file in the path): check the result.
+        try { New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction Stop | Out-Null; if (-not (Test-Path -LiteralPath $OutDir -PathType Container)) { throw "not created" } }
+        catch { Write-Host ("ERROR: the folder given with -OutDir does not exist and could not be created: {0}" -f $OutDir); exit 2 }
+        $outNote = "Note: the folder given with -OutDir did not exist; it was created."
+    }
+} else {
+    if ($env:LOCALAPPDATA) {
+        if ($diag.ContainsKey("user_org") -and $diag.ContainsKey("user_app")) {
+            $OutDir = Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA $diag["user_org"]) $diag["user_app"]) "diagnostics"
+        } else { $OutDir = Join-Path $env:LOCALAPPDATA "game-diagnostics" }
+        try { New-Item -ItemType Directory -Path $OutDir -Force -ErrorAction Stop | Out-Null; if (-not (Test-Path -LiteralPath $OutDir -PathType Container)) { throw "not created" } }
+        catch { $OutDir = "" }
+    }
+    if (-not $OutDir) {
+        $OutDir = (Get-Location).Path
+        $outNote = "Note: the default output folder could not be created; the current folder is used. Use -OutDir to choose another."
+    }
 }
-if (-not $OutDir -or -not (Test-Path -LiteralPath $OutDir)) { $OutDir = (Get-Location).Path }
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $out = Join-Path $OutDir ("{0}-diagnostics-{1}" -f $label, $stamp)
 New-Item -ItemType Directory -Path $out -Force | Out-Null
@@ -255,6 +292,7 @@ function Try-Cim([string]$Class) {
 Add-Line ("Diagnostics for: {0}" -f $label)
 Add-Line ("Collected: {0} (local time), UTC offset {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), ([TimeZoneInfo]::Local.GetUtcOffset((Get-Date))).ToString())
 Add-Line "Nothing was sent anywhere. Review the files before sharing them."
+if ($outNote) { Add-Line $outNote }
 foreach ($od in @($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial)) {
     if ($od -and $out.StartsWith($od.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
         Add-Line "Note: the output folder is inside a OneDrive folder, so OneDrive may upload it. Use -OutDir to choose another folder."
@@ -295,7 +333,7 @@ foreach ($b in Try-Cim "Win32_BaseBoard") {
     Add-Line ("Motherboard: {0} {1}" -f $b.Manufacturer, $b.Product)
 }
 
-Add-Section "Memory modules (a configured speed above the JEDEC speed of the part number means an XMP/EXPO profile)"
+Add-Section "Memory modules (a configured speed above the JEDEC speed of the part number typically indicates an XMP/EXPO profile)"
 foreach ($m in Try-Cim "Win32_PhysicalMemory") {
     Add-Line ("{0}: {1} GiB, {2} {3}, speed {4} MT/s, configured {5} MT/s" -f $m.DeviceLocator,[math]::Round($m.Capacity / 1GB, 1), $m.Manufacturer, ("" + $m.PartNumber).Trim(), $m.Speed, $m.ConfiguredClockSpeed)
 }
@@ -507,8 +545,10 @@ OneDrive folder (often the case of the Desktop), OneDrive may upload it: summary
 Anonymization: your user name, profile folder name, computer name, domain name and the full name of a local
 account are replaced by [user] / [computer] / [domain] / [name] in the text files; account SIDs (S-1-5-21-...)
 by S-1-5-21-[removed]. In the minidumps they are overwritten by x characters of the same length, only where
-the name stands alone; a name shorter than 4 characters only in a folder path (\Users\...), an environment
-variable or a network name (summary.txt says if this applies). A final check searches every output file again
+the name stands alone; a name shorter than 4 characters only in a folder path (\Users\...) or, in UTF-16, an
+environment variable or a network name (summary.txt says if this applies). Also overwritten in the minidumps: the 12
+bytes of the machine part of the account SID, so that the other accounts and groups of this computer are hidden too.
+A name stuck to a letter or a digit is neither masked nor detected. A final check searches every output file again
 and its result is at the end of summary.txt. Please still look at the files before sharing them, and remove
 anything you do not want to share.
 "@
@@ -520,9 +560,11 @@ foreach ($k in $secrets) {
     if ($n -lt 2) {
         Add-Line ("LIMIT: the {0} name has 1 character and cannot be masked. Look at the files before sharing them." -f $k.Label)
     } elseif ($n -lt 4 -and $binCopied -gt 0) {
-        Add-Line ("LIMIT: the {0} name has {1} characters: in the .dmp / .bin files it was masked only in a folder path (\Users\...), an environment variable or a network name; elsewhere in them it cannot be told apart from ordinary bytes and was left as is. Do not share the .dmp files if this matters to you." -f $k.Label, $n)
+        Add-Line ("LIMIT: the {0} name has {1} characters: in the .dmp / .bin files it was masked only in a folder path (\Users\...) and, in UTF-16 text, after = (environment variable) or \\ (network name); elsewhere in them it cannot be told apart from ordinary bytes and was left as is. Do not share the .dmp files if this matters to you." -f $k.Label, $n)
     }
 }
+Add-Line "LIMIT: a name stuck to a letter or a digit (inside a longer word, or followed by a number) is neither masked nor detected by the check, in any file. Look at the files before sharing them."
+if ($userSidBytes -and -not $sidPrefixBytes) { Add-Line "LIMIT: the account SID has an unusual shape: only the SID of this account was masked in the .dmp files, not the other accounts of the computer." }
 if (-not ($secrets | Where-Object { $_.Label -eq "name" })) { Add-Line "Full account name: not found (only local accounts are read); it is not masked." }
 
 Save-Text "README.txt" $readme
@@ -530,10 +572,10 @@ Save-Text "summary.txt" ($summary -join "`r`n")
 
 # Check every output file as written, summary.txt and README.txt included, then add the verdict to summary.txt and
 # check that file once more.
-$leaks = @(Find-Leaks @(Get-ChildItem -LiteralPath $out -Recurse -File) $out)
+$leaks = @(Find-Leaks @(Get-ChildItem -LiteralPath $out -Recurse -File -Force) $out)
 Add-Section "Anonymization check (every output file, after writing)"
 if ($leaks.Count) {
-    Add-Line ("WARNING: a name or SID of this account or computer is still present in: {0}" -f ($leaks -join "; "))
+    Add-Line ("WARNING: a name or SID of this account or computer is still present, or a file could not be checked, in: {0}" -f ($leaks -join "; "))
     Add-Line "No .zip was made. Remove or edit these files before sharing anything."
 } else { Add-Line "OK: no name or SID of this account or computer found in the output files." }
 Save-Text "summary.txt" ($summary -join "`r`n")
@@ -555,7 +597,7 @@ if (-not $NoPause -and [Environment]::UserInteractive -and $Host.Name -eq "Conso
     # Interactive use only: show the result in File Explorer (explorer.exe /select,<file>), since the default folder
     # is under the hidden AppData folder.
     $show = if ($zipPath) { $zipPath } else { $out }
-    try { Start-Process -FilePath "explorer.exe" -ArgumentList ('/select,"{0}"' -f $show) } catch { }
+    try { Start-Process -FilePath (Join-Path $env:SystemRoot "explorer.exe") -ArgumentList ('/select,"{0}"' -f $show) } catch { }
     Write-Host "Press Enter to close."
     [void][Console]::ReadLine()
 }
