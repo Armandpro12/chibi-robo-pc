@@ -9,7 +9,9 @@
  *
  * When the parent redirected the standard output or error (pipe, file, NUL device: launchers, test benches), nothing is
  * ever opened and no handle is touched: those runs behave exactly as before. A process that already has a console at
- * startup is left alone as well. Notes: notes/runtime.md (console window). */
+ * startup is left alone as well. In the "no focus" test mode (GCRT_NO_FOCUS, gcrt_focus.h) a new console window is
+ * created minimized without activation, and the foreground is never handed back to the game window. Notes:
+ * notes/runtime.md (console window). */
 #include <stdbool.h>
 
 #ifdef __cplusplus

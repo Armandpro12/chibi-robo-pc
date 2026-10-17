@@ -41,7 +41,10 @@ Determinism of the scenarios (notes/validation.md § 10b):
   - START TIME: the game starts at cycle 0 (static boot, no interpreted apploader since step 10b), for the
     reference as for the candidates: the bench references are recorded by executables of this project.
 
-Non-intrusive launches by default: no sound on the speakers (WAV in the run folder), minimized window.
+Non-intrusive launches by default: no sound on the speakers (WAV in the run folder), minimized window, and the
+"no focus" test mode (GCRT_NO_FOCUS=1, runtime/core/platform/gcrt_focus.h: no window of the game, nor its console,
+ever takes the foreground) unless the caller set GCRT_NO_FOCUS itself (GCRT_NO_FOCUS=0 to let --window normal
+activate the window).
 """
 
 from __future__ import annotations
@@ -273,7 +276,8 @@ def main() -> int:
     parser.add_argument("--wav", action="store_true", help="(no effect: the WAV is recorded by default)")
     parser.add_argument("--window", choices=["minimized", "background", "normal"], default="minimized",
                         help="window: minimized (default: minimized, without stealing the foreground), background "
-                             "(shown without activation) or normal")
+                             "(shown without activation) or normal (still not activated unless GCRT_NO_FOCUS=0 is set "
+                             "by the caller)")
     parser.add_argument("--viewport", choices=["fit", "stretch"], default="fit",
                         help="rendering: fit (default of the runs: EFB at its exact size, e.g. 640x528, like Dolphin at 1x; "
                              "window at the EFB aspect ratio) or stretch (default of the executable: 528 lines, 4:3 width)")
@@ -388,6 +392,7 @@ def main() -> int:
     else:
         env.pop("GCRT_AUDIO_WAV", None)
     env["GCRT_WINDOW"] = args.window
+    env.setdefault("GCRT_NO_FOCUS", "1")  # "no focus" test mode, unless the caller chose (GCRT_NO_FOCUS=0)
     if args.viewport:
         env["GCRT_VIEWPORT"] = args.viewport
     if args.copy_filter:

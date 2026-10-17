@@ -29,6 +29,7 @@
 extern "C" {
 #include "../hle/gcrt_native.h"
 #include "gcrt_console.h"
+#include "gcrt_focus.h"
 #include "gcrt_crash.h"
 #include "gcrt_game_config.h"
 #include "gcrt_user_dir.h"
@@ -861,6 +862,9 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   {
     const std::string window = env("GCRT_WINDOW", "normal");
     host.windowMode = window == "background" ? 1 : window == "minimized" ? 2 : 0;
+    if (gcrt_no_focus() && host.windowMode == 0) {
+      host.windowMode = 1; // "no focus" test mode (gcrt_focus.h): never activated, at least shown in the background
+    }
   }
   host.viewportFit = env("GCRT_VIEWPORT", "stretch") == "fit";
   {

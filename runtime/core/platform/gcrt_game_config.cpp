@@ -16,7 +16,9 @@
 #include <system_error>
 
 #include "gcrt_console.h"
+#include "gcrt_focus.h"
 #include "gcrt_user_dir.h"
+#include "trace.h"
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -91,12 +93,47 @@ void save(const char* dir) {
 // delivered yet when the menu is checked at startup, so on Windows the physical key state is read instead
 // (GetAsyncKeyState: most significant bit set = key down).
 bool shift_held() {
+  if (gcrt_no_focus()) {
+    return false; // the keyboard belongs to the person using the computer (gcrt_focus.h)
+  }
 #if defined(_WIN32)
   return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 #else
   SDL_PumpEvents();
   return (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
 #endif
+}
+
+// Diagnostic hook GCRT_SETUP_MENU_AUTO=start|close[:N] (platform/gcrt_platform.h): after N passes of the menu loop
+// (default 10; a pass draws one menu frame, or waits 16 ms while the window is minimized), act as if "Start game" were
+// pressed (current box values) or the window were closed. Tests need neither the keyboard nor the foreground.
+enum class MenuAuto { None, Start, Close };
+struct MenuAutoSetting {
+  MenuAuto action = MenuAuto::None;
+  int passes = 10;
+};
+
+MenuAutoSetting menu_auto() {
+  MenuAutoSetting m;
+  const char* v = std::getenv("GCRT_SETUP_MENU_AUTO");
+  if (v == nullptr || v[0] == '\0') {
+    return m;
+  }
+  const std::string s(v);
+  const std::string verb = s.substr(0, s.find(':'));
+  if (verb == "start") {
+    m.action = MenuAuto::Start;
+  } else if (verb == "close") {
+    m.action = MenuAuto::Close;
+  } else {
+    gcrt_trace_printf(GCRT_TRACE_UNHANDLED, "GCRT_SETUP_MENU_AUTO=%s ignored (start|close[:N])", v);
+    return m;
+  }
+  if (const auto colon = s.find(':'); colon != std::string::npos) {
+    const int n = std::atoi(s.c_str() + colon + 1);
+    m.passes = n > 0 ? n : 0;
+  }
+  return m;
 }
 } // namespace
 
@@ -144,8 +181,15 @@ void gcrt_game_config_load(void) {
 bool gcrt_game_config_run_menu(const char* title) {
   // Hold Shift at launch to show the menu even if it is set to be skipped.
   if (g_cfg.skipMenu && !shift_held()) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: skipped (skipMenu=1)");
     return true;
   }
+  const MenuAutoSetting autoAct = menu_auto();
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: shown%s",
+                    autoAct.action == MenuAuto::Start   ? " (GCRT_SETUP_MENU_AUTO: start)"
+                    : autoAct.action == MenuAuto::Close ? " (GCRT_SETUP_MENU_AUTO: close)"
+                                                        : "");
+  int passes = 0;
   int sel = 1;
   for (int i = 0; i < 4; ++i) {
     if (kSizes[i].w == g_cfg.windowWidth && kSizes[i].h == g_cfg.windowHeight) {
@@ -158,9 +202,18 @@ bool gcrt_game_config_run_menu(const char* title) {
     const AuroraEvent* ev = aurora_update();
     while (ev != nullptr && ev->type != AURORA_NONE) {
       if (ev->type == AURORA_EXIT) {
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: window closed");
         return false;
       }
       ++ev;
+    }
+    if (autoAct.action != MenuAuto::None && passes++ >= autoAct.passes) {
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: GCRT_SETUP_MENU_AUTO %s after %d passes",
+                        autoAct.action == MenuAuto::Start ? "start" : "close", autoAct.passes);
+      if (autoAct.action == MenuAuto::Close) {
+        return false;
+      }
+      break; // "Start game"
     }
     if (!aurora_begin_frame()) {
       SDL_Delay(16); // window minimized: nothing to draw
@@ -205,6 +258,7 @@ bool gcrt_game_config_run_menu(const char* title) {
   }
   sanitize();
   save(gcrt_user_dir());
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: start (console box %s)", g_cfg.console ? "checked" : "unchecked");
   return true;
 }
 

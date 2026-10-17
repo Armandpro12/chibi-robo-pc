@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "gcrt_focus.h"
 #include "trace.h"
 
 namespace {
@@ -109,6 +110,40 @@ std::string stop_capture(size_t* dropped) {
   return out;
 }
 
+// ALLOC_CONSOLE_OPTIONS and AllocConsoleWithOptions (Microsoft Learn, "AllocConsoleWithOptions function" and
+// "ALLOC_CONSOLE_OPTIONS structure"; ConsoleApi.h of Windows SDK 10.0.26100, declared only for NTDDI_WIN11_GE): Windows
+// 11 24H2 (build 26100) and later, so looked up at run time. mode 1 = ALLOC_CONSOLE_MODE_NEW_WINDOW; showWindow is the
+// nCmdShow of the console window when useShowWindow is TRUE. Result: 0 no console, 1 new console, 2 existing console.
+struct AllocConsoleOptions {
+  int mode;
+  BOOL useShowWindow;
+  WORD showWindow;
+};
+using AllocConsoleWithOptionsFn = HRESULT(WINAPI*)(AllocConsoleOptions*, int*);
+
+// "No focus" test mode (gcrt_focus.h): a new console window shown minimized without activation (SW_SHOWMINNOACTIVE,
+// ShowWindow documentation). Without AllocConsoleWithOptions (Windows before 11 24H2), AllocConsole then ShowWindow:
+// the window can have been activated in between.
+bool alloc_console_without_focus(const char** how) {
+  const auto fn = reinterpret_cast<AllocConsoleWithOptionsFn>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "AllocConsoleWithOptions")));
+  if (fn != nullptr) {
+    AllocConsoleOptions options{1, TRUE, SW_SHOWMINNOACTIVE};
+    int result = 0;
+    const HRESULT hr = fn(&options, &result);
+    *how = "AllocConsoleWithOptions, minimized without activation";
+    return SUCCEEDED(hr) && result != 0;
+  }
+  *how = "AllocConsole then minimized without activation (no AllocConsoleWithOptions: it may have taken the foreground)";
+  if (AllocConsole() == 0) {
+    return false;
+  }
+  if (const HWND console = GetConsoleWindow(); console != nullptr) {
+    ShowWindow(console, SW_SHOWMINNOACTIVE);
+  }
+  return true;
+}
+
 // The process ends before the game started (--help, option or boot error, window closed from the setup menu): a launch
 // from a terminal still prints there, unless --no-console.
 void at_exit() {
@@ -165,6 +200,8 @@ void gcrt_console_start(GcrtConsoleChoice choice) {
   std::fflush(stdout);
   std::fflush(stderr);
   const HWND foreground = GetForegroundWindow();
+  const bool no_focus = gcrt_no_focus();
+  const char* how = "AllocConsole";
   bool attached = false, created = false;
   if (choice != GCRT_CONSOLE_NONE) {
     // Started from a terminal: print there. If a console is already attached (e.g. by a library since early_init),
@@ -172,7 +209,7 @@ void gcrt_console_start(GcrtConsoleChoice choice) {
     attached = AttachConsole(ATTACH_PARENT_PROCESS) != 0 || GetLastError() == ERROR_ACCESS_DENIED ||
                GetConsoleWindow() != nullptr;
     if (!attached && choice == GCRT_CONSOLE_OPEN) {
-      created = AllocConsole() != 0;
+      created = no_focus ? alloc_console_without_focus(&how) : AllocConsole() != 0;
     }
   }
   const bool open = attached || created;
@@ -193,13 +230,16 @@ void gcrt_console_start(GcrtConsoleChoice choice) {
     std::fflush(stdout);
   }
   // A new console window takes the foreground: give it back to the game window, which had it (the key press that
-  // started the game came from there).
-  if (created && foreground != nullptr && GetForegroundWindow() != foreground) {
+  // started the game came from there). Never in the "no focus" test mode: the foreground is someone else's.
+  if (created && !no_focus && foreground != nullptr && GetForegroundWindow() != foreground) {
     SetForegroundWindow(foreground);
   }
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "console: %s; %zu bytes of earlier output %s",
                     created ? "new console opened" : attached ? "attached to the parent's console" : "none",
                     early.size() + dropped, open ? "written to it" : "dropped");
+  if (created) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "console: created by %s", how);
+  }
 }
 
 } // extern "C"

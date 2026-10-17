@@ -21,6 +21,7 @@
 
 extern "C" {
 #include "trace.h"
+#include "gcrt_focus.h"
 #include "gcrt_game_config.h"
 }
 
@@ -101,8 +102,14 @@ bool host_init(const HostConfig& config) {
     const GcrtGameConfig* gc = gcrt_game_config();
     renderScale = gc->renderScale;
     if (info.window != nullptr) {
-      SDL_SetWindowFullscreen(info.window, gc->fullscreen);
-      if (!gc->fullscreen) {
+      // "No focus" test mode (gcrt_focus.h): a fullscreen window would cover the screen of the person using the
+      // computer, so the window keeps the menu's window size instead.
+      const bool fullscreen = gc->fullscreen && !gcrt_no_focus();
+      if (fullscreen != gc->fullscreen) {
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "fullscreen not applied (GCRT_NO_FOCUS)");
+      }
+      SDL_SetWindowFullscreen(info.window, fullscreen);
+      if (!fullscreen) {
         SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
       }
     }
