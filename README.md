@@ -43,7 +43,8 @@ Install yourself: Git, Python 3.11+ (the `py` launcher), CMake 3.25+, and Visual
 "Desktop development with C++" workload (Windows SDK and runtime libraries).
 
 Optional: Dolphin. It is only used to compare the port with the original behavior (`tools/dolphin_ref.py`), and
-its DolphinTool only to convert disc images that are not plain `.iso` / `.gcm` files.
+its DolphinTool only to convert disc images that are not plain `.iso` / `.gcm` files. `tools/dolphin_ref.py` runs
+Dolphin on a separate, never-shown Windows desktop, so a reference run never takes the foreground or your keystrokes.
 
 Installed automatically into `external/` by `tools/bootstrap.py`: clang/LLVM, Ninja, Ghidra, a JDK 21, the
 GameCube loader for Ghidra, DolRecomp and Aurora.

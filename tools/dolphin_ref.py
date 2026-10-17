@@ -3,6 +3,10 @@
 Usage: py -3 tools/dolphin_ref.py <game> [--version ID] [--seconds N] [--frames] [--audio]
                                    [--stop-timeout N] [--keep-user] [--movie F.dtm]
                                    [--user-dir FOLDER] [--no-sound] [--gci-folder FOLDER]
+                                   [--window hidden|visible] [--trace-foreground]
+
+Dolphin runs on a separate desktop that is never shown, so it never takes the foreground nor the user's
+keystrokes (see run_dolphin and tools/winbg.py). meta.json records the foreground samples ("run.foreground").
 
 Generic (parameterized by `games/<game>/game.toml`), like the other scripts in `tools/`.
 
@@ -142,31 +146,72 @@ def _natural_key(path: Path):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", path.name)]
 
 
+def _print_fg_change(entry: dict) -> None:
+    mark = "  <- the launched process" if entry["hit"] else ""
+    print(f"[foreground] t={entry['t']:.1f}s pid={entry['pid']} {entry['image'] or '(none)'}{mark}", flush=True)
+
+
 def run_dolphin(dolphin: Path, user: Path, iso: Path, seconds: int, stop_timeout: int,
-                 movie: Path | None = None) -> dict:
+                 movie: Path | None = None, *, window: str = "hidden", trace: bool = False) -> dict:
+    """Runs Dolphin for `seconds`, then asks it to stop (WM_CLOSE, like its close button), forced after
+    `stop_timeout` seconds.
+
+    window="hidden" (default): Dolphin runs on a desktop created for the run and never shown
+    (tools/winbg.py). Why: in batch mode Dolphin never shows its main window but shows its render window with
+    QWidget::showNormal() when the game starts (MainWindow::ShowRenderWidget, Source/Core/DolphinQt/MainWindow.cpp
+    at the installed build's commit 9240f579), and a normal show activates the window. A minimized
+    non-activating STARTUPINFO only applies to a program's first ShowWindow call (STARTUPINFOW reference page),
+    so it did not help (issue 26). A window on another desktop can never be the user's foreground window.
+    window="visible": the previous behavior, on the user's desktop (diagnosis only: it can take the foreground).
+    In both cases a foreground sampler counts the samples where Dolphin was the foreground window."""
+    import winbg  # Windows-only helpers
+
     cmd = [str(dolphin), "-u", str(user), "-b", "-e", str(iso)]
     if movie:
         cmd += ["-m", str(movie)]
     print("+", " ".join(cmd), flush=True)
-    t0 = time.time()
-    proc = subprocess.Popen(cmd)
-    time.sleep(seconds)
-    elapsed_before_stop = time.time() - t0
-
+    sampler = winbg.ForegroundSampler(on_change=_print_fg_change if trace else None)
+    desk = winbg.HiddenDesktop() if window == "hidden" else None
     stop_method = "graceful"
-    subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+    windows_closed = None
     try:
-        proc.wait(timeout=stop_timeout)
-    except subprocess.TimeoutExpired:
-        stop_method = "force"
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, text=True)
-        proc.wait(timeout=stop_timeout)
+        if desk is not None:
+            desk.__enter__()
+            print(f"Desktop: {desk.full_name} (hidden, never the input desktop)", flush=True)
+        sampler.start()
+        t0 = time.time()
+        proc = winbg.launch_on_desktop(cmd, desk.full_name if desk is not None else None)
+        sampler.watch_pid(proc.pid)
+        time.sleep(seconds)
+        elapsed_before_stop = time.time() - t0
 
+        if desk is not None:
+            windows_closed = desk.post_close(proc.pid)
+        else:
+            subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+        try:
+            proc.wait(timeout=stop_timeout)
+        except subprocess.TimeoutExpired:
+            stop_method = "force"
+            proc.kill()
+            proc.wait(timeout=stop_timeout)
+    finally:
+        foreground = sampler.stop()
+        if desk is not None:
+            desk.close()
+
+    if foreground["hits"]:
+        print(f"WARNING: Dolphin was the foreground window in {foreground['hits']} of "
+              f"{foreground['samples']} samples", flush=True)
     return {
         "cmd": cmd,
         "pid": proc.pid,
         "exit_code": proc.returncode,
         "stop_method": stop_method,
+        "window": window,
+        "desktop": desk.full_name if desk is not None else None,
+        "windows_closed": windows_closed,
+        "foreground": foreground,
         "requested_seconds": seconds,
         "elapsed_seconds_before_stop": round(elapsed_before_stop, 3),
         "total_elapsed_seconds": round(time.time() - t0, 3),
@@ -218,6 +263,11 @@ def main() -> int:
                                            "tests/dolphin/<ID>/user); its GCI memory card is in GC/<region>/Card A")
     parser.add_argument("--no-sound", action="store_true", help="no sound on the speakers")
     parser.add_argument("--gci-folder", help="fixed GCI folder of the port A card (created if missing)")
+    parser.add_argument("--window", choices=("hidden", "visible"), default="hidden",
+                        help="hidden (default): Dolphin runs on a separate, never-shown desktop and cannot take the "
+                             "foreground; visible: on the user's desktop (diagnosis only, it can take the foreground)")
+    parser.add_argument("--trace-foreground", action="store_true",
+                        help="print every change of foreground window during the run (diagnosis)")
     args = parser.parse_args()
 
     game = tc.load_game(args.game)
@@ -243,9 +293,12 @@ def main() -> int:
         clear_dump_dirs(user)
 
     movie = Path(args.movie).resolve() if args.movie else None
-    run_info = run_dolphin(dolphin, user, iso, args.seconds, args.stop_timeout, movie=movie)
+    run_info = run_dolphin(dolphin, user, iso, args.seconds, args.stop_timeout, movie=movie,
+                           window=args.window, trace=args.trace_foreground)
+    fg = run_info["foreground"]
     print(f"Stop: {run_info['stop_method']}, exit code {run_info['exit_code']}, "
-          f"total duration {run_info['total_elapsed_seconds']:.1f} s")
+          f"total duration {run_info['total_elapsed_seconds']:.1f} s; "
+          f"Dolphin in the foreground: {fg['hits']} of {fg['samples']} samples")
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir = TESTS_DOLPHIN / game_id / f"run-{timestamp}"
