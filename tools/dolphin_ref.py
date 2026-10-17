@@ -151,6 +151,32 @@ def _print_fg_change(entry: dict) -> None:
     print(f"[foreground] t={entry['t']:.1f}s pid={entry['pid']} {entry['image'] or '(none)'}{mark}", flush=True)
 
 
+def _stop_leftover(proc, desk, stop_timeout: int) -> str:
+    """Stops a Dolphin still alive after the wait was interrupted (Ctrl-C or any exception), so that it is never left
+    running, invisible, on the hidden desktop: first the normal request (WM_CLOSE from a thread attached to the
+    desktop, or taskkill /PID on the user's desktop), then, after `stop_timeout` seconds, TerminateProcess on this
+    very process (by handle/PID, never by image name). Returns "graceful" or "force". Must not raise: it runs in
+    a `finally`, and a second Ctrl-C only shortens the grace period."""
+    print(f"Interrupted: Dolphin (pid {proc.pid}) is still running, stopping it...", flush=True)
+    try:
+        if desk is not None:
+            desk.post_close(proc.pid)
+        else:
+            subprocess.run(["taskkill", "/PID", str(proc.pid)], capture_output=True, text=True)
+        proc.wait(timeout=stop_timeout)
+        print("Dolphin stopped (close request).", flush=True)
+        return "graceful"
+    except (Exception, KeyboardInterrupt) as exc:
+        reason = "second interruption" if isinstance(exc, KeyboardInterrupt) else type(exc).__name__
+        print(f"Close request did not stop Dolphin ({reason}); forcing it (pid {proc.pid}).", flush=True)
+    try:
+        proc.kill()
+        proc.wait(timeout=10)
+    except (Exception, KeyboardInterrupt) as exc:
+        print(f"WARNING: could not confirm that Dolphin (pid {proc.pid}) is gone: {exc!r}", flush=True)
+    return "force"
+
+
 def run_dolphin(dolphin: Path, user: Path, iso: Path, seconds: int, stop_timeout: int,
                  movie: Path | None = None, *, window: str = "hidden", trace: bool = False) -> dict:
     """Runs Dolphin for `seconds`, then asks it to stop (WM_CLOSE, like its close button), forced after
@@ -174,6 +200,7 @@ def run_dolphin(dolphin: Path, user: Path, iso: Path, seconds: int, stop_timeout
     desk = winbg.HiddenDesktop() if window == "hidden" else None
     stop_method = "graceful"
     windows_closed = None
+    proc = None
     try:
         if desk is not None:
             desk.__enter__()
@@ -196,9 +223,15 @@ def run_dolphin(dolphin: Path, user: Path, iso: Path, seconds: int, stop_timeout
             proc.kill()
             proc.wait(timeout=stop_timeout)
     finally:
-        foreground = sampler.stop()
-        if desk is not None:
-            desk.close()
+        # An interrupted wait (Ctrl-C, exception) must not leave Dolphin alive: closing the hidden desktop below
+        # would make it invisible, not stop it. Stop it first, then release the desktop.
+        try:
+            if proc is not None and proc.poll() is None:
+                _stop_leftover(proc, desk, stop_timeout)
+        finally:
+            foreground = sampler.stop()
+            if desk is not None:
+                desk.close()
 
     if foreground["hits"]:
         print(f"WARNING: Dolphin was the foreground window in {foreground['hits']} of "
@@ -293,8 +326,13 @@ def main() -> int:
         clear_dump_dirs(user)
 
     movie = Path(args.movie).resolve() if args.movie else None
-    run_info = run_dolphin(dolphin, user, iso, args.seconds, args.stop_timeout, movie=movie,
-                           window=args.window, trace=args.trace_foreground)
+    try:
+        run_info = run_dolphin(dolphin, user, iso, args.seconds, args.stop_timeout, movie=movie,
+                               window=args.window, trace=args.trace_foreground)
+    except KeyboardInterrupt:
+        print("Interrupted by the user: Dolphin was stopped and the hidden desktop released; no capture saved.",
+              file=sys.stderr, flush=True)
+        return 130
     fg = run_info["foreground"]
     print(f"Stop: {run_info['stop_method']}, exit code {run_info['exit_code']}, "
           f"total duration {run_info['total_elapsed_seconds']:.1f} s; "
