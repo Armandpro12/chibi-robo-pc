@@ -15,6 +15,7 @@
 #include <string>
 #include <system_error>
 
+#include "gcrt_console.h"
 #include "gcrt_user_dir.h"
 
 #if defined(_WIN32)
@@ -34,7 +35,9 @@ const struct {
     {"1600x1200 (4:3)", 1600, 1200},
     {"1920x1080 (16:9)", 1920, 1080},
 };
-GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false};
+// Console checked by default: the console window that testers had before (notes/decisions.md, 2026-10-17).
+GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false, true};
+bool g_savedConsole = true; // value of the file: what is written back unless the player toggles the box
 
 // game_config.ini in the user folder (UTF-8, ending with a separator: gcrt_user_dir.h). The path is built from UTF-8
 // explicitly: a std::string path would be read in the ANSI code page on Windows (user names with accents).
@@ -71,7 +74,7 @@ void save(const char* dir) {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     f << "width=" << g_cfg.windowWidth << "\nheight=" << g_cfg.windowHeight
       << "\nfullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\nrenderScale=" << g_cfg.renderScale
-      << "\nskipMenu=" << (g_cfg.skipMenu ? 1 : 0) << "\n";
+      << "\nskipMenu=" << (g_cfg.skipMenu ? 1 : 0) << "\nconsole=" << (g_savedConsole ? 1 : 0) << "\n";
     f.close();
     if (!f) {
       fs::remove(tmp, ec);
@@ -103,10 +106,10 @@ const GcrtGameConfig* gcrt_game_config(void) { return &g_cfg; }
 
 void gcrt_game_config_load(void) {
   const char* dir = gcrt_user_dir();
-  if (dir[0] == '\0') {
-    return; // no user folder: keep the defaults
+  std::ifstream f;
+  if (dir[0] != '\0') { // no user folder: the defaults
+    f.open(config_path(dir));
   }
-  std::ifstream f(config_path(dir));
   std::string line;
   while (std::getline(f, line)) {
     const auto eq = line.find('=');
@@ -124,9 +127,14 @@ void gcrt_game_config_load(void) {
       g_cfg.renderScale = static_cast<float>(std::atof(v.c_str()));
     } else if (k == "skipMenu") {
       g_cfg.skipMenu = v == "1";
+    } else if (k == "console") {
+      g_savedConsole = v != "0"; // anything but 0 keeps the default (checked)
     }
   }
   sanitize();
+  // --console / --no-console decide for this launch: the box starts that way, the file keeps the player's choice.
+  const int request = gcrt_console_request();
+  g_cfg.console = request >= 0 ? request == 1 : g_savedConsole;
 }
 
 bool gcrt_game_config_run_menu(const char* title) {
@@ -140,6 +148,7 @@ bool gcrt_game_config_run_menu(const char* title) {
       sel = i;
     }
   }
+  const bool consoleAtOpen = g_cfg.console;
   bool start = false;
   while (!start) {
     const AuroraEvent* ev = aurora_update();
@@ -168,6 +177,12 @@ bool gcrt_game_config_run_menu(const char* title) {
     }
     ImGui::Checkbox("Fullscreen", &g_cfg.fullscreen);
     ImGui::SliderFloat("Render scale", &g_cfg.renderScale, 0.5f, 4.0f, "%.2fx");
+#if defined(_WIN32)
+    // Applied when the game starts (gcrt_console.h): nothing opens or closes while the menu is up.
+    ImGui::Checkbox("Show console", &g_cfg.console);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(game log, opens with the game)");
+#endif
     ImGui::Checkbox("Skip this menu next time", &g_cfg.skipMenu);
     ImGui::TextDisabled("Hold Shift at launch to show it again.");
     ImGui::Separator();
@@ -181,6 +196,9 @@ bool gcrt_game_config_run_menu(const char* title) {
   }
   g_cfg.windowWidth = kSizes[sel].w;
   g_cfg.windowHeight = kSizes[sel].h;
+  if (g_cfg.console != consoleAtOpen) {
+    g_savedConsole = g_cfg.console; // toggled by the player: remembered (a command-line request alone is not)
+  }
   sanitize();
   save(gcrt_user_dir());
   return true;

@@ -12,6 +12,7 @@
 #include "boot/gcrt_boot.h"
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native.h"
+#include "platform/gcrt_console.h"
 #include "platform/gcrt_crash.h"
 #include "platform/gcrt_platform.h"
 
@@ -223,13 +224,19 @@ static void usage(const char* exe) {
            "  --guest-log FILE    copy the game's output (OSReport, printf) to a file\n"
            "  --rel-test FILE     diagnostic: link then unlink this .rel with the game's OSLink/OSUnlink\n"
            "  --rel-test-warmup N blocks executed before the REL test (default 30000)\n"
-           "  --hw-count FILE     write the hardware access counter as JSON (also GCRT_HW_COUNT_FILE)\n",
+           "  --hw-count FILE     write the hardware access counter as JSON (also GCRT_HW_COUNT_FILE)\n"
+           "  --console           open a console window (game output) when the game starts, for this launch;\n"
+           "                      the setup menu's \"Show console\" box starts checked (Windows)\n"
+           "  --no-console        no console window for this launch; the box starts unchecked (Windows)\n",
            exe);
 }
 
 static GcrtCpu g_cpu;
 
 int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
+    /* Before anything is printed: the console window opens (or not) only when the game starts, and the output written
+     * until then is kept for it (platform/gcrt_console.h). */
+    gcrt_console_early_init();
     const GcrtBuildInfo* info = &gcrt_build_info;
     const char* disc = info->disc_root;
     const char* dol_path = NULL;
@@ -279,6 +286,10 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         } else if (v && !strcmp(a, "--profile-period")) {
             profile = true;
             profile_period = strtod(v, NULL), i++;
+        } else if (!strcmp(a, "--console")) {
+            gcrt_console_set_request(1);
+        } else if (!strcmp(a, "--no-console")) {
+            gcrt_console_set_request(0);
         } else if (!strcmp(a, "--hle-trace")) {
             hle_trace = true;
         } else if (v && !strcmp(a, "--hw-count")) {

@@ -125,6 +125,15 @@ function(gcrt_add_recompiled_executable target)
     # Main thread stack: 16 MiB (headroom for the nested calls of the generated code).
     target_link_options(${target} PRIVATE /STACK:16777216)
   endif()
+  if(WIN32)
+    # Windows-subsystem program: Windows opens no console before main(); the runtime opens one when the game starts,
+    # if asked (platform/gcrt_console.h). /ENTRY:mainCRTStartup keeps main() as the entry point (the default entry of
+    # /SUBSYSTEM:WINDOWS calls WinMain).
+    set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE ON)
+    if(MSVC)
+      target_link_options(${target} PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+  endif()
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   # Platform-specific settings (Aurora DLLs copied next to the executable), platform/sources.cmake.
   if(COMMAND gcrt_platform_setup_executable)
