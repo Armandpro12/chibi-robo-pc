@@ -83,9 +83,12 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 
 1. **Close milestone 6.** Compare the intro audio with a Dolphin capture, measure the US version, and get a
    listening test.
-2. **Fix a rendering race.** Aurora's render thread reads game memory when it processes a command, not when the
-   game issues it, so one frame of the party scene can differ from run to run. Once the data is captured at issue
-   time, re-enable the batched render-thread wake-ups (about 8 to 11 % faster).
+2. **Rendering race: fixed.** Aurora's command thread used to read game memory (vertex arrays, textures,
+   palettes) when it processed a command, not when the game issued it, so the same commands could give different
+   frames (backyard flicker, issue 2). The GX bridge now hands that thread copies taken at issue time, and the
+   batched wake-ups are back on (party scene: about 5 to 6 % less host time, about 20 % less CPU time). Checked
+   against Dolphin on the backyard (US and PAL): the new frames match it, while the old ones sometimes lost a house-wall
+   shadow that Dolphin always shows.
 3. **Remove the last compatibility shims of milestone 10.** They exist only to stay bit-identical with the old
    emulated build: a cycle-dated audio event queue and an interrupt delivery order. Removing them changes the
    outputs, so the native reference recordings will be made again. The boot-cycle offset is already gone: since

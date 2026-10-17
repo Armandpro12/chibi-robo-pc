@@ -228,35 +228,81 @@ void write_aurora_header(uint16_t sub) {
   out_u16(sub);
 }
 
+// Frozen copies (FifoBridge::FrozenBlock): bytes held right now and peak, for the final report. Only the guest
+// thread creates and frees blocks.
+uint64_t g_frozenLiveBytes = 0;
+uint64_t g_frozenPeakBytes = 0;
+
+// GCRT_GX_FREEZE=0 turns the frozen vertex array and texture copies off (diagnostic: Aurora's thread reads that guest
+// memory itself). TLUTs are still copied into a fresh block at every load, so this is not the behavior before the fix.
+bool freeze_from_env() {
+  const char* env = std::getenv("GCRT_GX_FREEZE");
+  return env == nullptr || std::strcmp(env, "0") != 0;
+}
+
+// Bytes that Aurora reads for a texture with its mip levels (lib/gx/texture.cpp, texture_source_size: each level
+// rounded up to whole tiles of the format).
+uint64_t aurora_texture_bytes(uint32_t fmt, uint32_t w, uint32_t h, uint32_t mipCount) {
+  uint64_t total = 0;
+  for (uint32_t mip = 0; mip < mipCount; ++mip) {
+    total += texture_bytes(fmt, std::max(w >> mip, 1u), std::max(h >> mip, 1u));
+  }
+  return total;
+}
+
 // Publishing of draws to the "Aurora FIFO processor" thread: afifo::finish_draw() publishes everything written so far
 // and wakes that thread up (a kernel call when it sleeps). It is only called on one draw out of N
 // (GCRT_GX_PUBLISH_BATCH, 1 to 4096): fewer wake-ups, same stream, same order; the rest is published by the next draw
 // or by afifo::drain() (draw done via GXSetDrawDone, tokens, end of frame), which waits until everything is processed.
 // 128: measured (cycle bench) -6% host time and -19% CPU time versus 1 (one wake-up per draw), like 512; 8 and 32
-// gain less (notes/performance.md, post-10c section). 1 restores the old behaviour. Caution: batching changes the
-// outcome of a race already present with 1 (measured on one frame of a test scene, notes/performance.md, post-10c
-// section, subsection 4).
-// [hypothesis] cause: Aurora's thread reads the game's RAM (arrays, textures) when it processes a command, not when
-// the game emits it, and batching delays that read.
-// Default 1 (fidelity first) as long as the data read by that thread is not frozen at emission; go back to 128
-// once that fix is done, since rendering will then no longer depend on batching.
-constexpr uint32_t kDefaultPublishBatch = 1;
+// gain less (notes/performance.md, post-10c section). 1 restores the old behaviour. Batching used to change the
+// outcome of a rendering race (Aurora's thread read the game's RAM when it processed a command, not when the game
+// emitted it, and batching delays that read), so the default was 1. The bridge now gives that thread copies taken at
+// emission (frozen copies, FifoBridge): frames no longer depend on batching, and the default is 128 again. With
+// GCRT_GX_FREEZE=0 (diagnostic), the default stays 1, the former fidelity-first choice.
+constexpr uint32_t kDefaultPublishBatch = 128;
+constexpr uint32_t kDefaultPublishBatchUnfrozen = 1;
 uint32_t g_publishBatch = 0; // 0: not read yet
 uint32_t g_unpublished = 0;
 
 uint32_t publish_batch() {
   if (g_publishBatch == 0) {
     const char* env = std::getenv("GCRT_GX_PUBLISH_BATCH");
-    const long v = env != nullptr ? std::strtol(env, nullptr, 10) : static_cast<long>(kDefaultPublishBatch);
+    const uint32_t def = freeze_from_env() ? kDefaultPublishBatch : kDefaultPublishBatchUnfrozen;
+    const long v = env != nullptr ? std::strtol(env, nullptr, 10) : static_cast<long>(def);
     g_publishBatch = static_cast<uint32_t>(std::clamp(v, 1L, 4096L));
   }
   return g_publishBatch;
 }
 } // namespace
 
+FifoBridge::FrozenBlock::FrozenBlock(uint32_t n) : bytes(new uint8_t[n == 0 ? 1 : n]), size(n) {
+  g_frozenLiveBytes += n;
+  g_frozenPeakBytes = std::max(g_frozenPeakBytes, g_frozenLiveBytes);
+}
+
+FifoBridge::FrozenBlock::~FrozenBlock() { g_frozenLiveBytes -= size; }
+
 FifoBridge::FifoBridge() { reset(); }
 
+uint32_t FifoBridge::publish_batch_size() { return publish_batch(); }
+
 void FifoBridge::reset() {
+  // Frozen copies first: their blocks are only referenced from here (and Aurora has nothing pending at startup).
+  m_texSnaps.clear();
+  m_arraySnaps.clear();
+  m_texBound.fill(nullptr);
+  m_arrayBound.fill(nullptr);
+  m_inFlight.clear();
+  m_sendGen = 1;
+  m_texEpoch = 1;
+  m_arrayEpoch = 1;
+  m_frameNo = 0;
+  m_freeze = freeze_from_env();
+  {
+    const char* check = std::getenv("GCRT_GX_FREEZE_CHECK");
+    m_freezeCheck = check != nullptr && std::strcmp(check, "1") == 0;
+  }
   m_vcdLo = m_vcdHi = 0;
   m_vatA.fill(0);
   m_vatB.fill(0);
@@ -291,6 +337,170 @@ void FifoBridge::reset() {
   m_copies.clear();
   const char* staleCopies = std::getenv("GCRT_GX_STALE_COPIES");
   m_evictStaleCopies = staleCopies == nullptr || std::strcmp(staleCopies, "keep") != 0;
+  GCRT_TRACE(GCRT_TRACE_PLATFORM, "GX bridge: frozen copies of pointer data %s (GCRT_GX_FREEZE), publish batch %u",
+             m_freeze ? "on" : "off", publish_batch());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Frozen copies
+// ---------------------------------------------------------------------------------------------
+FifoBridge::FrozenRef FifoBridge::frozen_copy(uint32_t phys, uint32_t size) const {
+  phys &= PHYS_MASK;
+  if (m_mem1 == nullptr || phys >= m_mem1Size) {
+    return nullptr;
+  }
+  auto block = std::make_shared<FrozenBlock>(size);
+  block->phys = phys;
+  const uint32_t avail = std::min(size, m_mem1Size - phys);
+  std::memcpy(block->bytes.get(), m_mem1 + phys, avail);
+  if (avail < size) {
+    std::memset(block->bytes.get() + avail, 0, size - avail); // past the end of RAM: Aurora must not read beyond
+  }
+  return block;
+}
+
+FifoBridge::FrozenRef FifoBridge::snapshot(std::unordered_map<uint64_t, Snapshot>& cache, uint64_t key, uint32_t phys,
+                                           uint32_t size, uint64_t epoch, bool texture) {
+  Snapshot& s = cache[key];
+  s.lastUseFrame = m_frameNo;
+  phys &= PHYS_MASK;
+  if (s.block != nullptr && s.block->size >= size) {
+    if (s.epoch == epoch) {
+      return s.block; // already copied in this epoch
+    }
+    // New epoch: keep the copy if guest memory has not changed (stable pointer for Aurora, no allocation).
+    if (m_mem1 != nullptr && phys < m_mem1Size) {
+      const uint32_t avail = std::min(s.block->size, m_mem1Size - phys);
+      if (std::memcmp(s.block->bytes.get(), m_mem1 + phys, avail) == 0) {
+        s.epoch = epoch;
+        ++(texture ? m_stats.frozenTexReused : m_stats.frozenArrayReused);
+        return s.block;
+      }
+    }
+    size = s.block->size; // keep the range already covered (stable size for Aurora)
+  }
+  FrozenRef block = frozen_copy(phys, size);
+  if (block == nullptr) {
+    cache.erase(key);
+    return nullptr;
+  }
+  s.block = block;
+  s.epoch = epoch;
+  if (texture) {
+    ++m_stats.frozenTexCopies;
+    m_stats.frozenTexBytes += size;
+  } else {
+    ++m_stats.frozenArrayCopies;
+    m_stats.frozenArrayBytes += size;
+  }
+  GCRT_TRACE(GCRT_TRACE_GX, "frozen %s copy 0x%08X (%u bytes, epoch %llu)", texture ? "texture" : "array", phys, size,
+             static_cast<unsigned long long>(epoch));
+  return block;
+}
+
+void FifoBridge::mark_sent(const FrozenRef& block) {
+  if (block == nullptr || !g_output || block->sentGen == m_sendGen) {
+    return;
+  }
+  block->sentGen = m_sendGen;
+  m_inFlight.push_back(block);
+}
+
+void FifoBridge::rebind(FrozenRef& slot, FrozenRef next) {
+  // The command that replaces the slot's copy in Aurora is not processed yet: draws already sent may still read the
+  // old copy, so it stays alive until the next drain. (With forwarding off, Aurora is idle: nothing to keep.)
+  if (slot != nullptr && slot != next && g_output && slot->sentGen != m_sendGen) {
+    slot->sentGen = m_sendGen;
+    m_inFlight.push_back(slot);
+  }
+  slot = std::move(next);
+}
+
+void FifoBridge::after_drain() {
+  // Aurora has processed every command sent so far: only its current slots (m_texBound, m_arrayBound, TLUT slots)
+  // and the snapshot caches still hold copies.
+  m_inFlight.clear();
+  ++m_sendGen;
+  m_stats.frozenLiveBytes = g_frozenLiveBytes;
+  m_stats.frozenPeakBytes = g_frozenPeakBytes;
+}
+
+void FifoBridge::check_frozen(uint32_t arrayMask) {
+  // Diagnostic: compares the copies Aurora holds for this draw with guest memory now. A difference means the game
+  // rewrote the data after its first use in the epoch without telling the hardware (no INVL_VC / BP 0x66).
+  const auto check = [this](const FrozenRef& b, const char* kind, uint32_t slot) {
+    if (b == nullptr || m_mem1 == nullptr || b->phys >= m_mem1Size) {
+      return;
+    }
+    const uint32_t avail = std::min(b->size, m_mem1Size - b->phys);
+    if (std::memcmp(b->bytes.get(), m_mem1 + b->phys, avail) == 0) {
+      return;
+    }
+    ++m_stats.frozenOutdated;
+    if (m_stats.frozenOutdated <= 200) {
+      uint32_t first = 0;
+      uint32_t count = 0;
+      for (uint32_t i = 0; i < avail; ++i) {
+        if (b->bytes[i] != m_mem1[b->phys + i]) {
+          if (count++ == 0) {
+            first = i;
+          }
+        }
+      }
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                        "GX frozen check: frame %llu draw %llu: %s %u copy 0x%08X (%u bytes) outdated, %u bytes differ "
+                        "from offset %u",
+                        static_cast<unsigned long long>(m_stats.displayCopies + 1),
+                        static_cast<unsigned long long>(m_streamDraws), kind, slot, b->phys, b->size, count, first);
+    }
+  };
+  // Texture maps sampled by this draw: TEV orders of the active stages (BP 0x28-0x2F, enable bits) and the maps of the
+  // active indirect stages (BP 0x27), counts from BP 0x00 (Dolphin BPMemory.h, TwoTevStageOrders, GenMode).
+  const uint32_t genMode = m_bp[0x00];
+  const uint32_t stages = ((genMode >> 10) & 0xFu) + 1u;
+  const uint32_t indStages = (genMode >> 16) & 0x7u;
+  uint32_t texMask = 0;
+  for (uint32_t st = 0; st < stages; ++st) {
+    const uint32_t tref = m_bp[0x28 + st / 2];
+    const uint32_t sh = (st & 1u) ? 12u : 0u;
+    if ((tref >> (sh + 6)) & 1u) {
+      texMask |= 1u << ((tref >> sh) & 7u);
+    }
+  }
+  for (uint32_t st = 0; st < indStages && st < 4; ++st) {
+    texMask |= 1u << ((m_bp[0x27] >> (st * 6)) & 7u);
+  }
+  for (uint32_t i = 0; i < m_texBound.size(); ++i) {
+    if ((texMask >> i) & 1u) {
+      check(m_texBound[i], "texture map", i);
+    }
+  }
+  for (uint32_t i = 0; i < m_arrayBound.size(); ++i) {
+    if ((arrayMask >> i) & 1u) {
+      check(m_arrayBound[i], "array", i);
+    }
+  }
+}
+
+void FifoBridge::new_frame_epoch() {
+  ++m_frameNo;
+  ++m_texEpoch;
+  ++m_arrayEpoch;
+  ++m_stats.frozenTexEpochs;
+  ++m_stats.frozenArrayEpochs;
+  m_texDirty = 0xFF; // re-send every texture map: its copy may have to be renewed
+  // Copies not used during the last two frames leave the cache (freed once Aurora no longer holds them).
+  const auto prune = [this](std::unordered_map<uint64_t, Snapshot>& cache) {
+    for (auto it = cache.begin(); it != cache.end();) {
+      if (it->second.lastUseFrame + 2 < m_frameNo) {
+        it = cache.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  };
+  prune(m_texSnaps);
+  prune(m_arraySnaps);
 }
 
 void FifoBridge::set_recording(std::vector<uint8_t>* out) { g_record = out; }
@@ -309,6 +519,7 @@ void FifoBridge::flush() {
   if (g_output) {
     afifo::drain();
     g_unpublished = 0;
+    after_drain();
   }
 }
 
@@ -582,6 +793,9 @@ size_t FifoBridge::run_command(const uint8_t* p, size_t avail, bool inDisplayLis
   case OP_INVL_VC:
     ++m_stats.commands;
     out_u8(OP_INVL_VC);
+    // Vertex cache invalidated: the game says array memory may have changed; the next draws copy it again.
+    ++m_arrayEpoch;
+    ++m_stats.frozenArrayEpochs;
     return 1;
   case OP_LOAD_BP_REG:
     if (avail < 5) {
@@ -866,6 +1080,7 @@ void FifoBridge::on_bp(uint32_t raw) {
     emit_bp(raw);
     if (g_output) {
       afifo::drain(); // the runtime must only regain control once the RAM reads are done
+      after_drain();
     }
     GCRT_TRACE(GCRT_TRACE_GX, "PE draw done");
     if (m_hooks.drawDone != nullptr) {
@@ -877,6 +1092,7 @@ void FifoBridge::on_bp(uint32_t raw) {
     emit_bp(raw);
     if (g_output) {
       afifo::drain();
+      after_drain();
     }
     GCRT_TRACE(GCRT_TRACE_GX, "PE token 0x%04X%s", merged & 0xFFFFu, reg == 0x48 ? " (interrupt)" : "");
     if (m_hooks.token != nullptr) {
@@ -919,6 +1135,7 @@ void FifoBridge::on_bp(uint32_t raw) {
       if (m_hooks.displayCopy != nullptr) {
         m_hooks.displayCopy(m_hooks.user, info);
       }
+      new_frame_epoch();
       return;
     }
     // EFB -> texture copy: Aurora expects the source, the size, the format and the
@@ -975,7 +1192,11 @@ void FifoBridge::on_bp(uint32_t raw) {
     t.valid = true;
     t.tmemOffset = tmem;
     t.entries = static_cast<uint16_t>(std::min<uint32_t>(lines * 16u, 0xFFFFu));
-    t.data.assign(data, data + bytes); // TMEM keeps a copy: RAM may change afterwards
+    // TMEM keeps a copy: RAM may change afterwards. Always a new block: Aurora's thread may still read the previous one.
+    FrozenRef block = std::make_shared<FrozenBlock>(bytes);
+    std::memcpy(block->bytes.get(), data, bytes);
+    rebind(t.data, std::move(block));
+    ++m_stats.frozenTluts;
     t.version = ++m_tlutClock;
     m_texDirty = 0xFF;
     GCRT_TRACE(GCRT_TRACE_GX, "TLUT 0x%08X -> TMEM 0x%03X (%u entries, slot %d)", src, tmem, t.entries, slot);
@@ -984,6 +1205,9 @@ void FifoBridge::on_bp(uint32_t raw) {
   case 0x66: // texture cache invalidation
     emit_bp(raw);
     m_texDirty = 0xFF;
+    // The game says texture memory may have changed: the next draws copy their textures again.
+    ++m_texEpoch;
+    ++m_stats.frozenTexEpochs;
     return;
   default:
     break;
@@ -1103,7 +1327,8 @@ void FifoBridge::flush_textures() {
         const auto& t = m_tluts[static_cast<size_t>(slot)];
         write_aurora_header(AUR_LOAD_TLUT);
         out_u8(static_cast<uint8_t>(slot));
-        out_u64(reinterpret_cast<uint64_t>(t.data.data()));
+        out_u64(reinterpret_cast<uint64_t>(t.data->bytes.get()));
+        mark_sent(t.data);
         out_u32(tlutFmt);
         out_u16(t.entries);
         out_u32(static_cast<uint32_t>(slot) + 1u); // stable identifier per slot
@@ -1115,9 +1340,27 @@ void FifoBridge::flush_textures() {
     if (data != nullptr && !m_copies.empty()) {
       check_copy_destination(phys, data, map, w, h, fmt);
     }
+    // Frozen copy of the texture as it is now (mip levels included, as Aurora reads them), except at the destination
+    // of an EFB -> texture copy: Aurora binds that copy by its guest pointer and does not read the memory.
+    const uint8_t* sent = data;
+    FrozenRef bound;
+    if (data != nullptr && m_freeze && g_output && m_copies.find(phys) == m_copies.end()) {
+      const uint32_t mipCount = mips ? ((mode1 >> 8) & 0xFFu) / 16u + 1u : 1u; // Aurora: GXTexObj_::mip_count
+      const uint64_t bytes = aurora_texture_bytes(fmt, w, h, mipCount);
+      if (bytes != 0 && bytes <= m_mem1Size) {
+        FrozenRef block = snapshot(m_texSnaps, static_cast<uint64_t>(phys) << 32 | bytes, phys,
+                                   static_cast<uint32_t>(bytes), m_texEpoch, true);
+        if (block != nullptr) {
+          sent = block->bytes.get();
+          bound = block;
+          mark_sent(block);
+        }
+      }
+    }
+    rebind(m_texBound[map], std::move(bound));
     write_aurora_header(AUR_LOAD_TEXOBJ);
     out_u8(static_cast<uint8_t>(map));
-    out_u64(reinterpret_cast<uint64_t>(data));
+    out_u64(reinterpret_cast<uint64_t>(sent));
     out_u32(w);
     out_u32(h);
     out_u32(fmt);
@@ -1269,6 +1512,7 @@ size_t FifoBridge::on_draw(const uint8_t* p, size_t avail) {
   std::array<VtxAttr, 21> layout{};
   compute_layout(vat, layout);
   const uint8_t* verts = p + 3;
+  uint32_t usedArrays = 0; // indexed arrays read by this draw (GCRT_GX_FREEZE_CHECK)
   for (uint32_t attr = 9; attr < 21; ++attr) {
     const VtxAttr& va = layout[attr];
     if (va.type != 2 && va.type != 3) {
@@ -1292,9 +1536,11 @@ size_t FifoBridge::on_draw(const uint8_t* p, size_t avail) {
     if (!any) {
       continue;
     }
+    usedArrays |= 1u << (attr - 9);
     ArrayState& arr = m_arrays[attr - 9];
     const uint32_t need = maxIdx * arr.stride + va.elemSize;
-    if (arr.base == arr.declaredBase && need <= arr.declaredSize) {
+    const bool frozen = m_freeze && g_output;
+    if (arr.base == arr.declaredBase && need <= arr.declaredSize && (!frozen || arr.declaredEpoch == m_arrayEpoch)) {
       continue;
     }
     uint32_t size = (need + 63u) & ~63u;
@@ -1310,16 +1556,35 @@ size_t FifoBridge::on_draw(const uint8_t* p, size_t avail) {
                  phys, need);
       return total;
     }
+    // Frozen copy of the array range as it is now (the range already copied in an earlier draw is kept if larger).
+    const uint8_t* sent = host;
+    if (frozen) {
+      FrozenRef block = snapshot(m_arraySnaps, phys, phys, size, m_arrayEpoch, false);
+      if (block != nullptr) {
+        if (block == m_arrayBound[attr - 9] && arr.base == arr.declaredBase && block->size == arr.declaredSize) {
+          arr.declaredEpoch = m_arrayEpoch; // same copy as the one Aurora already has: nothing to send
+          continue;
+        }
+        sent = block->bytes.get();
+        size = block->size;
+        rebind(m_arrayBound[attr - 9], block);
+        mark_sent(block);
+      }
+    }
     write_aurora_header(static_cast<uint16_t>(AUR_LOAD_ARRAYBASE + (attr - 9)));
-    out_u64(reinterpret_cast<uint64_t>(host));
+    out_u64(reinterpret_cast<uint64_t>(sent));
     out_u32(size);
     out_u8(0); // big-endian data
     arr.declaredBase = arr.base;
     arr.declaredSize = size;
+    arr.declaredEpoch = m_arrayEpoch;
     ++m_stats.arrayBaseUpdates;
   }
 
   flush_textures();
+  if (m_freezeCheck) {
+    check_frozen(usedArrays);
+  }
 
   const uint8_t header[3] = {static_cast<uint8_t>(0x80u | (prim << 3) | vat), static_cast<uint8_t>(n >> 8),
                              static_cast<uint8_t>(n & 0xFFu)};

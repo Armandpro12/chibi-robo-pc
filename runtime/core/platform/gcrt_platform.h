@@ -91,6 +91,16 @@
  *   GCRT_GX_STALE_COPIES "evict" (default): an EFB -> texture copy whose guest memory the game has rewritten since
  *                      is dropped and the texture is read from memory, like the console; "keep": former behavior
  *                      (Aurora keeps binding the copy); counted in the final GX report (gx/gx_bridge.hpp)
+ *   GCRT_GX_FREEZE     "1" (default): the bridge gives Aurora's thread copies, taken when the game emits the command,
+ *                      of the data passed by pointer (vertex arrays, textures, TLUTs), so rendering no longer depends
+ *                      on when that thread runs; "0": no vertex array or texture copies, Aurora reads that guest memory itself
+ *                      (diagnostic; TLUTs are still copied at every load, so not the behavior before the fix).
+ *                      Counted in the final report ("GX frozen copies") (gx/gx_bridge.hpp)
+ *   GCRT_GX_FREEZE_CHECK diagnostic: "1" compares, at every draw, the copies Aurora holds for the arrays and texture
+ *                      maps the draw reads with guest memory; differences counted and the first 200 traced
+ *                      ("GX frozen check", platform category)
+ *   GCRT_GX_PUBLISH_BATCH draws published to Aurora's thread per wake-up, 1 to 4096 (default 128; 1 with
+ *                      GCRT_GX_FREEZE=0)
  *   GCRT_GX_STREAM     diagnostic: fingerprint of the received GX command stream, one line per frame ("frame bytes
  *                      fnv64 draws") in this file; "1" = gx-stream.txt in GCRT_CAPTURE_DIR. GCRT_GX_STREAM_DUMP:
  *                      frames ("12,500") whose full stream is also written (<file>.<frame>.bin)

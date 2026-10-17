@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -83,6 +84,22 @@ struct BridgeStats {
   uint64_t badAddresses = 0;     // physical addresses outside guest RAM
   uint64_t copyTextureLoads = 0; // textures loaded from the destination of an earlier EFB -> texture copy
   uint64_t staleCopies = 0;      // ... whose guest memory was rewritten since the copy (copy evicted in Aurora)
+  // Frozen guest data (see FifoBridge, "frozen copies"): new copies taken, bytes copied, re-checks that found the
+  // previous copy still identical (no new copy), and epochs (frame ends, cache invalidations) that forced re-checks.
+  uint64_t frozenTexCopies = 0;
+  uint64_t frozenTexBytes = 0;
+  uint64_t frozenTexReused = 0;
+  uint64_t frozenArrayCopies = 0;
+  uint64_t frozenArrayBytes = 0;
+  uint64_t frozenArrayReused = 0;
+  uint64_t frozenTluts = 0;
+  uint64_t frozenTexEpochs = 0;
+  uint64_t frozenArrayEpochs = 0;
+  uint64_t frozenLiveBytes = 0;  // bytes held by frozen copies right now
+  uint64_t frozenPeakBytes = 0;
+  // GCRT_GX_FREEZE_CHECK=1 (diagnostic): draws for which a frozen copy given to Aurora no longer matched guest memory
+  // (the game rewrote it after its first use in the epoch, without an invalidation).
+  uint64_t frozenOutdated = 0;
 };
 
 class FifoBridge {
@@ -120,6 +137,43 @@ public:
   size_t pending_bytes() const { return m_pending.size() - m_pendingOff; }
 
   const BridgeStats& stats() const { return m_stats; }
+  // Frozen copies on (default) or off (GCRT_GX_FREEZE=0: no array or texture copies, Aurora reads that guest memory
+  // itself; TLUTs are still copied at every load, so this is not the behavior before the fix).
+  bool freeze_enabled() const { return m_freeze; }
+  // Draws published to Aurora's thread per wake-up (GCRT_GX_PUBLISH_BATCH; default 128, 1 with GCRT_GX_FREEZE=0).
+  static uint32_t publish_batch_size();
+
+private:
+  // Frozen copies. Aurora's "FIFO processor" thread reads the data that the stream passes by pointer (vertex arrays,
+  // textures, TLUTs) when it processes the command, which is some time after the game emitted it: if the game rewrites
+  // that memory in between, the frame depends on thread timing (notes/blocages.md, rendering race). The bridge
+  // therefore hands Aurora an immutable copy taken when the command is emitted. One copy per guest range and per
+  // epoch: a new epoch starts at each frame end (Aurora re-reads its arrays and re-resolves its textures every frame)
+  // and at the invalidations that tell the hardware that memory changed (INVL_VC for arrays, BP 0x66 for textures).
+  // A copy is freed once Aurora can no longer read it: not referenced by the snapshot cache, not the last pointer
+  // given to an Aurora slot, and no longer in flight (every command sent before the last drain is processed).
+  struct FrozenBlock {
+    std::unique_ptr<uint8_t[]> bytes;
+    uint32_t size = 0;
+    uint64_t sentGen = 0; // drain generation in which it was last sent (in-flight list membership)
+    uint32_t phys = 0;    // guest range copied (diagnostics)
+    explicit FrozenBlock(uint32_t n);
+    ~FrozenBlock(); // keeps the count of live bytes (frozenLiveBytes)
+  };
+  using FrozenRef = std::shared_ptr<FrozenBlock>;
+  struct Snapshot {
+    FrozenRef block;
+    uint64_t epoch = 0;
+    uint64_t lastUseFrame = 0;
+  };
+  FrozenRef snapshot(std::unordered_map<uint64_t, Snapshot>& cache, uint64_t key, uint32_t phys, uint32_t size,
+                     uint64_t epoch, bool texture);
+  FrozenRef frozen_copy(uint32_t phys, uint32_t size) const; // nullptr if phys is outside guest RAM
+  void mark_sent(const FrozenRef& block);
+  void rebind(FrozenRef& slot, FrozenRef next); // replaces the copy of an Aurora slot, keeping the old one in flight
+  void after_drain();
+  void new_frame_epoch();
+  void check_frozen(uint32_t arrayMask); // GCRT_GX_FREEZE_CHECK: arrays read by the draw (bit = array)
 
 private:
   struct VtxAttr {
@@ -134,13 +188,16 @@ private:
     uint8_t stride = 0;    // CP 0xB0 + n
     uint32_t declaredBase = 0xFFFFFFFFu; // last value forwarded to Aurora
     uint32_t declaredSize = 0;
+    uint64_t declaredEpoch = 0;          // array epoch of the frozen copy forwarded (frozen copies on)
   };
   struct TlutSlot {
     bool valid = false;
     uint16_t tmemOffset = 0;
     uint16_t entries = 0;
     uint32_t version = 0;
-    std::vector<uint8_t> data; // copy taken at load time, like the hardware TMEM
+    // Copy taken at load time, like the hardware TMEM. A new block at each load: the previous one may still be read
+    // by Aurora's thread (frozen copies, see above).
+    std::shared_ptr<FrozenBlock> data;
   };
 
   size_t run_command(const uint8_t* p, size_t avail, bool inDisplayList);
@@ -211,6 +268,19 @@ private:
     uint64_t frame;
   };
   std::unordered_map<uint32_t, CopyRecord> m_copies;
+
+  // Frozen copies (see FrozenBlock).
+  bool m_freeze = true;                                  // GCRT_GX_FREEZE=0: off (diagnostic)
+  bool m_freezeCheck = false;                            // GCRT_GX_FREEZE_CHECK=1 (diagnostic)
+  std::unordered_map<uint64_t, Snapshot> m_texSnaps;     // key: physical address << 32 | size in bytes
+  std::unordered_map<uint64_t, Snapshot> m_arraySnaps;   // key: physical address
+  std::array<FrozenRef, 8> m_texBound{};                 // last copy given to each Aurora texture map
+  std::array<FrozenRef, 16> m_arrayBound{};              // last copy given to each Aurora vertex array
+  std::vector<FrozenRef> m_inFlight;                     // sent since the last drain
+  uint64_t m_sendGen = 1;
+  uint64_t m_texEpoch = 1;
+  uint64_t m_arrayEpoch = 1;
+  uint64_t m_frameNo = 0;
   bool m_evictStaleCopies = true; // GCRT_GX_STALE_COPIES=keep: former behavior (diagnostic)
   uint64_t copy_prefix_hash(uint32_t phys) const;
   void check_copy_destination(uint32_t phys, const uint8_t* data, uint32_t map, uint32_t w, uint32_t h, uint32_t fmt);
