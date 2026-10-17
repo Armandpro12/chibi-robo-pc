@@ -48,7 +48,8 @@
  *                      held at launch no longer shows a skipped setup menu. Default 0
  *   GCRT_SETUP_MENU    setup menu before the game (window size, fullscreen, render scale, console; gcrt_game_config.h):
  *                      auto (default): on a direct launch only, i.e. none of GCRT_WINDOW, GCRT_USER_DIR, GCRT_INPUT,
- *                      GCRT_INPUT_FRAMES, GCRT_STOP_AT, GCRT_STOP_FRAME, GCRT_CAPTURE_DIR, GCRT_RTC is set; 1 always; 0 never.
+ *                      GCRT_INPUT_FRAMES, GCRT_STOP_AT, GCRT_STOP_FRAME, GCRT_CAPTURE_DIR, GCRT_RTC, GCRT_NO_FOCUS is set;
+ *                      1 always; 0 never.
  *                      When the menu is used, its render scale replaces GCRT_RENDER_SCALE
  *   GCRT_SETUP_MENU_AUTO diagnostic, for tests without keyboard or foreground: start | close, optionally ":N".
  *                      After N passes of the menu loop (default 10; one pass = one menu frame, or 16 ms while the
