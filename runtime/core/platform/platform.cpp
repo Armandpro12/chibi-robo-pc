@@ -1034,6 +1034,19 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
                     static_cast<unsigned long long>(p->pendingAtCopy), static_cast<unsigned long long>(p->pendingAtFrameEnd),
                     static_cast<unsigned long long>(p->filteredFrames),
                     static_cast<unsigned long long>(gx.copyTextureLoads), static_cast<unsigned long long>(gx.staleCopies));
+  // Frozen copies of the data passed by pointer to Aurora's thread (gx/gx_bridge.hpp, rendering race).
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                    "GX frozen copies %s, publish batch %u: textures %llu copies (%.1f MiB), %llu unchanged; arrays "
+                    "%llu copies (%.1f MiB), %llu unchanged; TLUTs %llu; epochs: textures %llu, arrays %llu; peak "
+                    "held %.1f MiB, held at the last drain %.1f MiB; outdated at a draw (GCRT_GX_FREEZE_CHECK) %llu",
+                    p->bridge.freeze_enabled() ? "on" : "off", gcrt::gx::FifoBridge::publish_batch_size(),
+                    static_cast<unsigned long long>(gx.frozenTexCopies), gx.frozenTexBytes / 1048576.0,
+                    static_cast<unsigned long long>(gx.frozenTexReused),
+                    static_cast<unsigned long long>(gx.frozenArrayCopies), gx.frozenArrayBytes / 1048576.0,
+                    static_cast<unsigned long long>(gx.frozenArrayReused), static_cast<unsigned long long>(gx.frozenTluts),
+                    static_cast<unsigned long long>(gx.frozenTexEpochs),
+                    static_cast<unsigned long long>(gx.frozenArrayEpochs), gx.frozenPeakBytes / 1048576.0,
+                    gx.frozenLiveBytes / 1048576.0, static_cast<unsigned long long>(gx.frozenOutdated));
   if (p->audio != nullptr) {
     GcrtAudioStats st{};
     gcrt_audio_get_stats(p->audio, &st);
