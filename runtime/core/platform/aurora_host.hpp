@@ -39,7 +39,13 @@ bool host_begin_frame();
 // Ends and presents the open frame.
 void host_end_frame();
 // Processes the window events. Returns false if the user closes the window.
+// Only between two frames (no Aurora frame open), like Aurora's own loop (aurora_update before aurora_begin_frame):
+// a window resize recreates the frame buffer and clears Aurora's bind group cache, which the draws already recorded
+// in an open frame still refer to (game hang on resize, issue 21).
 bool host_poll_events();
+// While a frame is open: lets the system deliver the window messages (window responsive, keyboard state) but leaves
+// the events queued for the next host_poll_events. Returns false if a close request is waiting.
+bool host_pump_events();
 // Waits until Aurora's pipeline compilation queue is empty (otherwise the draws whose
 // pipeline is not ready are skipped by Aurora). Returns the time waited in seconds.
 double host_wait_pipelines(double timeoutSeconds);

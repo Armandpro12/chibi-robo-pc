@@ -393,6 +393,22 @@ void open_frame(GcrtPlatform* p) {
   }
 }
 
+void on_window_closed(GcrtPlatform* p) {
+  if (!p->stopRequested) {
+    p->stopRequested = true;
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed: stop requested");
+    gcrt_cpu_request_stop(p->g);
+  }
+}
+
+// Aurora's window events (aurora_update), with no Aurora frame open: a resize recreates the frame buffer and clears
+// the bind group cache, which the draws of an open frame still refer to (hang on resize, issue 21).
+void poll_window(GcrtPlatform* p) {
+  if (!gcrt::platform::host_poll_events()) {
+    on_window_closed(p);
+  }
+}
+
 // Video fields and vertical retraces of the native VI (hle/native_vi.c).
 uint64_t vi_fields(GcrtPlatform*) { return gcrt_native_vi_fields(); }
 
@@ -512,6 +528,8 @@ void on_display_copy(void* user, const gcrt::gx::DisplayCopyInfo& info) {
   } else {
     ++p->framesSkipped;
   }
+  // Between two frames: the only safe point for Aurora's window events (resize, display scale, close).
+  poll_window(p);
   open_frame(p);
 }
 
@@ -665,12 +683,14 @@ void on_field(void* user, uint32_t, uint32_t, bool) {
   pace(p, now);
   p->input.now = now;
   p->input.fields = vi_fields(p);
-  if (!gcrt::platform::host_poll_events() && !p->stopRequested) {
-    p->stopRequested = true;
-    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed: stop requested");
-    gcrt_cpu_request_stop(p->g);
-  }
-  if (!p->frameOpen) {
+  // Window events: processed by Aurora only between two frames (poll_window); while a frame is open, the window
+  // messages are only pumped, and the events wait for the next display copy (issue 21: resize during a frame).
+  if (p->frameOpen) {
+    if (!gcrt::platform::host_pump_events()) {
+      on_window_closed(p);
+    }
+  } else {
+    poll_window(p);
     open_frame(p);
   }
   if (p->stopAt > 0.0 && now >= p->stopAt && !p->stopRequested) {
