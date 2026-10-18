@@ -25,6 +25,7 @@ Date: 2026-10-13.
 15. [Sources and credits](#15-sources-and-credits)
 - [Appendix A. SDK functions unnamed in cbr_decomp](#appendix-a-sdk-functions-unnamed-in-cbr_decomp)
 - [Appendix B. Game and HAL library functions](#appendix-b-game-and-hal-library-functions)
+- [Appendix C. GX functions verified on 2026-10-19](#appendix-c-gx-functions-verified-on-2026-10-19)
 
 ---
 
@@ -586,7 +587,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 
   The unlicensed parts were not used as a source.
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
-- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, and the `GameSettings` 60 FPS patch. No code copied.
+- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
 - **Ghidra** (Apache 2.0), with Cuyler36's GameCube loader extension.
 - **ExpansionPak/DolRecomp** (GPL-3.0) — the static recompiler used to run and trace the original code.
@@ -1282,3 +1283,117 @@ These functions write vertex data to the pipe after a call to `GXBegin` `[verifi
 | `0x801F2E10` | `0x801F5804` | `0xEC` | microphone driver init: 2 channels, 3 alarms, one of them periodic (5 ms) `[verified: Ghidra + trace]` |
 | `0x801F2EFC` | `0x801F58F0` | `0x10C` | microphone probe (section 9) `[verified: Ghidra]` |
 | `0x801F452C` | `0x801F6F20` | `0x120` | microphone periodic alarm handler `[verified: Ghidra + trace]` |
+
+---
+
+## Appendix C. GX functions verified on 2026-10-19
+
+Forty-six GX functions that the step-10c inventory had matched by function order and size, without further proof. They are not in appendix A. Each name is now `[verified: Ghidra]`: we read the PAL disassembly and checked three things against the public SDK API.
+- **What the function writes.** These are the fields of the GX state or of the caller's object. We compared them with the hardware register layouts (BP, CP), as described in Dolphin's `BPMemory.h` and `CPMemory.h` (read only, for the meaning of the bits).
+- **Who reads those fields.** This is a function already verified in appendix A, for example `GXCopyDisp`, `GXLoadTexObjPreLoaded`, `GXLoadTlut`, `__GXSetVCD`, `__GXSetVAT` or `__GXSetDirtyState`.
+- **The callers**, and the arguments they pass.
+
+US addresses: PAL − `0x2868` for the whole library, with the same sizes. Forty-five of the 46 functions have a masked-code signature (section 7) that is unique in both DOLs at these addresses `[verified: signatures]`. `__GXUpdateBPMask` is a lone `blr`: it is anchored on its callers `__GXSetDirtyState` and `GXBegin`, which call it in both versions.
+
+`games/chibi-robo/symbols/supplement.tsv` now lists these 46 names and the 113 GX names of appendix A, each with its evidence. In that file the static function `GXDrawCubeFace@GXDraw` is written `GXDrawCubeFace`.
+
+| US | PAL | size | name |
+|---|---|---|---|
+| `0x801859A8` | `0x80188210` | `0x70` | `GXInitFifoPtrs` |
+| `0x80185A18` | `0x80188280` | `0xC` | `GXInitFifoLimits` |
+| `0x80185F68` | `0x801887D0` | `0x26C` | `GXSetVtxDesc` |
+| `0x801861D4` | `0x80188A3C` | `0x288` | `GXSetVtxDescv` |
+| `0x80186518` | `0x80188D80` | `0x124` | `__GXCalculateVLim` |
+| `0x8018663C` | `0x80188EA4` | `0x1B4` | `GXGetVtxDesc` |
+| `0x801867F0` | `0x80189058` | `0x90` | `GXGetVtxDescv` |
+| `0x80186880` | `0x801890E8` | `0x38` | `GXClearVtxDesc` |
+| `0x801868B8` | `0x80189120` | `0x25C` | `GXSetVtxAttrFmt` |
+| `0x80186B14` | `0x8018937C` | `0x280` | `GXSetVtxAttrFmtv` |
+| `0x80186E1C` | `0x80189684` | `0x280` | `GXGetVtxAttrFmt` |
+| `0x8018709C` | `0x80189904` | `0x74` | `GXGetVtxAttrFmtv` |
+| `0x80187E44` | `0x8018A6AC` | `0x88` | `__GXSendFlushPrim` |
+| `0x80188014` | `0x8018A87C` | `0x144` | `GXAdjustForOverscan` |
+| `0x80188158` | `0x8018A9C0` | `0x7C` | `GXSetDispCopySrc` |
+| `0x801881D4` | `0x8018AA3C` | `0x7C` | `GXSetTexCopySrc` |
+| `0x80188250` | `0x8018AAB8` | `0x34` | `GXSetDispCopyDst` |
+| `0x80188284` | `0x8018AAEC` | `0x130` | `GXSetTexCopyDst` |
+| `0x801883B4` | `0x8018AC1C` | `0x24` | `GXSetDispCopyFrame2Field` |
+| `0x801883D8` | `0x8018AC40` | `0x58` | `GXSetCopyClamp` |
+| `0x80188AD8` | `0x8018B340` | `0x190` | `GXInitLightSpot` |
+| `0x80188C68` | `0x8018B4D0` | `0xD0` | `GXInitLightDistAttn` |
+| `0x801890A8` | `0x8018B910` | `0x15C` | `GXGetTexBufferSize` |
+| `0x80189204` | `0x8018BA6C` | `0xC8` | `__GetImageTileCount` |
+| `0x801892CC` | `0x8018BB34` | `0x24C` | `GXInitTexObj` |
+| `0x80189518` | `0x8018BD80` | `0x48` | `GXInitTexObjCI` |
+| `0x80189560` | `0x8018BDC8` | `0x164` | `GXInitTexObjLOD` |
+| `0x801896C4` | `0x8018BF2C` | `0x10` | `GXGetTexObjWidth` |
+| `0x801896D4` | `0x8018BF3C` | `0x10` | `GXGetTexObjHeight` |
+| `0x801898D4` | `0x8018C13C` | `0x38` | `GXInitTlutObj` |
+| `0x80189B18` | `0x8018C380` | `0x14` | `GXSetTexRegionCallback` |
+| `0x80189B2C` | `0x8018C394` | `0x14` | `GXSetTlutRegionCallback` |
+| `0x8018A260` | `0x8018CAC8` | `0x24` | `GXSetNumIndStages` |
+| `0x8018A284` | `0x8018CAEC` | `0x48` | `GXSetTevDirect` |
+| `0x8018A2CC` | `0x8018CB34` | `0x4` | `__GXUpdateBPMask` |
+| `0x8018A568` | `0x8018CDD0` | `0x64` | `GXSetTevColorS10` |
+| `0x8018AA1C` | `0x8018D284` | `0x28` | `GXSetNumTevStages` |
+| `0x8018AC58` | `0x8018D4C0` | `0x1B0` | `GXInitFogAdjTable` |
+| `0x8018B22C` | `0x8018DA94` | `0x6CC` | `GXDrawCylinder` |
+| `0x8018B8F8` | `0x8018E160` | `0x37C` | `GXDrawSphere` |
+| `0x8018BC74` | `0x8018E4DC` | `0x218` | `GXDrawCubeFace@GXDraw` |
+| `0x8018BE8C` | `0x8018E6F4` | `0x250` | `GXDrawCube` |
+| `0x8018C14C` | `0x8018E9B4` | `0x174` | `GXProject` |
+| `0x8018C3F0` | `0x8018EC58` | `0x48` | `GXGetProjectionv` |
+| `0x8018C650` | `0x8018EEB8` | `0x58` | `GXSetViewportJitter` |
+| `0x8018C6F0` | `0x8018EF58` | `0x24` | `GXGetViewportv` |
+
+How each family was checked:
+- **FIFO objects**:
+  - `GXInitFifoPtrs` sets the read pointer, the write pointer and the distance between them, with interrupts disabled;
+  - `GXInitFifoLimits` sets the two watermarks;
+  - both are called only by `GXInitFifoBase`, with (base, base) and (size − `0x4000`, half the size).
+- **Vertex descriptors and formats**:
+  - `GXSetVtxDesc` and `GXSetVtxDescv` write the CP VCD_LO and VCD_HI fields: 1-bit matrix indices, 2-bit position, normal, colour and texture-coordinate types. `GXSetVtxAttrFmt` and `GXSetVtxAttrFmtv` write the VAT A, B and C fields of one vertex format (count, type, fraction).
+  - Both setters only mark the state dirty. `__GXSetVCD` and `__GXSetVAT` write the registers later.
+  - The getters read the same fields back. `GXGetVtxDescv` and `GXGetVtxAttrFmtv` loop over them and end the list with attribute `0xFF`.
+  - `GXClearVtxDesc` leaves only the direct position.
+  - `__GXCalculateVLim` computes the vertex size from these fields. `__GXSetDirtyState` calls it when the descriptor or the format is dirty.
+  - `__GXSendFlushPrim` writes a triangle-strip header followed by zero bytes. It is called by `GXBegin` and `GXCallDisplayList`.
+- **Copies**:
+  - `GXSetDispCopySrc` and `GXSetTexCopySrc` build the BP `0x49`/`0x4A` words (source corner and size). `GXSetDispCopyDst` and `GXSetTexCopyDst` build BP `0x4D` (destination stride).
+  - The display-copy words are the ones `GXCopyDisp` sends, and the texture-copy words the ones `GXCopyTex` sends.
+  - `GXSetDispCopyFrame2Field` sets bits 12-13 of the BP `0x52` copy control.
+  - `GXSetCopyClamp` sets bits 0-1 (clamp top and bottom) of both copy controls. Step 10c had guessed `__GXGetNumXfbLines` for it, from order and size alone. `__GXInitGX` calls it with 3, both edges.
+  - `GXSetTexCopyDst` calls `__GetImageTileCount`, which returns the tile counts of a texture format.
+  - `GXAdjustForOverscan` copies a `GXRenderModeObj` and shrinks its sizes by the margins.
+- **Textures**:
+  - `GXInitTexObj` builds the TX_SETMODE0, TX_SETIMAGE0 and TX_SETIMAGE3 words that `GXLoadTexObjPreLoaded` sends: wrap, filters, width − 1, height − 1, format, address >> 5. `GXInitTexObjLOD` adds the LOD fields of TX_SETMODE0 and TX_SETMODE1.
+  - `GXInitTexObjCI` calls `GXInitTexObj`, then stores the TLUT name.
+  - `GXGetTexObjWidth` and `GXGetTexObjHeight` return TX_SETIMAGE0 bits 0-9 and 10-19, plus one.
+  - `GXGetTexBufferSize` uses the same tile sizes per format, summed over the mipmap levels.
+  - `GXInitTlutObj` builds the BP `0x64` word that `GXLoadTlut` sends.
+  - `GXSetTexRegionCallback` and `GXSetTlutRegionCallback` swap the callback pointers that `GXLoadTexObj` and `GXLoadTlut` call. `__GXInitGX` passes `__GXDefaultTexRegionCallback` and `__GXDefaultTlutRegionCallback`.
+- **TEV and general mode**:
+  - `GXSetNumTevStages` writes BP `0x00` bits 10-13 (count − 1), and `GXSetNumIndStages` bits 16-18.
+  - `GXSetTevDirect` is a tail call of `GXSetTevIndirect` with all-zero arguments.
+  - `GXSetTevColorS10` uses the same BP `0xE0`+2n and `0xE1`+2n write pattern as `GXSetTevColor`, with 11-bit components.
+  - `__GXUpdateBPMask` is empty; `__GXSetDirtyState` calls it for dirty bit `0x2`.
+- **Lights and fog**:
+  - `GXInitLightSpot` stores the angle attenuation (a0-a2) and `GXInitLightDistAttn` the distance attenuation (k0-k2): the same fields as `GXInitLightAttn`.
+  - `GXInitFogAdjTable` fills the 10 entries of 12 bits that `GXSetFogRangeAdj` sends.
+- **Transform**:
+  - `GXGetProjectionv` and `GXGetViewportv` read back what `GXSetProjection` and `GXSetViewport` store.
+  - `GXSetViewportJitter` is `GXSetViewport` plus an offset of the top edge when its field argument is 0.
+  - `GXProject` transforms a point by a view matrix, a projection array in the `GXGetProjectionv` layout and a viewport.
+- **GXDraw**:
+  - `GXDrawCylinder`, `GXDrawSphere` and `GXDrawCube` save the vertex state with the getters above, set direct `f32` positions and normals on vertex format 3, write their vertices inline after `GXBegin`, then restore the state. These are the three "helper functions" of section 11.
+  - `GXDrawCylinder` makes one triangle strip and two fans, `GXDrawSphere` one strip per band.
+  - `GXDrawCube` makes one quad list of 24 vertices, built by six calls of the static `GXDrawCubeFace`.
+
+**Object layouts used by this SDK revision** `[verified: Ghidra]`, for native code that reads the game's own objects:
+
+| object | layout |
+|---|---|
+| `GXFifoObj` | `+0x00` base, `+0x04` top (last word), `+0x08` size, `+0x0C` high watermark, `+0x10` low watermark, `+0x14` read pointer, `+0x18` write pointer, `+0x1C` distance |
+| `GXTexObj` (`0x20` bytes) | `+0x00` TX_SETMODE0 word, `+0x04` TX_SETMODE1 word, `+0x08` TX_SETIMAGE0 word, `+0x0C` image address >> 5, `+0x14` format, `+0x18` TLUT name (CI formats), `+0x1C` load tile count (u16), `+0x1E` load format (u8), `+0x1F` flags (bit 0 = mipmap, bit 1 = not colour-indexed) |
+| `GXTlutObj` | `+0x00` TLUT format (bits 10-11), `+0x04` BP `0x64` word (table address >> 5), `+0x08` entry count (u16) |
+| `GXLightObj` | `+0x0C` colour, `+0x10` a0-a2, `+0x1C` k0-k2, `+0x28` position, `+0x34` direction (negated) |
