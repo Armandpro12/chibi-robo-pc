@@ -71,7 +71,7 @@ def psnr(a: np.ndarray, b: np.ndarray) -> float:
     mse = float(np.mean((a - b) ** 2))
     if mse == 0.0:
         return float("inf")
-    return 10.0 * np.log10((255.0 ** 2) / mse)
+    return float(10.0 * np.log10((255.0 ** 2) / mse))
 
 
 def _box_filter(img: np.ndarray, k: int) -> np.ndarray:
@@ -121,13 +121,15 @@ def compare_pair(path_a: Path, path_b: Path, mask: tuple[int, int, int, int] | N
         b = b.copy()
         b[y0:y1, x0:x1] = a[y0:y1, x0:x1]
 
+    psnr_value = psnr(a, b)
+    identical = bool(np.isinf(psnr_value))  # plain bool: np.bool_ is not JSON serializable
     return {
         "a": str(path_a),
         "b": str(path_b),
         "resized": resized,
         "mask": list(mask) if mask else None,
-        "psnr_db": None if np.isinf(psnr(a, b)) else round(psnr(a, b), 2),
-        "psnr_identical": np.isinf(psnr(a, b)),
+        "psnr_db": None if identical else round(psnr_value, 2),
+        "psnr_identical": identical,
         "ssim": round(ssim(a, b), 4),
     }
 
@@ -137,7 +139,7 @@ def verdict(result: dict, psnr_threshold: float, ssim_threshold: float) -> bool:
         return True
     psnr_ok = result["psnr_db"] is not None and result["psnr_db"] >= psnr_threshold
     ssim_ok = result["ssim"] >= ssim_threshold
-    return psnr_ok and ssim_ok
+    return bool(psnr_ok and ssim_ok)
 
 
 def collect_images(d: Path, pattern: str) -> list[Path]:
