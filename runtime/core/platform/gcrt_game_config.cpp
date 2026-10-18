@@ -135,6 +135,18 @@ MenuAutoSetting menu_auto() {
   }
   return m;
 }
+
+// Backdrop behind the menu panel: before the game starts nothing else is rendered, so without it the window around the
+// panel stays plain black (issue 25). A vertical gradient over the whole window, on ImGui's background draw list (drawn
+// before every ImGui window). Only the menu frames have it; the window itself (size, position, focus) is not touched.
+void draw_menu_backdrop() {
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const ImVec2 topLeft = vp->Pos;
+  const ImVec2 bottomRight(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y); // not min/max: macros of windows.h
+  const ImU32 top = IM_COL32(46, 62, 98, 255);
+  const ImU32 bottom = IM_COL32(12, 14, 24, 255);
+  ImGui::GetBackgroundDrawList()->AddRectFilledMultiColor(topLeft, bottomRight, top, top, bottom, bottom);
+}
 } // namespace
 
 extern "C" {
@@ -198,6 +210,7 @@ bool gcrt_game_config_run_menu(const char* title) {
   }
   const bool consoleAtOpen = g_cfg.console;
   bool start = false;
+  bool backdropTraced = false;
   while (!start) {
     const AuroraEvent* ev = aurora_update();
     while (ev != nullptr && ev->type != AURORA_NONE) {
@@ -218,6 +231,12 @@ bool gcrt_game_config_run_menu(const char* title) {
     if (!aurora_begin_frame()) {
       SDL_Delay(16); // window minimized: nothing to draw
       continue;
+    }
+    draw_menu_backdrop();
+    if (!backdropTraced) {
+      const ImVec2 size = ImGui::GetMainViewport()->Size;
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: first frame, %.0fx%.0f, backdrop drawn", size.x, size.y);
+      backdropTraced = true;
     }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(420, 0));
