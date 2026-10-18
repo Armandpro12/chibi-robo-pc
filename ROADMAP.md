@@ -158,9 +158,15 @@ and assets are read from the player's files.
     fault is explained by its instruction. They also give the microcode and firmware versions, the graphics driver,
     the memory regions, the call stacks of every thread at the time of the fault, the last native events and log
     lines, and whether the same crash already happened on that computer; a watchdog writes a report when the game
-    freezes;
-  - **large translucent shapes on the living-room floor**, from the game's light-mask effect (an EFB copy reused as
-    a texture). Dolphin does not show them; the cause is under investigation;
+    freezes. A second report, from the same kind of machine, faulted at the same instruction: no software cause
+    was found, and the crashing build was our current code. Two tools help players and testers tell an unstable
+    machine from a bug: `tools/collect_diagnostics.cmd` (read-only, anonymized: hardware error events, BIOS,
+    microcode, drivers, overlays, recent crash reports; nothing is sent) and `tools/cpustress/` (runs the
+    recompiled-code instruction patterns on every core and checks every result; a PASS does not prove the
+    processor is sound);
+  - **large translucent shapes on the living-room floor**: checked, not a bug. They are the carpet texture plus a
+    floor reflection the game draws on purpose; Dolphin shows the same in a matched view (US checked, PAL draw
+    parameters confirmed but not compared);
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays
     exactly what Dolphin plays.
 - An intermittent crash at the start of 3D rendering was seen early on; it has not been reproduced in more than
