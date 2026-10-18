@@ -11,6 +11,12 @@
 // task (push_encoder_task) draws, between two passes of the frame, a full-screen triangle that
 // reads this copy and writes the filtered version into the EFB (webgpu::g_frameBuffer, internal API), which
 // the next pass reloads and aurora_end_frame presents.
+//
+// Threads: apply_xfb_filter runs on the game thread while Aurora's render worker encodes and submits on the
+// same Dawn device, and Aurora does not request Dawn's ImplicitDeviceSynchronization feature. So the game thread
+// makes no Dawn call here: the parameters go into Aurora's per-frame uniform stream (push_uniform, copied by the
+// worker) and the pipeline is created on the worker, in the encoder task. Creating and unmapping a buffer on the
+// game thread for every filtered frame raced with the worker and crashed inside Dawn (issue 22).
 #include "xfb_filter.hpp"
 
 #include <aurora/gfx.hpp>
@@ -19,6 +25,7 @@
 #include "dolphin/vi/vi_internal.hpp" // Aurora's internal API (external/aurora/lib): displayed region of the EFB
 #include "webgpu/gpu.hpp"               // Aurora's internal API (external/aurora/lib): EFB texture
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <deque>
@@ -72,8 +79,9 @@ struct Params {
 
 struct Pending {
   uint64_t id;
-  wgpu::TextureView source;
-  wgpu::Buffer uniform;
+  wgpu::TextureView source; // snapshot of the EFB (resolve_pass)
+  wgpu::TextureView target; // EFB of the frame being recorded, taken on the game thread like Aurora's own passes
+  aurora::gfx::Range uniform; // Params in the frame's uniform stream
   uint32_t width = 0; // displayed region of the EFB (target pixels): the only part written
   uint32_t height = 0;
 };
@@ -81,11 +89,14 @@ struct Pending {
 std::mutex g_mutex;
 std::deque<Pending> g_pending;
 uint64_t g_nextId = 1;
-bool g_initialized = false;
-bool g_failed = false;
-aurora::gfx::EncoderTaskId g_task = aurora::gfx::InvalidEncoderTask;
+aurora::gfx::EncoderTaskId g_task = aurora::gfx::InvalidEncoderTask; // game thread only
+std::atomic<bool> g_failed{false}; // set by the render worker if the pipeline cannot be created
+// Render worker only (created lazily in encode).
+bool g_pipelineTried = false;
 wgpu::RenderPipeline g_pipeline;
 wgpu::BindGroupLayout g_layout;
+
+bool create_pipeline(const wgpu::Device& device);
 
 void encode(const aurora::gfx::EncoderTaskContext& ctx, const wgpu::CommandEncoder& cmd, const void* payload,
             size_t payloadSize, void*) {
@@ -105,12 +116,25 @@ void encode(const aurora::gfx::EncoderTaskContext& ctx, const wgpu::CommandEncod
       }
     }
   }
-  if (!job.source) {
+  if (!job.source || !job.target) {
+    return;
+  }
+  if (!g_pipelineTried) {
+    g_pipelineTried = true;
+    if (!create_pipeline(ctx.device)) {
+      g_failed.store(true, std::memory_order_release);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "display copy filter: creation failed, disabled");
+    } else {
+      GCRT_TRACE(GCRT_TRACE_VI, "display copy filter: pipeline created on the render worker");
+    }
+  }
+  if (!g_pipeline) {
     return;
   }
   const std::array entries{
       wgpu::BindGroupEntry{.binding = 0, .textureView = job.source},
-      wgpu::BindGroupEntry{.binding = 1, .buffer = job.uniform, .size = sizeof(Params)},
+      wgpu::BindGroupEntry{
+          .binding = 1, .buffer = ctx.uniformBuffer, .offset = job.uniform.offset, .size = job.uniform.size},
   };
   const wgpu::BindGroupDescriptor bgDesc{
       .label = "gcrt XFB filter",
@@ -120,7 +144,7 @@ void encode(const aurora::gfx::EncoderTaskContext& ctx, const wgpu::CommandEncod
   };
   const auto bindGroup = ctx.device.CreateBindGroup(&bgDesc);
   const std::array attachments{wgpu::RenderPassColorAttachment{
-      .view = aurora::webgpu::g_frameBuffer.view,
+      .view = job.target,
       .loadOp = wgpu::LoadOp::Load,
       .storeOp = wgpu::StoreOp::Store,
   }};
@@ -137,11 +161,8 @@ void encode(const aurora::gfx::EncoderTaskContext& ctx, const wgpu::CommandEncod
   pass.End();
 }
 
-bool initialize() {
-  if (g_initialized || g_failed) {
-    return g_initialized;
-  }
-  const auto device = aurora::gfx::device();
+// Render worker thread (first encode).
+bool create_pipeline(const wgpu::Device& device) {
   wgpu::ShaderSourceWGSL source{};
   source.code = kShader;
   const wgpu::ShaderModuleDescriptor moduleDesc{.nextInChain = &source, .label = "gcrt XFB filter"};
@@ -177,13 +198,23 @@ bool initialize() {
       .fragment = &fragment,
   };
   g_pipeline = device.CreateRenderPipeline(&desc);
-  g_task = aurora::gfx::register_encoder_task_type({.label = "gcrt XFB filter", .callback = encode});
-  g_initialized = g_pipeline && g_layout && g_task != aurora::gfx::InvalidEncoderTask;
-  g_failed = !g_initialized;
-  if (g_failed) {
-    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "display copy filter: creation failed, disabled");
+  return g_pipeline && g_layout;
+}
+
+// Game thread: registers the encoder task type (Aurora bookkeeping, no Dawn call).
+bool initialize() {
+  if (g_failed.load(std::memory_order_acquire)) {
+    return false;
   }
-  return g_initialized;
+  if (g_task == aurora::gfx::InvalidEncoderTask) {
+    g_task = aurora::gfx::register_encoder_task_type({.label = "gcrt XFB filter", .callback = encode});
+    if (g_task == aurora::gfx::InvalidEncoderTask) {
+      g_failed.store(true, std::memory_order_release);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "display copy filter: encoder task registration failed, disabled");
+      return false;
+    }
+  }
+  return true;
 }
 } // namespace
 
@@ -241,20 +272,23 @@ bool apply_xfb_filter(const XfbFilterParams& in) {
   params.misc[0] = gammaRcp;
   params.misc[1] = in.efbHeight != 0 ? static_cast<float>(shown.y) / static_cast<float>(in.efbHeight) : 1.0f;
   params.misc[2] = static_cast<float>((in.clampBottom ? shown.y : targets.height) - 1u);
-  const wgpu::BufferDescriptor bufDesc{
-      .label = "gcrt XFB filter",
-      .usage = wgpu::BufferUsage::Uniform,
-      .size = sizeof(Params),
-      .mappedAtCreation = true,
-  };
-  auto buffer = aurora::gfx::device().CreateBuffer(&bufDesc);
-  std::memcpy(buffer.GetMappedRange(), &params, sizeof(params));
-  buffer.Unmap();
+  // CPU-side append to the frame's uniform stream: the worker uploads it before running the task.
+  const auto uniform = aurora::gfx::push_uniform(reinterpret_cast<const uint8_t*>(&params), sizeof(params));
+  if (uniform.size != sizeof(params)) {
+    return false;
+  }
+  static uint32_t lastW = 0, lastH = 0;
+  if (shown.x != lastW || shown.y != lastH) {
+    lastW = shown.x;
+    lastH = shown.y;
+    GCRT_TRACE(GCRT_TRACE_VI, "display copy filter: region %ux%u of a %ux%u EFB, step %.3f, last line %.0f", shown.x,
+               shown.y, targets.width, targets.height, params.misc[1], params.misc[2]);
+  }
   uint64_t id;
   {
     std::lock_guard lock{g_mutex};
     id = g_nextId++;
-    g_pending.push_back({id, targets.color, std::move(buffer), shown.x, shown.y});
+    g_pending.push_back({id, targets.color, aurora::webgpu::g_frameBuffer.view, uniform, shown.x, shown.y});
   }
   if (!aurora::gfx::push_encoder_task(g_task, &id, sizeof(id))) {
     std::lock_guard lock{g_mutex};
