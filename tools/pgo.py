@@ -286,15 +286,21 @@ def load_info(directory: Path) -> dict | None:
 def select(game: str, version: str, config: str, state: dict, directory: Path | None,
            require_fresh: bool) -> tuple[Path | None, str]:
     """Profile to use (or None) and message to print. `directory`: default, the local reference profile
-    (build/pgo/<game>-<ID>/). `require_fresh`: reject a stale profile (auto mode)."""
+    (build/pgo/<game>-<ID>/). `require_fresh`: reject a stale profile (auto mode, which then builds without PGO);
+    without it (--pgo use), tools/build.py stops when there is no usable profile, and the message says so."""
     d = directory or local_dir(game, version)
     regen = f"py -3 tools/pgo.py {game} train --version {version}"
-    without = "build without PGO (same behavior, only slower)"
+    if require_fresh:
+        without = "build without PGO (same behavior, only slower)"
+        other_config = f"{config} build without PGO"
+    else:
+        without = "nothing built (--pgo auto or --pgo off build without a profile)"
+        other_config = f"not usable for a {config} build; nothing built"
     info = load_info(d)
     if info is None:
         return None, f"no PGO profile in {d}: {without}; to produce one: {regen}"
     if config != info.get("config", CONFIG):
-        return None, f"PGO profile of configuration {info.get('config')} ({d}): {config} build without PGO"
+        return None, f"PGO profile of configuration {info.get('config')} ({d}): {other_config}"
     if info.get("version") != version:
         return None, f"PGO profile of another version ({info.get('version')}, {d}): {without}"
     profile = d / info.get("profile", PROFILE_NAME)

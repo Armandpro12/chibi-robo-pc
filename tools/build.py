@@ -435,6 +435,15 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         "GCRT_PGO": pgo[0],
         "GCRT_PGO_PROFILE": pgo[1].as_posix() if pgo[0] == "USE" and pgo[1] else "",
         "GCRT_PGO_RUNTIME": pgo[1].as_posix() if pgo[0] == "GENERATE" and pgo[1] else "",
+        # Assembler seen as clang-cl (MSVC-like) on every configuration, not only the first one. When a project enables
+        # ASM (Aurora's zstd: project(libzstd C ASM)), CMake 3.31 detects clang-cl's MSVC-like command line on the first
+        # configuration only (CMakeDetermineASMCompiler.cmake), and does not store it in CMakeFiles/<version>/
+        # CMakeASMCompiler.cmake. On the next configuration (a second tools/build.py, or Ninja re-running CMake), the
+        # Ninja generator then takes the assembler for a GNU-like compiler on Windows and writes every path with "/"
+        # instead of "\": all the command lines change and everything is recompiled once (issue 8). Cache entries
+        # fill the gap; on the first configuration CMake sets the same values itself.
+        "CMAKE_ASM_COMPILER_FRONTEND_VARIANT": "MSVC",
+        "CMAKE_ASM_SIMULATE_ID": "MSVC",
     }
     for tool, var in (("lld-link", "CMAKE_LINKER"), ("llvm-lib", "CMAKE_AR"), ("llvm-rc", "CMAKE_RC_COMPILER")):
         exe = llvm_bin / f"{tool}{tc.EXE}"
