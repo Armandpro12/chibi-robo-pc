@@ -36,7 +36,10 @@
  *
  * Variables: GCRT_CRASH_HANDLER=0 disables the handler and the watchdog (to let a debugger or Windows Error Reporting
  * see the exception first); GCRT_WATCHDOG=<seconds> without progress of the game loop before a hang report (default
- * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached).
+ * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached);
+ * GCRT_CRASH_SUSPEND_LIMIT=<seconds> the other threads may stay suspended while a report copies their state (default
+ * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted (a report never freezes
+ * the game).
  * Windows only; elsewhere the functions do nothing.
  */
 #ifndef GCRT_CRASH_H

@@ -115,7 +115,9 @@
  *                      heaplock (fault while the game thread holds the process heap lock), hangheap (the game thread
  *                      holds the heap lock for GCRT_CRASH_TEST_HANG seconds, then faults: hang report, then crash
  *                      report), hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
- *                      the watchdog)
+ *                      the watchdog). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap: what a report does while the other threads
+ *                      are suspended (sleep, or a 1 MiB allocation on the process heap): test of the suspension guard
+ *                      (GCRT_CRASH_SUSPEND_LIMIT, platform/gcrt_crash.h)
  *   GCRT_WATCHDOG      seconds without progress of the game loop (one heartbeat per emulated frame) before a hang
  *                      report (hang-*.txt/.dmp in the crash folder, threads and their stacks); default 60, 0 = off;
  *                      at most 3 per session, never kills the game, skipped under a debugger (platform/gcrt_crash.h)

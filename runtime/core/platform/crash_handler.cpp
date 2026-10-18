@@ -8,9 +8,13 @@
 //    the heap code, heap corruption). The .txt is created with NtCreateFile relative to a handle on the crash folder
 //    opened in advance (CreateFileW converts the path on the process heap);
 //  - phase 0 (may allocate: module and thread snapshots) comes after that header; phase 1 uses no heap allocation
-//    and no loader lock: preallocated buffers, other threads suspended only while their contexts are read and
-//    phase 1 is composed and written; machine information, the environment and the command line are read at
-//    installation;
+//    and no loader lock: preallocated buffers; machine information, the environment, the command line, the
+//    executable name and the processor count are read at installation;
+//  - the other threads are suspended only while their contexts, a copy of their stacks and the guest state are
+//    taken, with nothing that allocates or takes a lock (a suspended thread may hold the heap lock); everything else
+//    (unwinding the copies, names, text) comes after they are resumed. A suspension guard thread, never suspended,
+//    resumes them if they stay suspended more than GCRT_CRASH_SUSPEND_LIMIT seconds (default 5): a report must never
+//    freeze the game, which a hang report (watchdog) could otherwise do to a healthy game;
 //  - if the reporting thread does not finish phase 1 within 60 s (blocked), the faulting thread writes what is left
 //    to stderr, marks the .txt as incomplete and lets the process end as usual;
 //  - the text report is written first, section by section (whatever was composed is on disk if a later step hangs or
@@ -657,9 +661,13 @@ bool file_sha1_short(const wchar_t* path, char* hex, size_t hex_size) {
   return true;
 }
 
-void report_build_and_machine() {
+// Read at installation: GetModuleFileNameW may take the loader lock, and GetActiveProcessorCount allocates on the
+// process heap (seen blocked in RtlAllocateHeap from it while another thread held the heap lock).
+char g_exe_name[MAX_PATH * 4] = "?";
+unsigned long g_logical_cpus = 0;
+
+void read_exe_and_cpus() {
   wchar_t wpath[MAX_PATH * 2] = L"";
-  char name_utf8[MAX_PATH * 4] = "?";
   const DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH * 2);
   if (len > 0 && len < MAX_PATH * 2) {
     const wchar_t* file = wpath;
@@ -668,11 +676,15 @@ void report_build_and_machine() {
         file = c + 1;
       }
     }
-    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, name_utf8, sizeof(name_utf8), nullptr, nullptr) == 0) {
-      std::snprintf(name_utf8, sizeof(name_utf8), "?");
+    if (WideCharToMultiByte(CP_UTF8, 0, file, -1, g_exe_name, sizeof(g_exe_name), nullptr, nullptr) == 0) {
+      std::snprintf(g_exe_name, sizeof(g_exe_name), "?");
     }
   }
-  out("executable %s\n", name_utf8);
+  g_logical_cpus = static_cast<unsigned long>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
+}
+
+void report_build_and_machine() {
+  out("executable %s\n", g_exe_name);
   const auto* image = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(image);
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(image + dos->e_lfanew);
@@ -695,7 +707,7 @@ void report_build_and_machine() {
   }
   __cpuid(regs, 1);
   out("cpu %s, signature 0x%08X, %lu logical processors\n", *name ? name : "?", static_cast<unsigned>(regs[0]),
-      static_cast<unsigned long>(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)));
+      g_logical_cpus);
   out("%s", g_machine);
   out("gpu %s\n", g_gpu[0] ? g_gpu : "? (not reported by the renderer yet)");
 }
@@ -852,36 +864,94 @@ void guest_name(u32 address, char* buf, size_t size) {
   }
 }
 
+// Guest state copied for the report: from the live state when the game thread is the faulting thread (stopped in the
+// handler), otherwise while the other threads are suspended (capture_threads), so that the game thread, resumed right
+// after, cannot change it while the report is composed. Plain memory copies: no heap, no lock. Names are looked up
+// later (the symbolizer may allocate).
+constexpr int kGuestFrames = 48;
+constexpr u32 kGuestRingCopy = 64 * 1024; // newest history entries copied (more would not fit in the .txt anyway)
+struct GuestSnap {
+  bool valid;
+  CPUState state;
+  u64 ticks, blocks, deliveries;
+  u32 ring_size;  // entries in the history (GCRT_GUEST_HISTORY)
+  u32 ring_count; // entries filled
+  u32 ring_copied;
+  u32 ring[kGuestRingCopy]; // oldest to newest: the last ring_copied entries
+  int frames;
+  u32 frame_back[kGuestFrames];
+  u32 frame_saved[kGuestFrames];
+};
+GuestSnap g_guest;
+
+void snapshot_guest() {
+  g_guest.valid = false;
+  if (g_cpu == nullptr) {
+    return;
+  }
+  std::memcpy(&g_guest.state, &g_cpu->state, sizeof(CPUState));
+  g_guest.ticks = g_cpu->ticks;
+  g_guest.blocks = g_cpu->blocks;
+  g_guest.deliveries = g_cpu->deliveries;
+  const u32 mask = g_cpu->ring_mask;
+  const u32 pos = g_cpu->ring_pos;
+  const u32 size = mask + 1u;
+  g_guest.ring_size = size;
+  g_guest.ring_count = pos < size ? pos : size;
+  g_guest.ring_copied = g_guest.ring_count < kGuestRingCopy ? g_guest.ring_count : kGuestRingCopy;
+  for (u32 i = 0; i < g_guest.ring_copied; i++) {
+    g_guest.ring[i] = g_cpu->ring[(pos - g_guest.ring_copied + i) & mask];
+  }
+  // Guest call stack: back chain of the stack frames (raw values, named later).
+  g_guest.frames = 0;
+  u32 sp = g_guest.state.gpr[1];
+  for (int depth = 1; depth < kGuestFrames; depth++) {
+    u32 back = 0, saved = 0;
+    if (!guest_read32(sp, &back) || back == 0 || back <= sp || back - sp > 0x100000u) {
+      break;
+    }
+    if (!guest_read32(back + 4u, &saved)) {
+      break;
+    }
+    g_guest.frame_back[g_guest.frames] = back;
+    g_guest.frame_saved[g_guest.frames] = saved;
+    g_guest.frames++;
+    sp = back;
+  }
+  g_guest.valid = true;
+}
+
 // Last guest blocks: the 64 most recent with names, the older part of the history as raw addresses.
 void report_guest_history() {
-  const u32 size = g_cpu->ring_mask + 1u;
-  const u32 count = g_cpu->ring_pos < size ? g_cpu->ring_pos : size;
+  const GuestSnap& g = g_guest;
+  const u32 count = g.ring_copied;
   const u32 named = count < 64u ? count : 64u;
   char name[200];
   if (count > named) {
-    out("older blocks (oldest to newest, %u of a %u-entry history, GCRT_GUEST_HISTORY):", count - named, size);
+    out("older blocks (oldest to newest, %u of a %u-entry history, GCRT_GUEST_HISTORY%s):", count - named, g.ring_size,
+        g.ring_copied < g.ring_count ? "; only the newest entries were copied" : "");
     for (u32 i = 0; i < count - named; i++) {
-      out("%s%08X", (i % 10) ? " " : "\n  ", g_cpu->ring[(g_cpu->ring_pos - count + i) & g_cpu->ring_mask]);
+      out("%s%08X", (i % 10) ? " " : "\n  ", g.ring[i]);
     }
     out("\n");
   }
   out("last blocks run (oldest to newest):\n");
   for (u32 i = 0; i < named; i++) {
-    const u32 pc = g_cpu->ring[(g_cpu->ring_pos - named + i) & g_cpu->ring_mask];
-    guest_name(pc, name, sizeof(name));
+    guest_name(g.ring[count - named + i], name, sizeof(name));
     out("  %s\n", name);
   }
 }
 
+// Guest section, from g_guest (snapshot_guest must have run).
 void report_guest(bool stopped) {
-  if (g_cpu == nullptr) {
+  if (g_cpu == nullptr || !g_guest.valid) {
     out("guest: no state\n");
     return;
   }
-  const CPUState* c = &g_cpu->state;
+  const CPUState* c = &g_guest.state;
   char name[200];
   out("\n== Guest state (start of the current block: the generated code updates pc at block boundaries)%s\n",
-      stopped ? "" : "\n   (the game thread was not the faulting thread: values read while it was suspended)");
+      stopped ? "" : "\n   (the game thread was not the faulting thread: values copied while it was suspended)");
   guest_name(c->pc, name, sizeof(name));
   out("pc  %s\n", name);
   guest_name(c->lr, name, sizeof(name));
@@ -892,23 +962,15 @@ void report_guest(bool stopped) {
         c->gpr[i + 3], c->gpr[i + 4], c->gpr[i + 5], c->gpr[i + 6], c->gpr[i + 7]);
   }
   out("guest time %.3f s (ticks %llu), blocks %llu, delivered interrupts %llu\n",
-      static_cast<double>(g_cpu->ticks) / static_cast<double>(GCRT_TB_HZ), static_cast<unsigned long long>(g_cpu->ticks),
-      static_cast<unsigned long long>(g_cpu->blocks), static_cast<unsigned long long>(g_cpu->deliveries));
+      static_cast<double>(g_guest.ticks) / static_cast<double>(GCRT_TB_HZ),
+      static_cast<unsigned long long>(g_guest.ticks), static_cast<unsigned long long>(g_guest.blocks),
+      static_cast<unsigned long long>(g_guest.deliveries));
   out("guest call stack (lr, then the return addresses saved in the stack frames):\n");
   guest_name(c->lr, name, sizeof(name));
   out("  #0 %s\n", name);
-  u32 sp = c->gpr[1];
-  for (int depth = 1; depth < 48; depth++) {
-    u32 back = 0, saved = 0;
-    if (!guest_read32(sp, &back) || back == 0 || back <= sp || back - sp > 0x100000u) {
-      break;
-    }
-    if (!guest_read32(back + 4u, &saved)) {
-      break;
-    }
-    guest_name(saved, name, sizeof(name));
-    out("  #%d %s (frame %08X)\n", depth, name, back);
-    sp = back;
+  for (int i = 0; i < g_guest.frames; i++) {
+    guest_name(g_guest.frame_saved[i], name, sizeof(name));
+    out("  #%d %s (frame %08X)\n", i + 1, name, g_guest.frame_back[i]);
   }
   report_guest_history();
 }
@@ -916,7 +978,8 @@ void report_guest(bool stopped) {
 // --- Native events ------------------------------------------------------------------------------------------------
 constexpr uint32_t kTextEvents = 256; // events in the .txt; the minidump comment stream holds the whole ring
 
-void format_events(uint32_t max_events, LARGE_INTEGER now) {
+// Events recorded up to `upto` (the count read while the other threads were suspended; UINT64_MAX: all so far).
+void format_events(uint32_t max_events, LARGE_INTEGER now, uint64_t upto = UINT64_MAX) {
   uint32_t capacity = 0;
   uint64_t recorded = 0;
   const GcrtDiagSlot* slots = gcrt_diag_slots(&capacity, &recorded);
@@ -924,6 +987,7 @@ void format_events(uint32_t max_events, LARGE_INTEGER now) {
     out("(event ring disabled: GCRT_DIAG_EVENTS=0)\n");
     return;
   }
+  recorded = std::min<uint64_t>(recorded, upto);
   LARGE_INTEGER freq;
   QueryPerformanceFrequency(&freq);
   uint64_t n = std::min<uint64_t>(recorded, capacity);
@@ -943,21 +1007,53 @@ void format_events(uint32_t max_events, LARGE_INTEGER now) {
 }
 
 // --- Threads ------------------------------------------------------------------------------------------------------
+// While the other threads are suspended (capture_threads), the reporting thread only reads their contexts and copies
+// their stacks and the guest state into preallocated buffers: no heap, no lock of the C runtime, the loader or
+// dbghelp. A suspended thread may hold any of those locks: a report that needed one would wait for ever for a thread
+// it suspended itself (seen: the game thread suspended while holding the process heap lock, the reporting thread
+// blocked in RtlAllocateHeap, the whole process frozen). Unwinding (RtlLookupFunctionEntry may take locks), naming
+// and formatting come after every thread is resumed, on the copies.
+// Second barrier: the suspension guard, a thread created at installation and never suspended, resumes every thread
+// still suspended by the report after GCRT_CRASH_SUSPEND_LIMIT seconds (default 5); the report then says so. The
+// reporting thread, the guard and the watchdog are never suspended.
 constexpr int kMaxThreads = 256;
 constexpr int kMaxFrames = 32;
+constexpr size_t kStackCopyMax = 128 * 1024;    // per thread, from rsp towards the stack base
+constexpr size_t kStackPool = 2 * 1024 * 1024;  // all threads
 struct ThreadInfo {
   DWORD tid;
   HANDLE handle;
-  bool suspended;
+  LONG held;                 // 1 while suspended by the report; taken with InterlockedExchange (reporter and guard)
   bool have_context;
+  const char* left_running;  // why the thread is never suspended (null: it is)
   int frames;
   DWORD64 frame[kMaxFrames];
   DWORD64 rsp;
+  DWORD64 stack_lo;          // original address of the first copied byte (rsp)
+  size_t stack_len;
+  unsigned char* stack_copy;
   char name[96];
+  CONTEXT ctx;               // 16-byte aligned (DECLSPEC_ALIGN in winnt.h)
 };
 ThreadInfo g_threads[kMaxThreads];
 int g_thread_count = 0;
-alignas(16) CONTEXT g_thread_ctx; // scratch, used one thread at a time
+alignas(16) unsigned char g_stack_pool[kStackPool];
+
+// Suspension guard.
+HANDLE g_suspend_begin = nullptr;    // auto-reset: the reporting thread starts suspending threads
+HANDLE g_suspend_end = nullptr;      // manual-reset: every thread it suspended is resumed
+volatile LONG g_suspend_abort = 0;   // 1: the guard resumed the threads itself
+DWORD g_suspend_limit_ms = 5000;     // GCRT_CRASH_SUSPEND_LIMIT (seconds)
+DWORD g_guard_tid = 0;
+DWORD g_watchdog_tid = 0;
+// Test (GCRT_CRASH_TEST_SUSPENDED): what the reporting thread does while the other threads are suspended. 0 nothing,
+// > 0 sleep that many ms, -1 a 1 MiB allocation on the process heap (the defect the guard protects against).
+long g_test_suspended = 0;
+// Result of the last capture.
+int g_suspended_count = 0;
+double g_suspended_ms = 0.0;
+bool g_suspend_interrupted = false;
+uint64_t g_events_upto = UINT64_MAX;
 
 // GetThreadDescription (Windows 10 1607+), resolved at installation (no loader lock after a crash).
 using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
@@ -980,14 +1076,18 @@ void thread_name(DWORD tid, char* buf, size_t size) {
 }
 
 // Unwinds a context with the x64 unwind tables (RtlLookupFunctionEntry / RtlVirtualUnwind): no allocation, guarded
-// against a corrupt stack. Returns the number of frames (the first one is rip).
-int unwind_stack(const CONTEXT* start, DWORD64* frames, int max) {
+// against a corrupt stack. Returns the number of frames (the first one is rip). With hi != 0, the stack is a copy
+// spanning [lo, hi): the walk stops when rsp leaves it.
+int unwind_stack(const CONTEXT* start, DWORD64* frames, int max, DWORD64 lo = 0, DWORD64 hi = 0) {
   static CONTEXT c; // only the reporting thread unwinds
   c = *start;
   int n = 0;
   __try {
     while (n < max && c.Rip != 0) {
       frames[n++] = c.Rip;
+      if (hi != 0 && (c.Rsp < lo || c.Rsp + 8 > hi)) {
+        break;
+      }
       DWORD64 image_base = 0;
       PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(c.Rip, &image_base, nullptr);
       if (fn == nullptr) {
@@ -1005,7 +1105,8 @@ int unwind_stack(const CONTEXT* start, DWORD64* frames, int max) {
   return n;
 }
 
-// Lists the threads of the process and their names (before any suspension: names need the heap).
+// Lists the threads of the process and their names (before any suspension: names need the heap). The reporting thread
+// (`self`) is left out; the guard and the watchdog are listed but never suspended.
 void snapshot_threads(DWORD self) {
   g_thread_count = 0;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -1019,43 +1120,177 @@ void snapshot_threads(DWORD self) {
     if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) {
       continue;
     }
-    ThreadInfo& t = g_threads[g_thread_count++];
-    t = ThreadInfo{};
+    ThreadInfo& t = g_threads[g_thread_count];
+    std::memset(&t, 0, sizeof(t));
     t.tid = te.th32ThreadID;
+    t.left_running = t.tid == g_guard_tid      ? "suspension guard"
+                     : t.tid == g_watchdog_tid ? "watchdog"
+                                               : nullptr;
     t.handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, t.tid);
     thread_name(t.tid, t.name, sizeof(t.name));
+    g_thread_count++; // after the entry is complete: the guard reads the list
   }
   CloseHandle(snap);
 }
 
-// Suspends every listed thread except `keep_running` (0: none) and records its context and raw call stack.
-void suspend_and_capture(DWORD faulting) {
-  for (int i = 0; i < g_thread_count; i++) {
+bool guarded_copy(void* dst, const void* src, size_t n) {
+  __try {
+    std::memcpy(dst, src, n);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+// Copies the used part of a suspended thread's stack (rsp up to the top of its committed region, at most
+// kStackCopyMax) into the pool. VirtualQuery and a copy: no heap, no lock.
+void copy_stack(ThreadInfo& t, size_t* pool_used) {
+  t.stack_len = 0;
+  MEMORY_BASIC_INFORMATION mbi;
+  const DWORD64 rsp = t.ctx.Rsp;
+  if (VirtualQuery(reinterpret_cast<LPCVOID>(rsp), &mbi, sizeof(mbi)) != sizeof(mbi) || mbi.State != MEM_COMMIT ||
+      (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+    return;
+  }
+  const DWORD64 top = reinterpret_cast<DWORD64>(mbi.BaseAddress) + mbi.RegionSize;
+  size_t len = static_cast<size_t>(std::min<DWORD64>(top - rsp, kStackCopyMax));
+  len = std::min(len, kStackPool - *pool_used) & ~static_cast<size_t>(7);
+  if (len == 0) {
+    return;
+  }
+  unsigned char* dst = g_stack_pool + *pool_used;
+  if (!guarded_copy(dst, reinterpret_cast<const void*>(rsp), len)) {
+    return;
+  }
+  t.stack_lo = rsp;
+  t.stack_len = len;
+  t.stack_copy = dst;
+  *pool_used += (len + 15) & ~static_cast<size_t>(15);
+}
+
+// Resumes every thread still suspended by the report (also called by the guard: each thread is resumed once).
+void resume_threads() {
+  const int count = g_thread_count;
+  for (int i = 0; i < count; i++) {
     ThreadInfo& t = g_threads[i];
-    if (t.handle == nullptr) {
-      continue;
-    }
-    if (t.tid != faulting) {
-      t.suspended = SuspendThread(t.handle) != static_cast<DWORD>(-1);
-    }
-    std::memset(&g_thread_ctx, 0, sizeof(g_thread_ctx));
-    g_thread_ctx.ContextFlags = CONTEXT_FULL;
-    if (t.tid != faulting && t.suspended && GetThreadContext(t.handle, &g_thread_ctx)) {
-      t.have_context = true;
-      t.rsp = g_thread_ctx.Rsp;
-      t.frames = unwind_stack(&g_thread_ctx, t.frame, kMaxFrames);
+    if (InterlockedExchange(&t.held, 0) != 0) {
+      ResumeThread(t.handle);
     }
   }
 }
 
-void resume_threads() {
+DWORD WINAPI guard_main(LPVOID) {
+  for (;;) {
+    if (WaitForSingleObject(g_suspend_begin, INFINITE) != WAIT_OBJECT_0) {
+      return 0;
+    }
+    if (WaitForSingleObject(g_suspend_end, g_suspend_limit_ms) == WAIT_OBJECT_0) {
+      continue;
+    }
+    // The reporting thread is stuck while threads are suspended: give them back. Nothing here allocates.
+    InterlockedExchange(&g_suspend_abort, 1);
+    resume_threads();
+  }
+}
+
+// Suspends every listed thread but `faulting` (0: none) and the ones left running, copies each context and stack, and
+// the guest state when `copy_guest` (the game thread is not stopped in the handler), then resumes them all.
+void capture_threads(DWORD faulting, bool copy_guest) {
+  LARGE_INTEGER t0, t1, freq;
+  QueryPerformanceCounter(&t0);
+  size_t pool_used = 0;
+  int suspended = 0;
+  InterlockedExchange(&g_suspend_abort, 0);
+  if (g_suspend_end != nullptr) {
+    ResetEvent(g_suspend_end);
+  }
+  if (g_suspend_begin != nullptr) {
+    SetEvent(g_suspend_begin);
+  }
   for (int i = 0; i < g_thread_count; i++) {
     ThreadInfo& t = g_threads[i];
-    if (t.suspended) {
-      ResumeThread(t.handle);
-      t.suspended = false;
+    if (t.handle == nullptr || t.tid == faulting || t.left_running != nullptr) {
+      continue;
+    }
+    if (InterlockedCompareExchange(&g_suspend_abort, 0, 0) != 0) {
+      break;
+    }
+    if (SuspendThread(t.handle) == static_cast<DWORD>(-1)) {
+      continue;
+    }
+    InterlockedExchange(&t.held, 1);
+    if (InterlockedCompareExchange(&g_suspend_abort, 0, 0) != 0) {
+      if (InterlockedExchange(&t.held, 0) != 0) {
+        ResumeThread(t.handle);
+      }
+      break;
+    }
+    suspended++;
+    t.ctx.ContextFlags = CONTEXT_FULL;
+    if (GetThreadContext(t.handle, &t.ctx)) { // also waits until the suspension is effective
+      t.have_context = true;
+      t.rsp = t.ctx.Rsp;
+      copy_stack(t, &pool_used);
     }
   }
+  if (copy_guest) {
+    snapshot_guest();
+  }
+  {
+    uint32_t capacity = 0;
+    uint64_t recorded = 0;
+    gcrt_diag_slots(&capacity, &recorded);
+    g_events_upto = recorded;
+  }
+  if (g_test_suspended > 0) {
+    Sleep(static_cast<DWORD>(g_test_suspended));
+  } else if (g_test_suspended < 0) {
+    HeapFree(GetProcessHeap(), 0, HeapAlloc(GetProcessHeap(), 0, 1u << 20));
+  }
+  resume_threads();
+  // Read before the guard is told: a guard waking up after this point finds nothing left to resume.
+  g_suspend_interrupted = InterlockedCompareExchange(&g_suspend_abort, 0, 0) != 0;
+  if (g_suspend_end != nullptr) {
+    SetEvent(g_suspend_end);
+  }
+  QueryPerformanceCounter(&t1);
+  QueryPerformanceFrequency(&freq);
+  g_suspended_count = suspended;
+  g_suspended_ms = static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
+}
+
+// Unwinds the copied stack of a captured thread (after the threads are resumed). Values of the copy and registers that
+// point into the original stack range are moved into the copy first, so that frame pointers and saved rsp follow it.
+void unwind_copy(ThreadInfo& t) {
+  t.frames = 0;
+  if (!t.have_context) {
+    return;
+  }
+  if (t.stack_len == 0) {
+    t.frame[0] = t.ctx.Rip;
+    t.frames = 1;
+    return;
+  }
+  const DWORD64 lo = t.stack_lo;
+  const DWORD64 hi = lo + t.stack_len;
+  const DWORD64 delta = reinterpret_cast<DWORD64>(t.stack_copy) - lo;
+  auto* words = reinterpret_cast<DWORD64*>(t.stack_copy);
+  for (size_t i = 0; i < t.stack_len / 8; i++) {
+    if (words[i] >= lo && words[i] < hi) {
+      words[i] += delta;
+    }
+  }
+  static CONTEXT c;
+  c = t.ctx;
+  DWORD64* regs[] = {&c.Rax, &c.Rcx, &c.Rdx, &c.Rbx, &c.Rsp, &c.Rbp, &c.Rsi, &c.Rdi,
+                     &c.R8,  &c.R9,  &c.R10, &c.R11, &c.R12, &c.R13, &c.R14, &c.R15};
+  for (DWORD64* r : regs) {
+    if (*r >= lo && *r < hi) {
+      *r += delta;
+    }
+  }
+  t.frames = unwind_stack(&c, t.frame, kMaxFrames, reinterpret_cast<DWORD64>(t.stack_copy),
+                          reinterpret_cast<DWORD64>(t.stack_copy) + t.stack_len);
 }
 
 void close_threads() {
@@ -1076,8 +1311,17 @@ void report_frames(const DWORD64* frames, int n) {
 }
 
 void report_threads(DWORD faulting) {
-  out("\n== Threads at the time of the report (%d besides the reporting thread; raw unwind, module + offset)\n",
+  out("\n== Threads at the time of the report (%d besides the reporting thread; raw unwind of a copy of each stack, "
+      "module + offset)\n",
       g_thread_count);
+  out("%d threads suspended for %.2f ms while their contexts and stacks were copied\n", g_suspended_count,
+      g_suspended_ms);
+  if (g_suspend_interrupted) {
+    out("note: the suspension was interrupted: the threads stayed suspended more than %lu ms "
+        "(GCRT_CRASH_SUSPEND_LIMIT) and the suspension guard resumed them; the states below may be incomplete or "
+        "inconsistent\n",
+        static_cast<unsigned long>(g_suspend_limit_ms));
+  }
   for (int i = 0; i < g_thread_count; i++) {
     const ThreadInfo& t = g_threads[i];
     out("thread %lu \"%s\"%s%s\n", static_cast<unsigned long>(t.tid), t.name,
@@ -1085,11 +1329,16 @@ void report_threads(DWORD faulting) {
     if (t.tid == faulting) {
       continue;
     }
+    if (t.left_running != nullptr) {
+      out("    (not suspended: %s)\n", t.left_running);
+      continue;
+    }
     if (!t.have_context) {
       out("    (context unavailable)\n");
       continue;
     }
-    out("    rsp %016llX\n", static_cast<unsigned long long>(t.rsp));
+    out("    rsp %016llX%s\n", static_cast<unsigned long long>(t.rsp),
+        t.stack_len == 0 ? " (stack not copied: first frame only)" : "");
     report_frames(t.frame, t.frames);
   }
 }
@@ -1314,15 +1563,22 @@ void do_report() {
     report_frames(frames, n);
   }
   if (game_faulted) {
-    report_guest(true); // the game thread is the faulting thread: stopped in the handler
+    snapshot_guest(); // the game thread is the faulting thread: stopped in the handler
+    report_guest(true);
   }
   flush_text();
 
   // Phase 0 (may allocate): module and thread snapshots. The header above is already on disk if this blocks.
   snapshot_modules();
   snapshot_threads(GetCurrentThreadId());
-  // Phase 1 (no allocation): other threads suspended while their state and the rest of the report are captured.
-  suspend_and_capture(hang ? 0 : g_in.thread);
+  // Phase 1: the other threads suspended only while their contexts, stacks and the guest state are copied (no heap,
+  // no lock; bounded by the suspension guard), then resumed.
+  capture_threads(hang ? 0 : g_in.thread, !game_faulted);
+  for (int i = 0; i < g_thread_count; i++) {
+    unwind_copy(g_threads[i]);
+  }
+  // Phase 1 continued (threads running again; still no allocation: after a crash the faulting thread may hold the
+  // heap lock): the rest of the text report.
   out("\n== Process and machine\n");
   if (rec != nullptr) {
     describe_host_address(fault_address, where, sizeof(where)); // with the refreshed module list
@@ -1364,7 +1620,7 @@ void do_report() {
   report_threads(hang ? 0 : g_in.thread);
   flush_text();
   out("\n== Recent native events\n");
-  format_events(kTextEvents, now);
+  format_events(kTextEvents, now, g_events_upto);
   flush_text();
   out("\n== Recent log lines (trace output, oldest first)\n");
   {
@@ -1398,7 +1654,12 @@ void do_report() {
   }
   flush_text();
   g_phase1_done = 1;
-  resume_threads();
+  if (hang) {
+    // Activable trace (GCRT_TRACE platform), once the text is on disk (it may allocate). Hang reports only: after a
+    // crash, the faulting thread may hold a lock of the trace output.
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "hang report: %d threads suspended for %.2f ms%s", g_suspended_count,
+                      g_suspended_ms, g_suspend_interrupted ? ", interrupted by the suspension guard" : "");
+  }
 
   // Phase 2 (may allocate; guarded): symbolized stack, modules, minidump, guest memory, signature history.
   SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
@@ -1710,6 +1971,7 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   g_get_thread_description = reinterpret_cast<GetThreadDescriptionFn>(
       reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription")));
   read_machine_info();
+  read_exe_and_cpus();
   read_environment();
   // Stack kept for the handler when the game thread overflows its stack (SetThreadStackGuarantee).
   ULONG guarantee = 64 * 1024;
@@ -1725,6 +1987,30 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
     CloseHandle(g_done);
     g_request = g_done = nullptr;
   }
+  // Suspension guard (see "Threads"): GCRT_CRASH_SUSPEND_LIMIT seconds, default 5, at least 1.
+  if (env_set(L"GCRT_CRASH_SUSPEND_LIMIT", buf, 32)) {
+    const unsigned long s = wcstoul(buf, nullptr, 10);
+    g_suspend_limit_ms = static_cast<DWORD>(std::min<unsigned long>(std::max<unsigned long>(s, 1ul), 3600ul) * 1000ul);
+  }
+  if (env_set(L"GCRT_CRASH_TEST_SUSPENDED", buf, 32)) {
+    g_test_suspended = _wcsicmp(buf, L"heap") == 0 ? -1 : static_cast<long>(wcstoul(buf, nullptr, 10));
+  }
+  g_suspend_begin = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  g_suspend_end = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  HANDLE guard = g_suspend_begin != nullptr && g_suspend_end != nullptr
+                     ? CreateThread(nullptr, 64 * 1024, guard_main, nullptr, 0, &g_guard_tid)
+                     : nullptr;
+  if (guard != nullptr) {
+    SetThreadPriority(guard, THREAD_PRIORITY_TIME_CRITICAL);
+    SetThreadDescription(guard, L"gcrt suspension guard");
+    CloseHandle(guard);
+  } else {
+    g_guard_tid = 0;
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: the suspension guard could not be started");
+  }
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: suspension guard %lu ms%s",
+                    static_cast<unsigned long>(g_suspend_limit_ms),
+                    g_test_suspended != 0 ? " (GCRT_CRASH_TEST_SUSPENDED set)" : "");
   SetUnhandledExceptionFilter(unhandled_filter);
   std::signal(SIGABRT, on_abort);
   std::set_terminate(on_terminate);
@@ -1736,7 +2022,7 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
     g_watchdog_seconds = static_cast<unsigned>(wcstoul(buf, nullptr, 10));
   }
   if (g_watchdog_seconds > 0) {
-    HANDLE w = CreateThread(nullptr, 64 * 1024, watchdog_main, nullptr, 0, nullptr);
+    HANDLE w = CreateThread(nullptr, 64 * 1024, watchdog_main, nullptr, 0, &g_watchdog_tid);
     if (w != nullptr) {
       SetThreadDescription(w, L"gcrt watchdog");
       CloseHandle(w);
