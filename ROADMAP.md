@@ -98,9 +98,6 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 6. **Milestone 11**: the private installer.
 7. Phase review, then validation by the project owner.
 
-Small tooling fixes are also pending: PGO staleness warnings for generated code, and a misleading message in
-`tools/pgo.py`.
-
 ## Stage 2 — Full decompilation ⬜
 
 Rewrite every function of the game (DOL and 16 REL modules) as readable C++ with meaningful names, verified

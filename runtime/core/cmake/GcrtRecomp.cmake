@@ -111,8 +111,10 @@ function(gcrt_add_recompiled_executable target)
   endif()
   if(MSVC AND GCRT_PGO STREQUAL "USE")
     # With a profile: /w would also silence the stale-profile warning (verified); the other warnings are
-    # turned off another way and that one is kept (counted by tools/build.py).
-    target_compile_options(${target}_recomp PRIVATE /O2 /GS- -Wno-everything -Wprofile-instr-out-of-date)
+    # turned off another way and that one is kept (counted by tools/build.py). One SHELL: group, so that CMake's
+    # de-duplication of options does not drop this -Wprofile-instr-out-of-date as a repeat of the one GcrtPgo.cmake
+    # adds earlier on the command line (it did: the later -Wno-everything then turned the warning off, issue 7).
+    target_compile_options(${target}_recomp PRIVATE /O2 /GS- "SHELL:-Wno-everything -Wprofile-instr-out-of-date")
   elseif(MSVC)
     target_compile_options(${target}_recomp PRIVATE /O2 /w /GS-)
   else()
