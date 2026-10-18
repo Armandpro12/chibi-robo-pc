@@ -574,6 +574,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 - **The frame limiter is a busy-wait** on the retrace counter (section 8). The object-loading waits are `OSYieldThread` loops (section 9).
 - **The audio buffer that reaches the AI is THPSimple's**, not AX's: THPSimple copies AX's output into its own buffer every 5 ms (section 10).
 - **Vertex data reaches the pipe without any function call** (section 11): replacing the GX functions is not enough to capture geometry.
+- **A colour-indexed texture drawn without its palette (PAL only)** `[verified: GX trace + Dolphin frame dump]`. On the first frame of the health-and-safety screen's fade-in, the game draws that screen (a full-screen 608x448 `C8` texture, vertex alpha 10/255, alpha test "greater than 0") while the texture's TLUT register is still 0: TMEM offset 0, format `IA8`, where no TLUT was ever loaded. From the next frame on, the register points to the palette actually loaded (offset `0x200`, `RGB565`) and the fade goes on by 10/255 per frame. Dolphin, whose TMEM reads zeros there, draws nothing on that frame: the dump shows a black frame, then the same first fade step as the native port (luma maximum 20, same mean). The US version never draws a colour-indexed texture without a loaded TLUT in the title-boot sequence.
 
 ---
 

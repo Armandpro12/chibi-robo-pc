@@ -1240,6 +1240,35 @@ int FifoBridge::tlut_slot_for(uint16_t tmemOffset) {
   return freeSlot >= 0 ? freeSlot : oldest;
 }
 
+// A color-indexed texture reads its palette at a TMEM offset where no TLUT was ever loaded. The texture unit still
+// reads TMEM there: the SDK writes the TLUT register from the region's TLUT object, which stays 0 (offset 0, IA8) until
+// GXLoadTlut is called for that name (GXTexture.c: GXInitTlutRegion only sets the load register). Dolphin reads its
+// TMEM array there, zeros until a TLUT load or a preload writes it (VideoCommon TextureInfo.cpp, tmem_offset << 9;
+// TextureDecoder_Common.cpp, s_tex_mem). Same here: a palette of zeros (transparent black in IA8 and RGB5A3, black in
+// RGB565), replaced by the next real load at that offset. Without it, Aurora would read whatever TLUT slot 0 last
+// held (possibly a copy already freed). Not modelled: a load at another offset whose range covers this one.
+// [hypothesis] on the console, that TMEM holds what the texture cache left there.
+int FifoBridge::zero_tlut_slot(uint16_t tmemOffset, uint32_t texFmt, uint32_t map) {
+  const uint32_t entries = texFmt == 0x8 ? 16u : texFmt == 0x9 ? 256u : 16384u; // C4, C8, C14X2
+  const int slot = tlut_slot_for(tmemOffset);
+  auto& t = m_tluts[static_cast<size_t>(slot)];
+  t.valid = true;
+  t.tmemOffset = tmemOffset;
+  t.entries = static_cast<uint16_t>(entries);
+  FrozenRef block = std::make_shared<FrozenBlock>(entries * 2u);
+  std::memset(block->bytes.get(), 0, entries * 2u);
+  rebind(t.data, std::move(block));
+  t.version = ++m_tlutClock;
+  ++m_stats.zeroTluts;
+  if (m_stats.zeroTluts <= 8) {
+    GCRT_TRACE(GCRT_TRACE_PLATFORM,
+               "GX: color-indexed texture %u reads TMEM 0x%03X, where no TLUT was loaded: palette of zeros, as in "
+               "Dolphin (frame %llu)",
+               map, tmemOffset, static_cast<unsigned long long>(m_stats.displayCopies + 1));
+  }
+  return slot;
+}
+
 // Fingerprint (FNV-1a 64) of the first 256 bytes at the destination of a copy: enough to see that the game loaded
 // other data there, without reaching beyond a small copy buffer (whose exact size in guest memory is not known here).
 uint64_t FifoBridge::copy_prefix_hash(uint32_t phys) const {
@@ -1324,9 +1353,9 @@ void FifoBridge::flush_textures() {
         }
       }
       if (slot < 0) {
-        GCRT_TRACE(GCRT_TRACE_UNHANDLED, "GX: color-indexed texture %u without a loaded TLUT (TMEM 0x%03X)",
-                   map, tmem);
-      } else {
+        slot = zero_tlut_slot(tmem, fmt, map);
+      }
+      {
         const auto& t = m_tluts[static_cast<size_t>(slot)];
         write_aurora_header(AUR_LOAD_TLUT);
         out_u8(static_cast<uint8_t>(slot));
