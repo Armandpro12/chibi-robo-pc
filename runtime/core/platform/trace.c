@@ -111,6 +111,68 @@ void gcrt_trace_init(void) {
   }
 }
 
+/* Tail of the trace output kept in memory for crash reports (gcrt_trace_tail): the last kTailSize bytes of the lines
+   written by gcrt_trace_printf, whatever the output stream. Guarded by a tiny spin lock (lines come from several
+   threads); the crash report reads it without the lock (a line being written may be cut). */
+enum { kTailSize = 32 * 1024 };
+static char s_tail[kTailSize];
+static volatile long s_tail_pos = 0; /* total bytes ever appended, modulo 2^31 (kTailSize divides it) */
+static volatile long s_tail_lock = 0;
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void tail_lock(void) {
+  while (InterlockedExchange(&s_tail_lock, 1) != 0) {
+    YieldProcessor();
+  }
+}
+static void tail_unlock(void) { InterlockedExchange(&s_tail_lock, 0); }
+#else
+static void tail_lock(void) {
+  while (__atomic_exchange_n(&s_tail_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+  }
+}
+static void tail_unlock(void) { __atomic_store_n(&s_tail_lock, 0, __ATOMIC_RELEASE); }
+#endif
+
+static void tail_append(const char* text, size_t n) {
+  tail_lock();
+  long pos = s_tail_pos;
+  for (size_t i = 0; i < n; i++) {
+    s_tail[(unsigned long)pos % kTailSize] = text[i];
+    pos = (pos + 1) & 0x7FFFFFFF;
+  }
+  s_tail_pos = pos;
+  tail_unlock();
+}
+
+size_t gcrt_trace_tail(char* out, size_t size) {
+  if (size == 0) {
+    return 0;
+  }
+  const unsigned long pos = (unsigned long)s_tail_pos;
+  const bool wrapped = s_tail[kTailSize - 1] != 0 || pos >= kTailSize;
+  unsigned long avail = wrapped ? kTailSize : pos;
+  if (avail > size - 1) {
+    avail = (unsigned long)(size - 1);
+  }
+  const unsigned long start = (pos + 0x80000000ul - avail) % kTailSize;
+  /* Start at a line boundary when the tail was cut. */
+  size_t n = 0;
+  bool skipping = wrapped || avail < pos;
+  for (unsigned long i = 0; i < avail; i++) {
+    const char c = s_tail[(start + i) % kTailSize];
+    if (skipping) {
+      skipping = c != '\n';
+      continue;
+    }
+    out[n++] = c;
+  }
+  out[n] = 0;
+  return n;
+}
+
 void gcrt_trace_printf(GcrtTraceCat cat, const char* fmt, ...) {
   if (!s_init) {
     gcrt_trace_init();
@@ -118,14 +180,32 @@ void gcrt_trace_printf(GcrtTraceCat cat, const char* fmt, ...) {
   if ((unsigned)cat >= GCRT_TRACE_COUNT) {
     return;
   }
+  /* Same bytes as before (prefix, message, newline), formatted once into a local buffer so that they can also go to
+     the in-memory tail; a message too long for the buffer is written directly and only its beginning is kept. */
+  char line[1536];
+  int len = 0;
   if (s_clock != NULL) {
-    fprintf(s_out, "[%9.3f] ", s_clock(s_clock_user));
+    len = snprintf(line, sizeof(line), "[%9.3f] ", s_clock(s_clock_user));
   }
-  fprintf(s_out, "[%s] ", s_names[cat]);
+  len += snprintf(line + len, sizeof(line) - (size_t)len, "[%s] ", s_names[cat]);
   va_list ap;
   va_start(ap, fmt);
-  vfprintf(s_out, fmt, ap);
+  va_list ap2;
+  va_copy(ap2, ap);
+  const int body = vsnprintf(line + len, sizeof(line) - (size_t)len, fmt, ap);
   va_end(ap);
-  fputc('\n', s_out);
+  if (body >= 0 && (size_t)(len + body) < sizeof(line) - 1) {
+    len += body;
+    line[len++] = '\n';
+    fwrite(line, 1, (size_t)len, s_out);
+    tail_append(line, (size_t)len);
+  } else {
+    fwrite(line, 1, (size_t)len, s_out);
+    vfprintf(s_out, fmt, ap2);
+    fputc('\n', s_out);
+    tail_append(line, strlen(line));
+    tail_append(" [...]\n", 7);
+  }
+  va_end(ap2);
   fflush(s_out);
 }

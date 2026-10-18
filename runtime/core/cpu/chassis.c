@@ -267,7 +267,7 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
                     cpu->pc = pc = alias;
             }
             if (fn) {
-                g->ring[g->ring_pos++ % GCRT_TRACE_RING] = pc;
+                g->ring[g->ring_pos++ & g->ring_mask] = pc;
                 if (g->trace && g->blocks < g->trace_limit)
                     fprintf(g->trace, "%08X %08X %08X\n", pc, cpu->lr, cpu->gpr[1]);
                 cpu->downcount = 0;
@@ -438,10 +438,13 @@ void gcrt_cpu_dump(GcrtCpu* g, FILE* out) {
                 (unsigned long long)g->io_unhandled, g->io_first_write ? "write" : "read",
                 g->io_first_address, g->io_first_pc);
     gcrt_hw_count_report(g, out);
+    /* The last 64 blocks only (the full history goes to crash reports). */
     u32 count = g->ring_pos < GCRT_TRACE_RING ? g->ring_pos : GCRT_TRACE_RING;
+    if (count > g->ring_mask + 1u)
+        count = g->ring_mask + 1u;
     fprintf(out, "last blocks (oldest to newest):");
     for (u32 i = 0; i < count; i++) {
-        u32 index = (g->ring_pos - count + i) % GCRT_TRACE_RING;
+        u32 index = (g->ring_pos - count + i) & g->ring_mask;
         fprintf(out, "%s%08X", (i % 8) ? " " : "\n  ", g->ring[index]);
     }
     fprintf(out, "\n");

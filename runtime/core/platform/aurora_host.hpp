@@ -51,6 +51,8 @@ bool host_pump_events();
 double host_wait_pipelines(double timeoutSeconds);
 // Pipelines requested from Aurora and not compiled yet (same statistic, without waiting).
 uint32_t host_pending_pipelines();
+// Test of the crash handler (GCRT_CRASH_TEST=render): queues an access violation on Aurora's render worker thread.
+void host_crash_in_render_thread();
 // Logical size of the game's EFB: width x height is the rectangle of the copy to the XFB (the displayed region,
 // Aurora adjusts its rendering to it); efbLines, if larger than height, is the EFB's real height: the lines
 // below the displayed region are rendered and can be copied to textures, but are not presented

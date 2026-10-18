@@ -128,14 +128,25 @@ If the game crashes, it writes a report into the `crashes` folder of the user fo
 (`%APPDATA%\Chibi Robo PC\Chibi Robo\crashes\`), or into `%TEMP%\gcrt-crashes` if the crash happens before that
 folder is known. Only the 5 most recent reports are kept. A report has three files:
 
-- `crash-<date>-<time>-<pid>.txt`: a text summary (exception, registers, call stacks, executable and processor). It
-  names files by their file name only and replaces your user-profile folder with `%USERPROFILE%`. **This is the only
-  file you may share**, for example in a public issue.
+- `crash-<date>-<time>-<pid>.txt`: a text summary (exception, registers, call stacks of every thread, executable,
+  processor and its microcode revision, firmware version, graphics adapter and driver, memory use, the last game
+  events and log lines, the command line, the `GCRT_*` environment variables, and whether the same crash already
+  happened on this computer). It names executables and libraries by their file name only, shortens every absolute
+  path it prints to its last part (`<path>\game.iso`; the text between two paths on the same log line may be cut as
+  well), and replaces your user-profile folder and user name with `%USERPROFILE%` and `%USERNAME%`. **This is the
+  only file you may share**, for example in a public issue, but **read it before you publish it**: a file or folder
+  name of your own (disc image, mods, installation folder) can still appear, as can anything you typed in the command
+  line or in a `GCRT_*` variable.
 - `crash-<date>-<time>-<pid>.dmp` (minidump) and `crash-<date>-<time>-<pid>-guest-ram.bin` (game memory): they
   contain game data and local paths. **Never publish them**; if a developer asks for them, send them privately.
 
+If the game stops progressing for 60 seconds (a freeze), a `hang-<date>-<time>-<pid>.txt` report (and `.dmp`) is
+written in the same folder while the game keeps running; `GCRT_WATCHDOG=<seconds>` changes the delay (`0` turns it
+off).
+
 `GCRT_CRASH_DIR` chooses another folder. For developers, `tools/crash_inspect.py <report.dmp>` decodes the faulting
-instruction of a minidump and checks whether it explains the fault (`--help` lists its verdicts and exit codes).
+instruction of a minidump, checks whether it explains the fault and lists the memory regions, the threads and the
+last game events stored in the dump (`--help` lists its options, verdicts and exit codes).
 
 ### Starting in a chosen stage (testing)
 

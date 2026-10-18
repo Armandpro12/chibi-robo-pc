@@ -107,8 +107,25 @@
  *   GCRT_REPORT        period of the intermediate report in seconds (default 5); each report also gives the process
  *                      memory (working set, private bytes, handles)
  *   GCRT_CRASH_DIR, GCRT_CRASH_HANDLER: crash reports (platform/gcrt_crash.h; default folder <user folder>/crashes/,
- *                      or GCRT_CAPTURE_DIR in automated runs); GCRT_CRASH_TEST=read|write|abort:<frame>: deliberate
- *                      fault once that frame is presented (test of the crash handler)
+ *                      or GCRT_CAPTURE_DIR in automated runs); GCRT_CRASH_TEST=<kind>:<frame>: deliberate fault once
+ *                      that frame is presented (test of the crash handler). Kinds: read (non-canonical address, general
+ *                      protection fault), write (NULL), abort, terminate (std::terminate), stack (stack overflow of the
+ *                      game thread), purecall, invalid (invalid parameter to a C runtime function), thread (access
+ *                      violation in a new host thread), render (access violation in Aurora's render worker thread),
+ *                      heaplock (fault while the game thread holds the process heap lock), hangheap (the game thread
+ *                      holds the heap lock for GCRT_CRASH_TEST_HANG seconds, then faults: hang report, then crash
+ *                      report), hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
+ *                      the watchdog). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap: what a report does while the other threads
+ *                      are suspended (sleep, or a 1 MiB allocation on the process heap): test of the suspension guard
+ *                      (GCRT_CRASH_SUSPEND_LIMIT, platform/gcrt_crash.h)
+ *   GCRT_WATCHDOG      seconds without progress of the game loop (one heartbeat per emulated frame) before a hang
+ *                      report (hang-*.txt/.dmp in the crash folder, threads and their stacks); default 60, 0 = off;
+ *                      at most 3 per session, never kills the game, skipped under a debugger (platform/gcrt_crash.h)
+ *   GCRT_DIAG_EVENTS   size of the ring of recent native events kept for crash reports (frames, copies, disc reads,
+ *                      save files, window events, settings, DSP tasks; platform/gcrt_diag.h): rounded up to a power of
+ *                      two, default 4096, 0 = off
+ *   GCRT_GUEST_HISTORY last guest blocks kept for crash reports (cpu/gcrt_cpu.h): power of two from 64 to 1048576,
+ *                      default 1024
  *   GCRT_TRACE, GCRT_TRACE_FILE: traces (platform/trace.h)
  */
 #ifndef GCRT_PLATFORM_H

@@ -96,7 +96,11 @@ typedef struct GcrtRunLimits {
     double max_seconds; /* 0: unlimited */
 } GcrtRunLimits;
 
+/* History of the last guest blocks run (crash reports): GCRT_GUEST_HISTORY entries, power of two between 64 and
+   1048576 (default 1024 = 4 KiB, one 4-byte store per block). GCRT_TRACE_RING is the size of the fallback array used
+   when the allocation fails. */
 #define GCRT_TRACE_RING 64
+#define GCRT_GUEST_HISTORY_DEFAULT 1024u
 
 /* Host profiling categories. */
 enum {
@@ -245,8 +249,10 @@ typedef struct GcrtCpu {
     GcrtStopReason stop;
     FILE* trace;            /* trace of each block (pc, lr, r1) */
     u64 trace_limit;
-    u32 ring[GCRT_TRACE_RING];
+    u32* ring;              /* last blocks run: ring[ring_pos & ring_mask] (GCRT_GUEST_HISTORY) */
+    u32 ring_mask;
     u32 ring_pos;
+    u32 ring_fallback[GCRT_TRACE_RING];
     u32 last_exception;     /* copy of CPUState.exception at the time of the stop */
     u32 last_exception_srr0;
 } GcrtCpu;

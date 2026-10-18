@@ -29,6 +29,7 @@
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native_modules.h"
 #include "platform/trace.h"
+#include "platform/gcrt_diag.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -341,6 +342,7 @@ static void start_read(GcrtCpu* g, u32 block, u32 addr, u32 length, u64 disc_off
     else
         GCRT_TRACE(GCRT_TRACE_UNHANDLED, "native DVD: read to an address outside RAM 0x%08X (%u bytes)", addr, length);
     s_dvd.bytes += dma_len;
+    gcrt_diag_event(GCRT_EV_DISC_READ, disc_offset, ((u64)addr << 32) | dma_len);
     GCRT_TRACE(GCRT_TRACE_DVD, "disc read 0x%09llX -> 0x%08X, %u bytes (block %08X)",
                (unsigned long long)disc_offset, addr, dma_len, block);
     post_completion(g, block, dma_len);

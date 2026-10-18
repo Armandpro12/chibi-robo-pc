@@ -21,6 +21,7 @@
 
 extern "C" {
 #include "../platform/trace.h"
+#include "../platform/gcrt_diag.h"
 }
 
 namespace gcrt::gx {
@@ -1127,6 +1128,7 @@ void FifoBridge::on_bp(uint32_t raw) {
       info.copyFilter1 = m_bp[0x54];
       info.pixelFormat = m_bp[0x43] & 7u;
       ++m_stats.displayCopies;
+      gcrt_diag_event(GCRT_EV_DISPLAY_COPY, destPhys, (width << 16) | height);
       if (m_streamLog != nullptr) {
         stream_frame_end();
       }
@@ -1170,6 +1172,7 @@ void FifoBridge::on_bp(uint32_t raw) {
     out_u64(reinterpret_cast<uint64_t>(dest));
     emit_bp(0x52000000u | (merged & ~(1u << 14)));
     ++m_stats.efbCopies;
+    gcrt_diag_event(GCRT_EV_EFB_COPY, destPhys, (dstW << 16) | dstH);
     m_copies[destPhys] = CopyRecord{copy_prefix_hash(destPhys), m_stats.displayCopies};
     GCRT_TRACE(GCRT_TRACE_GX, "EFB->texture copy 0x%08X %ux%u fmt=0x%X", destPhys, dstW, dstH,
                efb_copy_format(realFmt, depth, intensity));

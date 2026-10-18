@@ -485,6 +485,24 @@ bool gcrt_cpu_init(GcrtCpu* g, u32 ram_size, const GcrtModuleTable* modules) {
     g->native_timer_deadline = UINT64_MAX;
     /* DEC at boot: 0xFFFFFFFF (Dolphin SystemTimers::Init); a plain counter since milestone 10b. */
     g->dec_value = 0xFFFFFFFFu;
+    /* History of the last blocks run (GCRT_GUEST_HISTORY, see gcrt_cpu.h). */
+    {
+        u32 want = GCRT_GUEST_HISTORY_DEFAULT;
+        const char* env = getenv("GCRT_GUEST_HISTORY");
+        if (env && env[0]) {
+            const long n = strtol(env, NULL, 0);
+            want = n < GCRT_TRACE_RING ? GCRT_TRACE_RING : n > (1L << 20) ? (1u << 20) : (u32)n;
+        }
+        u32 size = GCRT_TRACE_RING;
+        while (size < want)
+            size <<= 1;
+        g->ring = size > GCRT_TRACE_RING ? (u32*)calloc(size, sizeof(u32)) : NULL;
+        if (!g->ring) {
+            g->ring = g->ring_fallback;
+            size = GCRT_TRACE_RING;
+        }
+        g->ring_mask = size - 1u;
+    }
     gcrt_cpu_set_clock(g, GCRT_CLOCK_REALTIME);
     return true;
 }
@@ -493,6 +511,10 @@ void gcrt_cpu_free(GcrtCpu* g) {
     cpu_free(&g->state);
     free(g->prof_samples);
     g->prof_samples = NULL;
+    if (g->ring != g->ring_fallback)
+        free(g->ring);
+    g->ring = g->ring_fallback;
+    g->ring_mask = GCRT_TRACE_RING - 1u;
     if (g->trace) {
         fclose(g->trace);
         g->trace = NULL;

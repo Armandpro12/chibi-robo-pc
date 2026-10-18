@@ -18,6 +18,7 @@
 #endif
 #include "platform/gcrt_save_file.h"
 #include "platform/trace.h"
+#include "platform/gcrt_diag.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -182,6 +183,7 @@ bool gcrt_sf_read_all(const char* path, uint8_t** data, size_t* size, size_t max
         done += got;
     }
     CloseHandle(h);
+    gcrt_diag_event(GCRT_EV_SAVE_READ, n, ok ? 1u : 0u);
     if (!ok) {
         free(buf);
         return false;
@@ -267,6 +269,7 @@ bool gcrt_sf_write_atomic(const char* path, const void* data, size_t size) {
     } else {
         s_ok++;
     }
+    gcrt_diag_event(GCRT_EV_SAVE_WRITE, size, ok ? 1u : 0u);
     free(wfinal);
     free(wtmp);
     return ok;
@@ -278,6 +281,7 @@ bool gcrt_sf_remove(const char* path) {
         return false;
     bool ok = DeleteFileW(w) != 0 || GetLastError() == ERROR_FILE_NOT_FOUND;
     free(w);
+    gcrt_diag_event(GCRT_EV_SAVE_REMOVE, 0, ok ? 1u : 0u);
     return ok;
 }
 
@@ -287,6 +291,7 @@ bool gcrt_sf_move(const char* from, const char* to) {
     bool ok = a && b && MoveFileExW(a, b, MOVEFILE_WRITE_THROUGH);
     free(a);
     free(b);
+    gcrt_diag_event(GCRT_EV_SAVE_MOVE, 0, ok ? 1u : 0u);
     return ok;
 }
 
