@@ -588,7 +588,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 
   The unlicensed parts were not used as a source.
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
-- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied), the memory-card command numbers (`EXI_DeviceMemoryCard.h`; read only for their meaning, nothing copied), and the signature database `Data/Sys/totaldb.dsy` (function names with a size and an opcode checksum; read only to cross-check names whose code we had read, appendix E; nothing copied), and the way that database computes its opcode checksum (read in Dolphin's signature-database code only to understand the method, which we then re-implemented in our own words and code; nothing copied). No code copied.
+- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied) and what its AX command handlers do with the AUX buffer addresses (`AX.cpp`; read only to learn which address the DSP writes and which it reads, nothing copied), the memory-card command numbers (`EXI_DeviceMemoryCard.h`; read only for their meaning, nothing copied), and the signature database `Data/Sys/totaldb.dsy` (function names with a size and an opcode checksum; read only to cross-check names whose code we had read, appendices E and F; nothing copied), and the way that database computes its opcode checksum (read in Dolphin's signature-database code only to understand the method, which we then re-implemented in our own words and code; nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
 - **Ghidra** (Apache 2.0), with Cuyler36's GameCube loader extension.
 - **ExpansionPak/DolRecomp** (GPL-3.0) — the static recompiler used to run and trace the original code.
@@ -1546,3 +1546,25 @@ US addresses: PAL − `0x28B0` for the EXI, SI, OS, DVD and VI functions of `sup
 | `0x80181B98` | `0x80184400` | `0x454` | `DoMount@CARDMount` |
 
 Still unverified, kept out of this appendix: the `static` functions of `OSLink.c` and two empty functions next to them, as well as the card-ID reader and the fast-mode setter and getter that `DoMount` uses. Their code and roles are known, but no licensed source names them for this code.
+
+## Appendix F. AXFX functions verified on 2026-10-19
+
+The AXFX library (the four AUX effects of the SDK) sits between the AX library and `DSPInit`. The step-10d inventory named its 24 functions from their order and from the sound library's effect selector (HAL, PAL `0x801EB778` / US `0x801E8D84`). We read the PAL disassembly of all of them. Six names are now verified, each by its own evidence:
+- **`__AXFXAllocFunction` and `__AXFXFreeFunction`**: the first calls `OSAllocFromHeap(__OSCurrHeap, size)`, the second `OSFreeToHeap(__OSCurrHeap, ptr)`. The DOL initialises the two hook variables that `AXFXSetHooks` writes (first argument, then second) to these two addresses. Every AXFX function that creates an effect allocates through the first hook, and every function that frees one goes through the second. Dolphin's signature database lists exactly these two names, with `AXFXSetHooks` and `AXFXGetHooks`, in `axfx.a AXFXHooks.o`. Its entries for them have another size (another SDK revision), so they were used only for the names. Our `AXFXSetHooks` has the database's size and checksum in both versions, and no `AXFXGetHooks` follows it in this DOL (the next function is `DSPCheckMailToDSP`).
+- **`do_src1` and `do_src2`** (`static`): the two functions that only the chorus effect's AUX callback calls. Each converts one 160-sample frame from a ring buffer, with a fractional read position and 4-tap interpolation (a sample-rate converter).
+- **`HandleReverb`** (`static`, defined twice): the per-channel processing of the two reverb effects. One callback calls the first for the left, right and surround buffers. The other callback calls the second once.
+
+For `do_src1`, `do_src2` and both `HandleReverb`, Dolphin's signature database gives the name with the same size and the same opcode checksum (method: appendix E), at the PAL and the US address. This was used only for names whose code we had read. `OSAllocFromHeap` and `OSFreeToHeap` also have the database's checksum, size and name in both versions. The `static` name `HandleReverb` is not added to `supplement.tsv`, because it would not be unique in a symbol map (same rule as `OnReset` in appendix E).
+
+US addresses: PAL − `0x2868`, the same delta as the rest of the AX library. Every function has the same size at that delta in both DOLs, between functions whose masked-code signatures are unique.
+
+| US | PAL | size | name |
+|---|---|---|---|
+| `0x8017AAFC` | `0x8017D364` | `0x50C` | `HandleReverb` (first reverb) |
+| `0x8017B768` | `0x8017DFD0` | `0x3B4` | `HandleReverb` (second reverb) |
+| `0x8017BD28` | `0x8017E590` | `0x198` | `do_src1` |
+| `0x8017BEC0` | `0x8017E728` | `0x1EC` | `do_src2` |
+| `0x8017CD24` | `0x8017F58C` | `0x28` | `__AXFXAllocFunction` |
+| `0x8017CD4C` | `0x8017F5B4` | `0x28` | `__AXFXFreeFunction` |
+
+Still unverified, kept out of this appendix: the public `Init`, `Shutdown`, `Callback` and `Settings` functions of the four effects, and their internal create and free functions. Their roles are known from the code: the effect selector's four parameter blocks, the delay lines each effect allocates, and the callbacks it registers with `AXRegisterAuxACallback` and `AXRegisterAuxBCallback`. But no licensed source or database entry spells their names for this code. The same holds for the AUX buffer getters of the AX library and for the studio frame function called by `__AXOutNewFrame`.
