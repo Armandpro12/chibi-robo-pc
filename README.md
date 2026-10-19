@@ -105,7 +105,7 @@ By default it takes `build/chibi-robo-<ID>-Release` for every version that is bu
 One installer holds both versions; the player's image selects which executable is installed. `--no-disc-arg` makes
 the shortcuts start the game without `--disc` (executables that find `disc/` next to themselves). Neither
 `dxcompiler.dll` nor `dxil.dll` is needed or shipped: Direct3D 12 compiles its shaders with FXC (Aurora patch 0006,
-see "Third-party components"). That was checked on the development machine only; a PC where `d3dcompiler_47.dll`
+see "Credits and third-party software"). That was checked on the development machine only; a PC where `d3dcompiler_47.dll`
 is missing, or without a GPU, has not been tested.
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
