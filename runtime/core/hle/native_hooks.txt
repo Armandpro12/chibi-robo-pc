@@ -265,7 +265,7 @@ GXSetTexCopySrc
 GXSetDispCopyDst
 GXSetTexCopyDst
 GXSetDispCopyFrame2Field
-__GXGetNumXfbLines
+GXSetCopyClamp
 GXSetDispCopyYScale
 GXSetCopyClear
 GXSetCopyFilter
@@ -328,7 +328,7 @@ AISetStreamPlayState
 AIGetStreamPlayState
 AISetDSPSampleRate
 AIGetDSPSampleRate
-AISetStreamSampleRate
+__AI_set_stream_sample_rate
 AIGetStreamSampleRate
 AISetStreamVolLeft
 AIGetStreamVolLeft
