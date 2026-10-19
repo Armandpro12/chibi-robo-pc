@@ -4,7 +4,7 @@
 # folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LICENSE).
 # This file only contains names and addresses, no game data.
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
-# Source: 381 named functions out of 4506 (dtk symbols.txt)
+# Source: 376 named functions out of 4506 (dtk symbols.txt)
 # + 551 verified names from supplement.tsv (this project's analysis).
 80003100 00000030 TRK_memset
 80003130 00000024 TRK_memcpy
@@ -25,7 +25,6 @@
 8000838C 00000048 CGSChan_Destructor
 8000A520 0000000C GetMotionCamera
 80013580 000000CC ParseStageData__5CGameFiPc
-80014964 00000014 fn_80014964__8FbSubwinFi
 80015644 000001C8 main
 8001580C 00000050 OSReport
 800197A4 000006B8 __ct__5CGameFv
@@ -34,7 +33,6 @@
 8001BC24 00000010 __ct__11CGsTevStageFv
 80025AA4 000000D8 JumpHandler__5CXObjFdP7hsdJObji
 8006F654 000000E8 find_stage_index
-800930E4 00000030 fn_800930E4_unk__Fi
 800E25AC 00000060 XObjLeticker__dt
 8014AA6C 00000058 __sinit_GameTweaks_cpp
 8014AAFC 000000F8 TRKNubMainLoop
@@ -113,7 +111,6 @@
 8014DADC 00000010 TRKTargetSetStopped
 8014DAEC 00000010 TRKTargetStopped
 8014DAFC 00000200 TRKTargetSupportRequest
-8014DCFC 00000010 fn_0x8014DCFC
 8014DD0C 000000B8 TRKTargetStepOutOfRange
 8014DDC4 000000AC TRKTargetSingleStep
 8014DE70 00000084 TRKTargetAddExceptionInfo
@@ -149,7 +146,6 @@
 8014FCD8 00000030 UnreserveEXI2Port
 8014FD08 00000030 ReserveEXI2Port
 8014FD38 0000003C TRKWriteUARTN
-8014FDB0 00000030 fn_0x8014FDB0
 8014FDE0 00000048 EnableEXI2Interrupts
 8014FE28 00000050 TRKInitializeIntDrivenUART
 8014FE78 0000026C InitMetroTRKCommTable
@@ -934,7 +930,6 @@
 8018D0C0 00000010 GXClearGPMetric
 8018D42C 00000008 AMC_IsStub
 8018D434 00000008 Hu_IsStub
-8019FCE4 00000024 fn_8019FCE4__5CFileFv
 801B66EC 00000014 THPSimpleAudioStop__Fv
 801B6700 00000014 THPSimpleAudioResume__Fv
 801FD144 000000A0 THPInit

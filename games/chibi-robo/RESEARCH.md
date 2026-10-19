@@ -185,7 +185,7 @@ The 16 modules are stored in `qp.bin` under `rel/` `[verified: file]`:
 **SDK code is identical** in both versions once address-dependent fields are masked: the 390 SDK function signatures computed on both DOLs are equal `[verified: signatures]`.
 
 **Transposing `cbr_decomp` names to PAL** (by masked code, neighbourhood and call graph) `[verified: Ghidra]`:
-- 380 of the 381 named DOL functions were found in PAL; 486 of 495 REL functions.
+- 375 of the 376 named DOL functions were found in PAL (five more dtk entries are placeholders, `fn_0x<address>` or `fn_<address>` plus a mangled suffix, and are not counted as names); 486 of 495 REL functions.
 - The 15,720 `bl` calls between transposed functions all point to the expected function in PAL.
 - The resulting PAL maps are in `games/chibi-robo/symbols/` (names and addresses only).
 
@@ -253,7 +253,7 @@ The 16 modules are stored in `qp.bin` under `rel/` `[verified: file]`:
 
 ## 7. How SDK functions were identified
 
-1. **Starting point**: the dtk symbols of `cbr_decomp` (US, CC0): 4,506 function bounds, about 381 non-automatic names.
+1. **Starting point**: the dtk symbols of `cbr_decomp` (US, CC0): 4,506 function bounds, about 376 non-automatic names.
 2. **Library inits**: named from their `OSRegisterVersion` banner (section 6).
 3. **Rest of the SDK**: matched against the CC0 reference sources in `cbr_decomp/decomp_dtk_main/src/Dolphin/`. The linker keeps the order of the functions of each source file, so each file was aligned with the DOL by function order and size. Each match was then confirmed by the call graph, by the hardware registers the function touches, and often by reading the disassembly.
    - Static functions are written `name@file`, for example `AlarmHandler@dvdlow`.

@@ -5,7 +5,7 @@
 # This file only contains names and addresses, no game data.
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
 # Transposed from GGTE01 by function matching (masked bytes, neighbors, calls).
-# Named functions: 380/381 found (99.7 %): unique 249, neighbor 125, call-modified 3, sequence 2, supplement 1, absent 1.
+# Named functions: 375/376 found (99.7 %): unique 246, neighbor 123, call-modified 3, sequence 2, supplement 1, absent 1.
 # + 550 verified names from supplement.tsv (this project's analysis).
 # Size 0: function found through a call but whose code differs (unknown size).
 80003100 00000030 TRK_memset
@@ -26,7 +26,6 @@
 800083AC 00000048 CGSChan_Destructor
 8000A540 0000000C GetMotionCamera
 8001375C 000000CC ParseStageData__5CGameFiPc
-80014B8C 00000014 fn_80014964__8FbSubwinFi
 80015918 00000000 main
 80015ACC 00000050 OSReport
 80019A64 00000000 __ct__5CGameFv
@@ -35,7 +34,6 @@
 8001BEE4 00000010 __ct__11CGsTevStageFv
 80025F44 000000D8 JumpHandler__5CXObjFdP7hsdJObji
 8007149C 00000000 find_stage_index
-80095190 00000030 fn_800930E4_unk__Fi
 800E4C7C 00000060 XObjLeticker__dt
 8014D31C 00000058 __sinit_GameTweaks_cpp
 8014D3AC 000000F8 TRKNubMainLoop
@@ -114,7 +112,6 @@
 8015038C 00000010 TRKTargetSetStopped
 8015039C 00000010 TRKTargetStopped
 801503AC 00000200 TRKTargetSupportRequest
-801505AC 00000010 fn_0x8014DCFC
 801505BC 000000B8 TRKTargetStepOutOfRange
 80150674 000000AC TRKTargetSingleStep
 80150720 00000084 TRKTargetAddExceptionInfo
@@ -150,7 +147,6 @@
 80152588 00000030 UnreserveEXI2Port
 801525B8 00000030 ReserveEXI2Port
 801525E8 0000003C TRKWriteUARTN
-80152660 00000030 fn_0x8014FDB0
 80152690 00000048 EnableEXI2Interrupts
 801526D8 00000050 TRKInitializeIntDrivenUART
 80152728 0000026C InitMetroTRKCommTable
@@ -934,7 +930,6 @@
 8018F928 00000010 GXClearGPMetric
 8018FC94 00000008 AMC_IsStub
 8018FC9C 00000008 Hu_IsStub
-801A255C 00000024 fn_8019FCE4__5CFileFv
 801B8FE8 00000014 THPSimpleAudioStop__Fv
 801B8FFC 00000014 THPSimpleAudioResume__Fv
 801FFB38 000000A0 THPInit
