@@ -14,18 +14,31 @@
 ; The /IMAGE= value fills the "disc image" page; an image that is not recognised makes Setup exit before installing.
 ; /TESTMODE=1 (automated tests on a developer machine): no Programs-list entry (registry) and no shortcuts, so that
 ; nothing is written outside the installation folder; uninstall by running {app}\unins000.exe.
-; /TESTFAIL=extract or /TESTFAIL=copy (only with /TESTMODE=1, no effect otherwise): the extraction (before anything is
-; installed), or the check of the copied image (during the installation), is reported as failed after gcextract has
-; run, to test that a failed (re)install keeps the previous installation and leaves no temporary file.
+; /TESTFAIL=<stage> (only with /TESTMODE=1, no effect otherwise) simulates a failure, to test that a failed (re)install
+; keeps the previous installation, or leaves nothing behind in a new folder, and leaves no temporary file:
+;   extract  the extraction (before anything is installed) is reported as failed after gcextract has run (exit code 7);
+;   copy     the check of the copied image (during the installation, before the swap) is reported as failed (exit 9);
+;   raise    an unexpected error (exception) right after the swap of the image files (exit 9);
+;   exe      an Abort/Retry/Ignore file error after the executables (a missing source file), answered "Abort" by
+;            /SUPPRESSMSGBOXES: Inno Setup rolls the installation back, as for Cancel (exit code 5);
+;   dirpage  the folder check of the folder page is skipped, as when that page is not shown (reinstall found in the
+;            registry): only the check made again in PrepareToInstall applies.
 ;
 ; Safety rules:
-; - a first install only goes into a new or empty folder: a folder that holds files and was not installed by this
-;   installer (no InstallMarker file with this AppId) is refused, so that nothing of the player's is overwritten now
-;   or deleted by the uninstaller later (it removes fixed names: game.iso, disc\, manifest.json, gcrt-data\);
+; - a first install only goes into a new or empty folder whose path is ASCII: a folder that holds files and was not
+;   installed by this installer (no InstallMarker file with this AppId) is refused, so that nothing of the player's is
+;   overwritten now or deleted by the uninstaller later (it removes fixed names: game.iso, disc\, manifest.json,
+;   gcrt-data\); the marker is written first, so that an interrupted run leaves a folder that a later run may reuse;
 ; - the extraction (disc.new\, manifest.new) runs in PrepareToInstall, before anything is installed: a failure there
 ;   stops Setup (exit code 7) with nothing changed; the image is copied as game.iso.new, checked again, and only then
-;   are game.iso, disc\ and manifest.json replaced (renames), before the executables: a failure there keeps the
-;   previous files, skips the rest of the payload and makes Setup exit with code 9 (GetCustomSetupExitCode).
+;   are game.iso, disc\ and manifest.json replaced (renames: the previous ones are kept as *.old until the end of the
+;   installation), before the executables: a failure there puts the previous files back, skips the rest of the payload
+;   and makes Setup exit with code 9 (GetCustomSetupExitCode);
+; - Setup cancelled or stopped by an error after the swap (Inno Setup then rolls back the files it installed): the
+;   previous game.iso, disc\ and manifest.json are put back (DeinitializeSetup). Inno Setup's rollback does not
+;   restore the previous version of a file it had already overwritten (executables, DLLs);
+; - whenever a first install into a new folder does not complete (exit code 7, 9, cancel, error), everything this run
+;   wrote is removed, the folder included: no orphan disc image, no "shell" installation, no uninstaller entry.
 
 ; ---------------------------------------------------------------------------------------- defines from build.py
 #ifndef AppName
@@ -79,7 +92,11 @@ UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName}
 UsePreviousAppDir=yes
 CloseApplications=yes
-CreateUninstallRegKey=not IsTestMode
+; No Programs-list entry in test mode, nor for a first install whose image files could not be put in place (exit code
+; 9), which DeinitializeSetup removes again. Inno Setup evaluates this when it saves the uninstall information, after
+; [Files] (seen in the log); Uninstallable is evaluated before [Files], so the uninstaller files of such a failed first
+; install are written, then removed with the rest (RemoveFirstInstall).
+CreateUninstallRegKey=UninstallEntryWanted
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -96,11 +113,14 @@ Source: "{#PayloadDir}\common\game.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{code:GetImagePath}"; DestDir: "{app}"; DestName: "game.iso.new"; ExternalSize: {#ImageSize}; Flags: external ignoreversion; Check: ImageNeedsCopy
 ; After the copy, before the executables: check the copy, then put the new image and extraction in place. A failure
 ; there keeps the previous files and skips the entries below (an exception in AfterInstall does not abort Setup:
-; Inno Setup reports it and goes on, seen in test).
+; Inno Setup reports it and goes on, seen in test; FinishImageAndExtraction catches every exception itself).
 Source: "{#PayloadDir}\BUILD-INFO.txt"; DestDir: "{app}"; Flags: ignoreversion; AfterInstall: FinishImageAndExtraction
 Source: "{#PayloadDir}\common\*"; Excludes: "gcextract.exe,game.toml"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs; Check: not InstallFailed
 ; Executable(s) and the DLLs that differ between versions: only the files of the version of the chosen image.
 #include PayloadDir + "\versions.iss"
+; Test only (/TESTMODE=1 /TESTFAIL=exe): a source file that does not exist, after the executables, so that Setup stops
+; with a file error after the swap (see the top of this file).
+Source: "{code:TestFailSource}"; DestDir: "{app}"; DestName: "testfail-exe.bin"; ExternalSize: 1; Flags: external ignoreversion; Check: TestFailure('exe')
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; Check: not IsTestMode and not InstallFailed
@@ -127,6 +147,11 @@ Type: filesandordirs; Name: "{app}\disc.old"
 Type: files; Name: "{app}\manifest.json.old"
 
 [Code]
+const
+  { RefusalText code of an unexpected error (exception) while putting the image files in place; gcextract's own exit
+    codes are 0 to 7. }
+  UnexpectedError = 100;
+
 var
   ImagePage: TInputFileWizardPage;
   CheckPage: TOutputProgressWizardPage;
@@ -134,11 +159,15 @@ var
   GcxError: String;        { message of the last ERROR line }
   GcxMatch: String;        { game ID of the last INFO match line }
   GcxInstalling: Boolean;  { True during the check of the copy (progress on the installing page) }
-  FailedFlag: Boolean;  { the copy could not be checked or put in place: the rest of the payload is skipped }
+  GcxBusy: Boolean;        { gcextract is running: Cancel is disabled and refused (CancelButtonClick) }
+  FailedFlag: Boolean;     { the copy could not be checked or put in place: the rest of the payload is skipped }
   InstallDone: Boolean;    { ssPostInstall reached }
-  PreparedDir: Boolean;    { PrepareToInstall wrote into the folder (temporary files, marker) }
+  PreparedDir: Boolean;    { PrepareToInstall wrote into the folder (marker, temporary files) }
   DirWasNew: Boolean;      { the folder was missing or empty before this run }
   PreparedApp: String;     { the folder PrepareToInstall wrote into (the wizard may be gone in DeinitializeSetup) }
+  SwapDone: Boolean;       { SwapInNewFiles moved files: the previous ones are *.old until ssPostInstall or UndoSwap }
+  SwapMoved: array of Boolean;   { per SwapNames entry: Final renamed to Final.old }
+  SwapPlaced: array of Boolean;  { per SwapNames entry: New renamed to Final }
 
 { Check of the payload entries after the image: skipped once the copy failed. }
 function InstallFailed: Boolean;
@@ -146,9 +175,34 @@ begin
   Result := FailedFlag;
 end;
 
+
 function IsTestMode: Boolean;
 begin
   Result := ExpandConstant('{param:TESTMODE|0}') = '1';
+end;
+
+{ CreateUninstallRegKey: no entry in test mode, nor for a failed first install (removed again by DeinitializeSetup).
+  Logged, to show when Inno Setup evaluates it. }
+function UninstallEntryWanted: Boolean;
+begin
+  Result := not IsTestMode and not (FailedFlag and DirWasNew);
+  if FailedFlag and DirWasNew then
+    Log('Programs-list entry: no (failed first install)')
+  else if IsTestMode then
+    Log('Programs-list entry: no (/TESTMODE=1)')
+  else
+    Log('Programs-list entry: yes');
+end;
+
+function TestFailure(const Stage: String): Boolean;
+begin
+  Result := IsTestMode and (ExpandConstant('{param:TESTFAIL|}') = Stage);
+end;
+
+{ Source of the /TESTFAIL=exe entry: a file that does not exist. }
+function TestFailSource(Param: String): String;
+begin
+  Result := ExpandConstant('{tmp}\missing-file-for-testfail-exe.bin');
 end;
 
 { The single place that reads the image field: every user of the path sees the same trimmed, unquoted value. }
@@ -172,11 +226,6 @@ function ImageNeedsCopy: Boolean;
 begin
   { Reinstalling from the copy already in the install folder: nothing to copy. }
   Result := CompareText(ExpandFileName(GetImagePath('')), ExpandFileName(InstalledImage)) <> 0;
-end;
-
-function TestFailure(const Stage: String): Boolean;
-begin
-  Result := IsTestMode and (ExpandConstant('{param:TESTFAIL|}') = Stage);
 end;
 
 { True if Dir does not exist or holds nothing (no file, no folder). }
@@ -208,10 +257,27 @@ begin
   Result := LoadStringFromFile(AddBackslash(Dir) + '{#InstallMarker}', Text) and (Pos('{#AppId}', String(Text)) > 0);
 end;
 
-{ '' if Setup may install into Dir, else the reason (see "Safety rules" at the top). }
+function IsAsciiPath(const S: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := True;
+  for I := 1 to Length(S) do
+    if Ord(S[I]) > 126 then
+      Result := False;
+end;
+
+{ '' if Setup may install into Dir, else the reason (see "Safety rules" at the top). Used by the folder page and again
+  by PrepareToInstall (the folder page is skipped when a previous installation is found). }
 function DestinationProblem(const Dir: String): String;
 begin
   Result := '';
+  { The game opens its files through the ANSI code page: keep the installation path ASCII. }
+  if not IsAsciiPath(Dir) then begin
+    Result := 'The folder "' + Dir + '" cannot be used: choose an installation folder whose path contains only ASCII ' +
+      'characters (A-Z, 0-9, spaces and basic punctuation).';
+    Exit;
+  end;
   if IsDirEmptyOrMissing(Dir) or IsOurInstall(Dir) then
     Exit;
   Result := 'The folder "' + Dir + '" already contains files that were not installed by this installer.' + #13#10#13#10 +
@@ -222,16 +288,6 @@ end;
 function IsGameVersion(Id: String): Boolean;
 begin
   Result := (GameId = Id) and not FailedFlag;
-end;
-
-function IsAsciiPath(const S: String): Boolean;
-var
-  I: Integer;
-begin
-  Result := True;
-  for I := 1 to Length(S) do
-    if Ord(S[I]) > 126 then
-      Result := False;
 end;
 
 { First space-separated token of S, removed from S. }
@@ -293,22 +349,33 @@ begin
   end;
 end;
 
-{ Runs gcextract with Params; returns its exit code (-1 if it could not be started). }
+{ Runs gcextract with Params; returns its exit code (-1 if it could not be started). Cancel is disabled meanwhile (on
+  the image page, the preparing page and the installing page alike): gcextract is not stopped halfway, and the
+  check of the copy is not cut between the check and the swap. }
 function RunGcextract(const Exe, Params: String): Integer;
 var
   Code: Integer;
+  CancelWasEnabled: Boolean;
 begin
   GcxError := '';
   GcxMatch := '';
   Log('Running: "' + Exe + '" ' + Params);
+  CancelWasEnabled := WizardForm.CancelButton.Enabled;
+  WizardForm.CancelButton.Enabled := False;
+  GcxBusy := True;
   try
-    if not ExecAndLogOutput(Exe, Params, '', SW_SHOWNORMAL, ewWaitUntilTerminated, Code, @GcxOnLog) then begin
-      GcxError := SysErrorMessage(Code);
+    try
+      if not ExecAndLogOutput(Exe, Params, '', SW_SHOWNORMAL, ewWaitUntilTerminated, Code, @GcxOnLog) then begin
+        GcxError := SysErrorMessage(Code);
+        Code := -1;
+      end;
+    except
+      GcxError := GetExceptionMessage;
       Code := -1;
     end;
-  except
-    GcxError := GetExceptionMessage;
-    Code := -1;
+  finally
+    GcxBusy := False;
+    WizardForm.CancelButton.Enabled := CancelWasEnabled;
   end;
   Log('gcextract exit code: ' + IntToStr(Code));
   Result := Code;
@@ -326,6 +393,7 @@ begin
          'Supported: {#SupportedList}. A modified, trimmed (NKit), patched or damaged dump is refused: use a complete, unmodified dump of your own disc.';
     6: Result := 'The disc image is damaged (its file table points outside the image). Make a new dump of your disc.';
     7: Result := 'The game files could not be written (disk full, or folder not writable).';
+    UnexpectedError: Result := 'An unexpected error stopped the installation.';
   else
     Result := 'The disc image could not be checked.';
   end;
@@ -355,11 +423,9 @@ begin
   CheckPage.SetText('Checking the disc image...', Image);
   CheckPage.SetProgress(0, 100);
   CheckPage.Show;
-  WizardForm.CancelButton.Enabled := False;
   try
     Code := RunGcextract(Exe, AddQuotes(Image) + ' --verify-only --game-toml ' + AddQuotes(ExpandConstant('{tmp}\game.toml')));
   finally
-    WizardForm.CancelButton.Enabled := True;
     CheckPage.Hide;
   end;
   if (Code = 0) and (GcxMatch <> '') then begin
@@ -403,26 +469,35 @@ begin
     DeleteFile(Path);
 end;
 
-{ Temporary names of the files replaced at the end of the extraction: Final[I] <- New[I] (Final[I].old meanwhile). }
-procedure SwapNames(var Final, New: TArrayOfString);
-var
-  App: String;
+{ Names of the files replaced at the end of the extraction, in folder App: Final[I] <- New[I] (Final[I].old
+  meanwhile). }
+procedure SwapNames(const App: String; var Final, New: TArrayOfString);
 begin
-  App := AppDir;
   SetArrayLength(Final, 3);
   SetArrayLength(New, 3);
   Final[0] := App + '\disc';          New[0] := App + '\disc.new';
   Final[1] := App + '\manifest.json'; New[1] := App + '\manifest.new';
-  Final[2] := InstalledImage;         New[2] := InstalledImage + '.new';
+  Final[2] := App + '\game.iso';      New[2] := App + '\game.iso.new';
 end;
 
-{ Before anything is installed: finish or undo an interrupted swap of an earlier run, remove its temporary files. }
-procedure CleanUpTemporaryFiles;
+procedure RemoveTemporaryFiles(const App: String);
 var
   Final, New: TArrayOfString;
   I: Integer;
 begin
-  SwapNames(Final, New);
+  SwapNames(App, Final, New);
+  for I := 0 to GetArrayLength(New) - 1 do
+    RemovePath(New[I]);
+end;
+
+{ Before anything is installed: finish or undo an interrupted swap of an earlier run (power loss, crash: the *.old of
+  a name that is missing is the previous file, put back), then remove its temporary files. }
+procedure CleanUpTemporaryFiles(const App: String);
+var
+  Final, New: TArrayOfString;
+  I: Integer;
+begin
+  SwapNames(App, Final, New);
   for I := 0 to GetArrayLength(Final) - 1 do begin
     if not FileOrDirExists(Final[I]) and FileOrDirExists(Final[I] + '.old') then begin
       Log('Restoring ' + Final[I] + ' from an interrupted install');
@@ -433,58 +508,110 @@ begin
   end;
 end;
 
-{ Moves the new files (those that exist) into place; on any failure, puts everything back as it was. }
+{ Puts the previous files back after a swap (SwapInNewFiles, partial or complete): the new files are deleted, the
+  *.old renamed back. True if everything is back. A name that cannot be restored keeps its *.old, which the next run
+  puts back (CleanUpTemporaryFiles) if the name is then missing. }
+function UndoSwap(const App: String): Boolean;
+var
+  Final, New: TArrayOfString;
+  I: Integer;
+begin
+  Result := True;
+  if not SwapDone then
+    Exit;
+  SwapNames(App, Final, New);
+  for I := GetArrayLength(Final) - 1 downto 0 do begin
+    if SwapPlaced[I] then begin
+      RemovePath(Final[I]);
+      if FileOrDirExists(Final[I]) then begin
+        Log('Cannot remove the new ' + Final[I]);
+        Result := False;
+      end;
+    end;
+    if SwapMoved[I] then begin
+      if RenameFile(Final[I] + '.old', Final[I]) then
+        Log('Restored the previous ' + Final[I])
+      else begin
+        Log('Cannot restore the previous ' + Final[I]);
+        Result := False;
+      end;
+    end;
+  end;
+  SwapDone := False;
+end;
+
+{ Moves the new files (those that exist) into place, the previous ones becoming *.old (kept until ssPostInstall, so
+  that a later failure can put them back: UndoSwap). On any failure here, puts everything back as it was. }
 function SwapInNewFiles: Boolean;
 var
   Final, New: TArrayOfString;
-  Moved, Placed: array of Boolean;
-  I, J, N: Integer;
+  I, N: Integer;
 begin
-  Result := False;
-  SwapNames(Final, New);
+  SwapNames(AppDir, Final, New);
   N := GetArrayLength(Final);
-  SetArrayLength(Moved, N);
-  SetArrayLength(Placed, N);
+  SetArrayLength(SwapMoved, N);
+  SetArrayLength(SwapPlaced, N);
   for I := 0 to N - 1 do begin
-    Moved[I] := False;   { Final[I] renamed to Final[I].old }
-    Placed[I] := False;  { New[I] renamed to Final[I] }
+    SwapMoved[I] := False;
+    SwapPlaced[I] := False;
   end;
+  { Set before the first rename: UndoSwap must see a partial swap too. }
+  SwapDone := True;
   Result := True;
   for I := 0 to N - 1 do
     if Result and FileOrDirExists(New[I]) then begin
       if FileOrDirExists(Final[I]) then begin
-        Moved[I] := RenameFile(Final[I], Final[I] + '.old');
-        if not Moved[I] then begin
+        SwapMoved[I] := RenameFile(Final[I], Final[I] + '.old');
+        if not SwapMoved[I] then begin
           Log('Cannot rename ' + Final[I]);
           Result := False;
         end;
       end;
       if Result then begin
-        Placed[I] := RenameFile(New[I], Final[I]);
-        if not Placed[I] then begin
+        SwapPlaced[I] := RenameFile(New[I], Final[I]);
+        if not SwapPlaced[I] then begin
           Log('Cannot rename ' + New[I]);
           Result := False;
         end;
       end;
     end;
-  if not Result then begin
-    for J := 0 to N - 1 do begin
-      if Placed[J] then
-        RenameFile(Final[J], New[J]);
-      if Moved[J] then
-        RenameFile(Final[J] + '.old', Final[J]);
-    end;
-    Exit;
-  end;
-  for I := 0 to N - 1 do
+  if Result then
+    Log('Swap done: the new disc image files are in place')
+  else
+    UndoSwap(AppDir);
+end;
+
+{ Removes the previous files kept by the swap, once the installation is complete. }
+procedure RemoveOldFiles(const App: String);
+var
+  Final, New: TArrayOfString;
+  I: Integer;
+begin
+  SwapNames(App, Final, New);
+  for I := 0 to GetArrayLength(Final) - 1 do
     RemovePath(Final[I] + '.old');
 end;
 
-procedure RemoveTemporaryFiles;
+{ A first install into a folder that was missing or empty did not complete: removes what this run put there (every
+  name the installer writes; Inno Setup's rollback has already removed the payload files it installed, or they were
+  skipped), then the folder itself if it is empty. }
+procedure RemoveFirstInstall(const App: String);
+var
+  Names, Name: String;
+  P: Integer;
 begin
-  RemovePath(AppDir + '\disc.new');
-  RemovePath(AppDir + '\manifest.new');
-  RemovePath(InstalledImage + '.new');
+  Names := 'game.iso|disc|manifest.json|game.iso.new|disc.new|manifest.new|game.iso.old|disc.old|manifest.json.old|' +
+           '{#InstallMarker}|gcextract.exe|game.toml|BUILD-INFO.txt|unins000.exe|unins000.dat|unins000.msg|';
+  while Names <> '' do begin
+    P := Pos('|', Names);
+    Name := Copy(Names, 1, P - 1);
+    Names := Copy(Names, P + 1, Length(Names));
+    RemovePath(App + '\' + Name);
+  end;
+  if RemoveDir(App) then
+    Log('Removed the new installation folder: ' + App)
+  else
+    Log('The installation folder is not empty, kept: ' + App);
 end;
 
 { Runs gcextract with the progress shown on CheckPage (wizard pages before the installation). }
@@ -500,9 +627,10 @@ begin
   end;
 end;
 
-{ PrepareToInstall, before anything is installed: extracts sys\ from the chosen image (the player's file, or the copy
-  already installed) into disc.new\ and manifest.new. The image is hashed again by gcextract. '' on success, else the
-  message shown by Setup, which then stops (exit code 7) with the temporary files removed. }
+{ PrepareToInstall, before anything is installed: writes the marker, then extracts sys\ from the chosen image (the
+  player's file, or the copy already installed) into disc.new\ and manifest.new. The image is hashed again by
+  gcextract. '' on success, else the message shown by Setup, which then stops (exit code 7); DeinitializeSetup
+  removes the temporary files (and the marker and folder of a first install). }
 function PrepareSystemFiles: String;
 var
   App, Params: String;
@@ -516,7 +644,14 @@ begin
   end;
   PreparedDir := True;
   PreparedApp := App;
-  CleanUpTemporaryFiles;
+  { From here on the folder belongs to this installer: a later run may update, repair or remove it. }
+  if not SaveStringToFile(App + '\{#InstallMarker}',
+      'Installed by the {#AppName} installer, AppId {#AppId}, version {#AppVersion}.' + #13#10 +
+      'Running the installer again over this folder updates this installation.' + #13#10, False) then begin
+    Result := 'The folder "' + App + '" is not writable. ' + RefusalText(7);
+    Exit;
+  end;
+  CleanUpTemporaryFiles(App);
   ExtractTemporaryFile('gcextract.exe');
   ExtractTemporaryFile('game.toml');
   Params := AddQuotes(GetImagePath('')) + ' ' + AddQuotes(App + '\disc.new') + ' --system-only --game-toml ' +
@@ -536,25 +671,16 @@ begin
   end;
   if Code <> 0 then begin
     { gcextract never cleans up after itself. }
-    RemoveTemporaryFiles;
+    RemoveTemporaryFiles(App);
     Log('Extraction failed: ' + GcxError);
     Result := 'The game files could not be prepared. Nothing was changed. ' + RefusalText(Code);
-    Exit;
   end;
-  { From here on the folder is an installation of this installer (a later run may update or repair it). }
-  if not SaveStringToFile(App + '\{#InstallMarker}',
-      'Installed by the {#AppName} installer, AppId {#AppId}, version {#AppVersion}.' + #13#10 +
-      'Running the installer again over this folder updates this installation.' + #13#10, False) then
-    Log('Could not write the installation marker');
 end;
 
-{ AfterInstall of the entry that follows the image copy: checks the copy (hashed again by gcextract), then replaces
-  game.iso, disc\ and manifest.json. On failure the previous files stay, the temporary ones are removed, the rest of
-  the payload is skipped (Check: not FailedFlag) and Setup exits with code 9. }
-procedure FinishImageAndExtraction;
+{ Checks the copy (hashed again by gcextract), then swaps the image files in. Returns 0, or the RefusalText code. }
+function CheckCopyAndSwap: Integer;
 var
   Code: Integer;
-  Text: String;
 begin
   Code := 0;
   if ImageNeedsCopy then begin
@@ -579,13 +705,44 @@ begin
     GcxError := 'the new files could not replace the previous ones (a file may be in use)';
     Code := 7;
   end;
-  if Code <> 0 then begin
-    FailedFlag := True;
-    RemoveTemporaryFiles;
-    Log('Installation failed: ' + GcxError);
-    Text := 'The game files could not be installed. The previous files (if any) were kept. ' + RefusalText(Code);
-    SuppressibleMsgBox(Text, mbError, MB_OK, IDOK);
+  if (Code = 0) and TestFailure('raise') then
+    RaiseException('simulated unexpected error after the swap (/TESTFAIL=raise)');
+  Result := Code;
+end;
+
+{ AfterInstall of the entry that follows the image copy. On failure, or on any exception (Inno Setup would report it
+  and go on), the previous files are put back, the temporary ones removed, the rest of the payload is skipped
+  (Check: not InstallFailed), Setup exits with code 9, and a first install is removed again (DeinitializeSetup). }
+procedure FinishImageAndExtraction;
+var
+  Code: Integer;
+  Restored: Boolean;
+  Text: String;
+begin
+  try
+    Code := CheckCopyAndSwap;
+  except
+    GcxError := GetExceptionMessage;
+    Code := UnexpectedError;
   end;
+  if Code = 0 then
+    Exit;
+  FailedFlag := True;
+  Restored := False;
+  try
+    Restored := UndoSwap(AppDir);
+    RemoveTemporaryFiles(AppDir);
+  except
+    Log('Clean-up after the failure: ' + GetExceptionMessage);
+  end;
+  Log('Installation failed: ' + GcxError);
+  if DirWasNew then
+    Text := 'The game could not be installed; nothing is left in the installation folder. '
+  else if Restored then
+    Text := 'The game could not be updated. The previous game files were kept. '
+  else
+    Text := 'The game could not be updated, and some previous files could not be put back: run Setup again. ';
+  SuppressibleMsgBox(Text + RefusalText(Code), mbError, MB_OK, IDOK);
 end;
 
 function GetCustomSetupExitCode: Integer;
@@ -615,16 +772,24 @@ begin
     ImagePage.Values[0] := WizardDirValue + '\game.iso';
 end;
 
+{ Cancel (button or window close) while gcextract runs: refused, the button is disabled anyway (RunGcextract). At any
+  other time: Inno Setup's own handling (before the installation: nothing installed; during it: rollback, then
+  DeinitializeSetup). }
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if GcxBusy then begin
+    Log('Cancel refused while gcextract is running');
+    Cancel := False;
+  end;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
   if CurPageID = wpSelectDir then begin
-    { The game opens its files through the ANSI code page: keep the installation path ASCII. }
-    if not IsAsciiPath(WizardDirValue) then begin
-      SuppressibleMsgBox('Choose an installation folder whose path contains only ASCII characters (A-Z, 0-9, spaces and basic punctuation).',
-        mbError, MB_OK, IDOK);
-      Result := False;
-    end else if DestinationProblem(WizardDirValue) <> '' then begin
+    if TestFailure('dirpage') then
+      Log('Folder page check skipped (/TESTFAIL=dirpage)')
+    else if DestinationProblem(WizardDirValue) <> '' then begin
       Log('Refused installation folder: ' + WizardDirValue);
       SuppressibleMsgBox(DestinationProblem(WizardDirValue), mbError, MB_OK, IDOK);
       Result := False;
@@ -644,29 +809,38 @@ begin
   end;
   DirWasNew := IsDirEmptyOrMissing(AppDir);
   Result := PrepareSystemFiles;
-  if (Result <> '') and DirWasNew then begin
-    DeleteFile(AppDir + '\{#InstallMarker}');
-    RemoveDir(AppDir);
-  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssPostInstall then begin
     InstallDone := True;
+    { The installation is complete (past Inno Setup's rollback): the previous image files are no longer needed. }
+    if SwapDone and not FailedFlag then
+      RemoveOldFiles(AppDir);
+  end;
 end;
 
-{ Setup cancelled or failed after PrepareToInstall (rollback of the [Files] entries): remove what the code wrote. }
+{ Called just before Setup terminates, whatever happened. After a cancel or an error during the installation (Inno
+  Setup has rolled back the files it installed), the previous image files are put back and the temporary ones
+  removed; a first install that did not complete (that, or exit code 7 or 9) is removed. }
 procedure DeinitializeSetup;
 begin
-  if PreparedDir and not InstallDone then begin
-    RemovePath(PreparedApp + '\disc.new');
-    RemovePath(PreparedApp + '\manifest.new');
-    RemovePath(PreparedApp + '\game.iso.new');
-    if DirWasNew then begin
-      DeleteFile(PreparedApp + '\{#InstallMarker}');
-      RemoveDir(PreparedApp);
+  if not PreparedDir then
+    Exit;
+  try
+    if not InstallDone then begin
+      if SwapDone then begin
+        Log('Setup did not complete after the swap: putting the previous files back');
+        if not UndoSwap(PreparedApp) then
+          Log('Some previous files could not be put back (the next run of Setup restores them)');
+      end;
+      RemoveTemporaryFiles(PreparedApp);
     end;
+    if DirWasNew and (FailedFlag or not InstallDone) then
+      RemoveFirstInstall(PreparedApp);
+  except
+    Log('Clean-up at exit: ' + GetExceptionMessage);
   end;
 end;
 

@@ -6,9 +6,16 @@ Usage: py -3 tools/installer/notices.py --build build/<game>-<ID>-Release [--isc
 The texts come from the real licence files: the dependency sources fetched by the game build (<build>/_deps), the
 Aurora checkout (external/aurora, including the licence comment of its vendored magic_enum.hpp), the DolRecomp
 checkout (external/DolRecomp), the Inno Setup installation, and, for the components shipped as prebuilt DLLs
-without their licence (Dawn, DirectX Shader Compiler, the Khronos headers and SPIRV-Tools compiled into Dawn), the
-official repositories at the revisions listed below, fetched with --fetch into external/licenses-src/ (licence
-files only: partial, blob-less git fetch).
+without their licence (Dawn, the Khronos headers and SPIRV-Tools compiled into Dawn), the official repositories at
+the revisions listed below, fetched with --fetch into external/licenses-src/ (licence files only: partial, blob-less
+git fetch).
+
+Claims checked against the build, so that the notices cannot silently go stale:
+- DolRecomp: the checkout the build compiled (DOLRECOMP_DIR of <build>/CMakeCache.txt, else external/DolRecomp) must
+  be at DOLRECOMP_COMMIT with src/cpu and src/common unmodified (git rev-parse, git diff, git status); otherwise, or
+  without that checkout (its LICENSE is needed anyway), the notices are not built;
+- Visual C++ runtime: the DLLs named in its entry are the ones the shipped binaries import (PE import tables of
+  <build>/bin, or the list given by build.py, which computes it from the payload).
 
 Imported by tools/installer/build.py, which regenerates the file for every installer and checks that the copy in
 Git is up to date.
@@ -17,6 +24,8 @@ Git is up to date.
 from __future__ import annotations
 
 import argparse
+import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -30,9 +39,6 @@ FETCHED = {
     # Revision of the Dawn prebuilt used by Aurora (CMake cache AURORA_DAWN_REF, release v20260807.225922 of
     # github.com/encounter/dawn).
     "dawn": ("https://github.com/google/dawn.git", "1155e0ed531126f33a1279afa029349651ca1c93", ["LICENSE"]),
-    # Revision pinned by Dawn's DEPS (third_party/directx-shader-compiler) at the commit above.
-    "dxc": ("https://github.com/microsoft/DirectXShaderCompiler.git", "13730886e6a9019e4e0823746470f3ab75341d6b",
-            ["LICENSE.TXT", "ThirdPartyNotices.txt"]),
     # Compiled into webgpu_dawn.dll (strings of the DLL) or used through their headers; licence files read at the
     # head of the default branch on 2026-10-19.
     "SPIRV-Tools": ("https://github.com/KhronosGroup/SPIRV-Tools.git", "71f287f18ed78d496e724fbfb1c3feae3a2af75a",
@@ -42,6 +48,16 @@ FETCHED = {
     "Vulkan-Headers": ("https://github.com/KhronosGroup/Vulkan-Headers.git",
                        "acbb9391c0a597272800cd3f4363661c00a27c77", ["LICENSE.md", "LICENSES/MIT.txt"]),
 }
+
+# DolRecomp revision whose CPU runtime (src/cpu, src/common) is compiled into the game executable, unmodified (the
+# project's patch, tools/patches/dolrecomp/, only touches the recompiler itself): checked by check_dolrecomp().
+DOLRECOMP_COMMIT = "c876e2b9e022e084aa9a690fe15e2ad79a0706cd"
+DOLRECOMP_UNMODIFIED = ["src/cpu", "src/common"]
+# Visual C++ runtime: version of the redistributable folder (VC\Redist\MSVC\<version>, checked by build.py) and the
+# names of the DLLs it may provide.
+VC_VERSION = "14.44.35112"
+VC_RUNTIME_PATTERN = re.compile(r"^(vcruntime140(_1)?|msvcp140(_\w+)?|concrt140|vccorlib140)\.dll$", re.I)
+VC_ENTRY = "Microsoft Visual C++ Redistributable"
 
 # (title, version, shipped in, licence, origin, licence files) with licence files a list of (base, relative path) or
 # (base, relative path, mode), base in root | build | aurora | dolrecomp | fetched:<name> | iscc, or None for a
@@ -62,7 +78,7 @@ COMPONENTS = [
      "contains no game data (no disc image, and none of the game's files, textures, sounds or models): the player "
      "provides their own disc image.",
      "the original game, translated when the executable is built", None),
-    ("DolRecomp (CPU runtime)", "commit c876e2b9e022 of github.com/ExpansionPak/DolRecomp: src/cpu/cpu.c, "
+    ("DolRecomp (CPU runtime)", f"commit {DOLRECOMP_COMMIT[:12]} of github.com/ExpansionPak/DolRecomp: src/cpu/cpu.c, "
      "src/cpu/cpu.h and src/common/types.h, unmodified", "the game executable",
      "GNU General Public License v3.0 or later (SPDX header of src/cpu/cpu.c: GPL-3.0-or-later, "
      "Copyright (C) 2026 ExpansionPak)", "https://github.com/ExpansionPak/DolRecomp",
@@ -90,10 +106,6 @@ COMPONENTS = [
     ("Vulkan-Headers", "as used by the Dawn prebuilt", "webgpu_dawn.dll", "Apache License 2.0 OR MIT (MIT chosen)",
      "https://github.com/KhronosGroup/Vulkan-Headers",
      [("fetched:Vulkan-Headers", "LICENSE.md"), ("fetched:Vulkan-Headers", "LICENSES/MIT.txt")]),
-    ("DirectX Shader Compiler", "dxcompiler.dll 1.9.0.1 (Dawn prebuilt), source revision 13730886e6a9",
-     "dxcompiler.dll", "University of Illinois/NCSA Open Source License, with third-party notices",
-     "https://github.com/microsoft/DirectXShaderCompiler",
-     [("fetched:dxc", "LICENSE.TXT"), ("fetched:dxc", "ThirdPartyNotices.txt")]),
     ("Abseil", "20240722.0", "the game executable, webgpu_dawn.dll", "Apache License 2.0",
      "https://github.com/abseil/abseil-cpp", [("build", "_deps/abseil-cpp-src/LICENSE")]),
     ("libpng", "1.6.58", "libpng16.dll", "PNG Reference Library License version 2",
@@ -117,14 +129,91 @@ COMPONENTS = [
     ("SQLite", "3.51.3", "the game executable",
      "Public domain: \"The author disclaims copyright to this source code.\" (header of sqlite3.c)",
      "https://sqlite.org", None),
-    ("Microsoft Visual C++ Redistributable (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, "
-     "msvcp140_atomic_wait.dll)", "14.44.35112", "the files of that name in the installation folder",
+    (VC_ENTRY, VC_VERSION, "the files of that name in the installation folder",
      "Microsoft Software License Terms: Distributable Code of Visual Studio 2022 (files of VC\\redist, "
      "copied unmodified). Copyright (c) Microsoft Corporation. All rights reserved.",
      "https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution", None),
     ("Inno Setup", "6.7.3", "the installer and uninstaller (unins000.exe)", "Inno Setup License",
      "https://jrsoftware.org/isinfo.php", [("iscc", "license.txt")]),
 ]
+
+
+def pe_imports(path: Path) -> list[str]:
+    """Names of the DLLs imported by a PE file (import directory only; delay-loaded DLLs are not listed)."""
+    data = path.read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise SystemExit(f"{path}: not a PE file")
+    nsec = struct.unpack_from("<H", data, pe + 6)[0]
+    opt_size = struct.unpack_from("<H", data, pe + 20)[0]
+    opt = pe + 24
+    magic = struct.unpack_from("<H", data, opt)[0]
+    dirs = opt + (112 if magic == 0x20B else 96)
+    imp_rva = struct.unpack_from("<I", data, dirs + 8)[0]
+    sections = []
+    for i in range(nsec):
+        s = opt + opt_size + 40 * i
+        vsize, va, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
+        sections.append((va, max(vsize, rsize), raw))
+
+    def off(rva: int) -> int:
+        for va, size, raw in sections:
+            if va <= rva < va + size:
+                return rva - va + raw
+        raise SystemExit(f"{path}: RVA {rva:#x} outside the sections")
+
+    names = []
+    if imp_rva:
+        p = off(imp_rva)
+        while True:
+            name_rva = struct.unpack_from("<I", data, p + 12)[0]
+            if name_rva == 0:
+                break
+            q = off(name_rva)
+            names.append(data[q:data.index(b"\0", q)].decode("ascii"))
+            p += 20
+    return names
+
+
+def vc_runtime_imports(binaries) -> list[str]:
+    """Visual C++ runtime DLLs (lower case, sorted) imported by the given PE files."""
+    return sorted({n.lower() for p in binaries for n in pe_imports(p) if VC_RUNTIME_PATTERN.match(n)})
+
+
+def build_binaries(build: Path) -> list[Path]:
+    """Executables and DLLs of a game build (<build>/bin), as build.py ships them."""
+    return sorted(p for p in (build / "bin").iterdir() if p.is_file() and p.suffix.lower() in (".exe", ".dll"))
+
+
+def dolrecomp_dir(build: Path, external: Path) -> Path:
+    """The DolRecomp checkout a game build compiled: DOLRECOMP_DIR of its CMake cache, else external/DolRecomp."""
+    cache = build / "CMakeCache.txt"
+    if cache.is_file():
+        m = re.search(r"^DOLRECOMP_DIR:\w+=(.*)$", cache.read_text(encoding="utf-8", errors="replace"), re.M)
+        if m:
+            return Path(m.group(1).strip())
+    return external / "DolRecomp"
+
+
+def check_dolrecomp(build: Path, external: Path) -> None:
+    """Fails unless the DolRecomp checkout of the build is at DOLRECOMP_COMMIT with DOLRECOMP_UNMODIFIED unmodified,
+    as its entry says. Without that checkout the claim cannot be checked: fails too."""
+    repo = dolrecomp_dir(build, external)
+    if not (repo / ".git").exists():
+        raise SystemExit(f"notices: DolRecomp checkout not found ({repo}): its entry cannot be checked")
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+
+    head = git("rev-parse", "HEAD").stdout.strip()
+    if head != DOLRECOMP_COMMIT:
+        raise SystemExit(f"notices: DolRecomp is at {head or '?'} in {repo}, its entry says {DOLRECOMP_COMMIT}: "
+                         "update DOLRECOMP_COMMIT in tools/installer/notices.py")
+    diff = git("diff", "--quiet", "HEAD", "--", *DOLRECOMP_UNMODIFIED)
+    status = git("status", "--porcelain", "--untracked-files=all", "--", *DOLRECOMP_UNMODIFIED)
+    if diff.returncode != 0 or status.returncode != 0 or status.stdout.strip():
+        raise SystemExit(f"notices: {', '.join(DOLRECOMP_UNMODIFIED)} of DolRecomp are modified in {repo}, its entry "
+                         f"says \"unmodified\":\n{status.stdout.strip()}")
 
 
 def fetch(name: str, external: Path = EXTERNAL) -> Path:
@@ -198,7 +287,15 @@ def comment_header(text: str, rel: str) -> str:
     return body
 
 
-def assemble(build: Path, iscc_dir: Path | None, allow_fetch: bool = False, external: Path = EXTERNAL) -> str:
+def assemble(build: Path, iscc_dir: Path | None, allow_fetch: bool = False, external: Path = EXTERNAL,
+             vc_dlls: list[str] | None = None) -> str:
+    """The notices text. vc_dlls: the Visual C++ runtime DLLs shipped (default: those imported by <build>/bin)."""
+    check_dolrecomp(build, external)
+    if vc_dlls is None:
+        vc_dlls = vc_runtime_imports(build_binaries(build))
+    if not vc_dlls:
+        raise SystemExit("notices: no Visual C++ runtime DLL is imported: check the build, or drop its entry")
+    components = [(f"{c[0]} ({', '.join(vc_dlls)})",) + c[1:] if c[0] == VC_ENTRY else c for c in COMPONENTS]
     sep = "=" * 100
     out = [
         "THIRD-PARTY SOFTWARE NOTICES AND LICENCES",
@@ -211,9 +308,9 @@ def assemble(build: Path, iscc_dir: Path | None, allow_fetch: bool = False, exte
         "",
         "Contents:",
     ]
-    out += [f"  - {c[0]} ({c[1]})" for c in COMPONENTS]
+    out += [f"  - {c[0]} ({c[1]})" for c in components]
     out.append("")
-    for title, version, shipped, licence, origin, files in COMPONENTS:
+    for title, version, shipped, licence, origin, files in components:
         out += [sep, title, sep, f"Version: {version}", f"Shipped in: {shipped}", f"Licence: {licence}",
                 f"Origin: {origin}", ""]
         for base, rel, *mode in files or []:

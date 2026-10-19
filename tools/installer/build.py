@@ -1,7 +1,7 @@
 """Builds the player installer of a game (Inno Setup 6): payload assembly, licence notices, ISCC.
 
 Usage: py -3 tools/installer/build.py <game> [--build ID=DIR ...] [--gcextract EXE] [--iscc ISCC.exe]
-                                      [--vc-redist DIR] [--out build/installer] [--no-disc-arg] [--include-dxil]
+                                      [--vc-redist DIR] [--out build/installer] [--no-disc-arg]
 
   <game>        folder in games/ (game.toml: name, slug, [[versions]], [diagnostics] user_org / user_app / exe_name)
   --build       game build folder of one version (contains bin/ and gcrt_build_info.c); repeatable. Default: every
@@ -11,8 +11,6 @@ Usage: py -3 tools/installer/build.py <game> [--build ID=DIR ...] [--gcextract E
   --vc-redist   folder of the Visual C++ runtime DLLs to copy next to the executable (default: the newest
                 <Visual Studio>\\VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC143.CRT)
   --no-disc-arg the executables find disc\\ next to themselves: shortcuts without --disc
-  --include-dxil also ship dxil.dll (off by default: its redistribution terms are not established, and without it
-                Dawn uses another backend; see notes)
   --external    external/ folder (Aurora checkout, fetched licence files); default: the one of this checkout
 
 Result: build/installer/<slug>-pc-setup-<commit>.exe, plus build/installer/payload/ (what the installer contains)
@@ -31,7 +29,6 @@ import hashlib
 import os
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import time
@@ -48,7 +45,6 @@ import notices  # noqa: E402
 GAMECUBE_IMAGE_SIZE = 1_459_978_240
 # Never in the payload (game data, PGO profiles, debug files).
 FORBIDDEN_SUFFIXES = {".iso", ".gcm", ".rvz", ".dol", ".rel", ".profdata", ".profraw", ".pdb", ".ilk"}
-VC_RUNTIME_PATTERN = re.compile(r"^(vcruntime140(_1)?|msvcp140(_\w+)?|concrt140|vccorlib140)\.dll$", re.I)
 
 
 def sha256(path: Path) -> str:
@@ -57,43 +53,6 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
-
-
-def pe_imports(path: Path) -> list[str]:
-    """Names of the DLLs imported by a PE file (import directory only; delay-loaded DLLs are not listed)."""
-    data = path.read_bytes()
-    pe = struct.unpack_from("<I", data, 0x3C)[0]
-    if data[pe:pe + 4] != b"PE\0\0":
-        raise SystemExit(f"{path}: not a PE file")
-    nsec = struct.unpack_from("<H", data, pe + 6)[0]
-    opt_size = struct.unpack_from("<H", data, pe + 20)[0]
-    opt = pe + 24
-    magic = struct.unpack_from("<H", data, opt)[0]
-    dirs = opt + (112 if magic == 0x20B else 96)
-    imp_rva = struct.unpack_from("<I", data, dirs + 8)[0]
-    sections = []
-    for i in range(nsec):
-        s = opt + opt_size + 40 * i
-        vsize, va, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
-        sections.append((va, max(vsize, rsize), raw))
-
-    def off(rva: int) -> int:
-        for va, size, raw in sections:
-            if va <= rva < va + size:
-                return rva - va + raw
-        raise SystemExit(f"{path}: RVA {rva:#x} outside the sections")
-
-    names = []
-    if imp_rva:
-        p = off(imp_rva)
-        while True:
-            name_rva = struct.unpack_from("<I", data, p + 12)[0]
-            if name_rva == 0:
-                break
-            q = off(name_rva)
-            names.append(data[q:data.index(b"\0", q)].decode("ascii"))
-            p += 20
-    return names
 
 
 def find_iscc() -> Path | None:
@@ -137,7 +96,6 @@ def main() -> int:
     parser.add_argument("--vc-redist")
     parser.add_argument("--out", default=str(ROOT / "build" / "installer"))
     parser.add_argument("--no-disc-arg", action="store_true")
-    parser.add_argument("--include-dxil", action="store_true")
     parser.add_argument("--external", default=str(ROOT / "external"))
     args = parser.parse_args()
 
@@ -173,6 +131,10 @@ def main() -> int:
     vc_redist = Path(args.vc_redist) if args.vc_redist else find_vc_redist()
     if not vc_redist or not vc_redist.is_dir():
         raise SystemExit("Visual C++ runtime folder not found (--vc-redist)")
+    # The notices name the version of the redistributable folder (VC\Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT).
+    if vc_redist.parent.parent.name != notices.VC_VERSION:
+        raise SystemExit(f"{vc_redist}: Visual C++ runtime {vc_redist.parent.parent.name}, the notices say "
+                         f"{notices.VC_VERSION}: update VC_VERSION in tools/installer/notices.py")
     gcextract = Path(args.gcextract) if args.gcextract else ROOT / "build" / "gcextract" / "gcextract.exe"
     if not gcextract.is_file():
         subprocess.run([sys.executable, str(ROOT / "tools" / "gcextract" / "build.py"), "--out", str(gcextract.parent)],
@@ -190,8 +152,6 @@ def main() -> int:
         files = {}
         for f in sorted((folder / "bin").iterdir()):
             if f.is_file() and (f.name == exe_name or f.suffix.lower() == ".dll"):
-                if f.name.lower() == "dxil.dll" and not args.include_dxil:
-                    continue
                 files[f.name] = f
         per_version[gid] = files
     names = sorted({n for files in per_version.values() for n in files})
@@ -210,9 +170,9 @@ def main() -> int:
 
     # --- 2. Visual C++ runtime: the DLLs of the redistributable folder that a shipped binary imports.
     shipped = [p for p in payload.rglob("*") if p.suffix.lower() in (".dll", ".exe")]
-    imported = {n.lower() for p in shipped for n in pe_imports(p)}
-    vc_files = [f for f in sorted(vc_redist.iterdir()) if f.name.lower() in imported and VC_RUNTIME_PATTERN.match(f.name)]
-    missing_vc = sorted(n for n in imported if VC_RUNTIME_PATTERN.match(n) and n not in {f.name.lower() for f in vc_files})
+    imported = notices.vc_runtime_imports(shipped)
+    vc_files = [f for f in sorted(vc_redist.iterdir()) if f.name.lower() in imported]
+    missing_vc = sorted(n for n in imported if n not in {f.name.lower() for f in vc_files})
     if missing_vc:
         raise SystemExit(f"Visual C++ runtime DLLs not found in {vc_redist}: {', '.join(missing_vc)}")
     for f in vc_files:
@@ -223,7 +183,7 @@ def main() -> int:
     shutil.copy2(gcextract, payload / "common" / "gcextract.exe")
     shutil.copy2(game_toml, payload / "common" / "game.toml")
     first_build = next(iter(builds.values()))
-    text = notices.assemble(first_build, iscc.parent, allow_fetch=True, external=Path(args.external))
+    text = notices.assemble(first_build, iscc.parent, allow_fetch=True, external=Path(args.external), vc_dlls=imported)
     committed = HERE / "THIRD_PARTY_LICENSES.txt"
     if committed.read_text(encoding="utf-8").replace("\r\n", "\n") != text:
         raise SystemExit(f"{committed} is out of date: run tools/installer/notices.py --build {first_build}")
