@@ -1,0 +1,47 @@
+diff --git a/lib/webgpu/gpu.cpp b/lib/webgpu/gpu.cpp
+index a430df2..95162b2 100644
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -5,6 +5,7 @@
+ #include <array>
+ #include <cmath>
+ #include <cstdint>
++#include <cstdlib>
+ #include <span>
+ #include <string>
+ #include <string_view>
+@@ -976,6 +977,23 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+       }
+ #endif
+     }
++#ifdef WEBGPU_DAWN
++    // The device is used from several threads (the caller's thread, the GX FIFO processor and the render worker).
++    // Without ImplicitDeviceSynchronization, Dawn has no device lock and its internal caches are not thread-safe. With
++    // it, every public API call except command encoding takes the device lock. AURORA_IMPLICIT_DEVICE_SYNC=0 leaves
++    // it off (for comparisons).
++    {
++      const char* env = std::getenv("AURORA_IMPLICIT_DEVICE_SYNC");
++      const bool wanted = env == nullptr || std::string_view{env} != "0";
++      if (!wanted) {
++        Log.info("ImplicitDeviceSynchronization not requested (AURORA_IMPLICIT_DEVICE_SYNC=0)");
++      } else if (g_adapter.HasFeature(wgpu::FeatureName::ImplicitDeviceSynchronization)) {
++        requiredFeatures.push_back(wgpu::FeatureName::ImplicitDeviceSynchronization);
++      } else {
++        Log.warn("ImplicitDeviceSynchronization is not offered by the adapter: Dawn calls are not serialized");
++      }
++    }
++#endif
+     std::string featureList;
+     for (auto featureName : requiredFeatures) {
+       featureList += "\n  ";
+@@ -1073,6 +1091,10 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+       return false;
+     }
+     g_device.SetLoggingCallback(wgpu_log);
++#ifdef WEBGPU_DAWN
++    Log.info("ImplicitDeviceSynchronization: {}",
++             g_device.HasFeature(wgpu::FeatureName::ImplicitDeviceSynchronization) ? "enabled" : "disabled");
++#endif
+   }
+   g_queue = g_device.GetQueue();
+ 
