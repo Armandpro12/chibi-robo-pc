@@ -21,10 +21,12 @@ one has been validated.
 
 From stage 3 onwards, every stage must keep multiplayer working (automated two-instance test).
 
-**Release policy.** The only public release will be the fully decompiled C++ version (stage 2, milestone D3): an
-installer with a precompiled executable that contains no game data, which asks for the player's own disc image.
-Nothing is compiled on the player's machine. Until then, the game can only be built locally (see the
-[README](README.md)).
+**Release policy.** The player installer of milestone 11 (decision of the project owner, 2026-10-19) will be
+published as a GitHub release once it has passed the review and a test on a clean Windows: it contains the
+recompiled executable and its libraries but no game data, asks for the player's own disc image, and compiles
+nothing on the player's machine. No release has been created yet. The fully decompiled C++ version (stage 2,
+milestone D3) will later replace the recompiled executable in that installer. The game can also be built locally
+(see the [README](README.md)).
 
 ## Stage 1 — Faithful native port, with no emulated hardware 🟡
 
@@ -45,7 +47,7 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; the prologue (new game through the birthday party), the first save, and the first load and unload of a REL module (`stage07.rel`, Chibi-House to living room and back) are replayed with scripted inputs on both US and PAL, three identical replays per version; open issues from player reports are listed under "Known issues". |
 | 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The credits video is compared (PAL: SSIM 0.937 to 0.95 because Dolphin dumps it at another height); the other video cutscenes are not compared yet. |
 | 10 | No emulated hardware | ✅ | See below. |
-| 11 | Installer (private) | ⬜ | Disc check, extraction, install and uninstall, tested on a clean Windows. It stays private until the C++ version exists. |
+| 11 | Player installer | 🟡 | Inno Setup installer (`tools/installer/`): the player picks their own disc image, checked by SHA-1 against `game.toml` and refused with a clear message otherwise; per-user install without administrator rights, progress bar, shortcut, uninstall that keeps saves and settings, reinstall to update. Installed and run to the title screen on US and PAL from a developer machine with no development tools in `PATH`. `dxil.dll` is not shipped (redistribution terms under review): without it Dawn uses Vulkan instead of Direct3D 12, checked on the development machine only (identical captures); a PC without a Vulkan driver is untested. The clean-Windows test and the review are pending, then publication as a GitHub release. |
 
 ### Milestone 10 — no emulated hardware ✅
 
@@ -99,7 +101,7 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
    color for that pixel (the bench does not compare these neighbouring frames).
 3. **Milestone 8**: input scenarios that play through the first level, real REL loading paths.
 4. **Milestone 9**: key-scene comparison with Dolphin.
-5. **Milestone 11**: the private installer.
+5. **Milestone 11**: the player installer (clean-Windows test, review, then GitHub release).
 6. Phase review, then validation by the project owner.
 
 ## Stage 2 — Full decompilation ⬜
@@ -112,7 +114,7 @@ and assets are read from the player's files.
 |---|---|---|
 | D1 | Tooling | Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking |
 | D2 | Batches | Decompile batch by batch (by unit or REL), each one checked by the oracle |
-| D3 | No recompiled code, no virtual CPU | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First public release**: lightweight installer with a precompiled executable |
+| D3 | No recompiled code, no virtual CPU | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one |
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
