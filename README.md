@@ -84,6 +84,10 @@ py -3 tools/gcextract/build.py                       # -> build/gcextract/gcextr
 build\gcextract\gcextract.exe <image.iso> <output folder> --game-toml games/chibi-robo/game.toml --u8 files/qp.bin
 ```
 
+Only uncompressed `.iso` / `.gcm` images are read. Exit codes: 2 usage, 3 read error, 4 not a GameCube image, 5 image
+not listed in `game.toml`, 6 inconsistent data or unsafe file name in the image, 7 write error or existing output
+(nothing is ever deleted: after a failure, remove the output folder before retrying).
+
 The build recompiles the game with DolRecomp, then compiles it with clang-cl. The first build in each build folder
 (`build/<game>-<ID>-<config>`) needs an internet connection: CMake downloads Aurora's dependencies into it (prebuilt
 Dawn and SDL3 packages and ten source libraries); later builds in the same folder reuse them.
