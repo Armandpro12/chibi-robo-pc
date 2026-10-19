@@ -90,8 +90,9 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
    against Dolphin on the backyard (US and PAL): the new frames match it, while the old ones sometimes lost a house-wall
    shadow that Dolphin always shows. The same race explains the intermittent one-pixel difference of the US
    `overwrite-save` scenario (issue 10): that pixel shows a palette-textured plant behind the wall through a
-   one-pixel gap, and the late reads gave it other colors. Since the fix, 32 runs with three output-path lengths
-   gave the same frames byte for byte, while 6 runs of the older build gave 3 different colors for that pixel.
+   one-pixel gap, and late reads probably gave it other colors. Since the fix, 30 to 32 runs with three output-path
+   lengths gave the same frames byte for byte; the native references, recorded before the fix, hold a different
+   color for that pixel (the bench does not compare these neighbouring frames).
 3. **Remove the last compatibility shims of milestone 10.** They exist only to stay bit-identical with the old
    emulated build: a cycle-dated audio event queue and an interrupt delivery order. Removing them changes the
    outputs, so the native reference recordings will be made again. The boot-cycle offset is already gone: since
