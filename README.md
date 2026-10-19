@@ -189,7 +189,7 @@ in `games/chibi-robo/game.toml`
 - `games/chibi-robo/` — everything specific to Chibi-Robo!: game description (`game.toml`), recompiler
   configuration and hooks, symbol maps, reference scenarios.
 - `tools/` — generic scripts: environment check, tool installation, extraction, build, run, A/B comparison,
-  Dolphin reference capture, PGO.
+  Dolphin reference capture, PGO, safe removal of worktrees that contain junctions (`tools/worktree.py`).
 - `orig/`, `generated/`, `external/`, `build/` — your disc image, locally generated files, third-party tools and
   build outputs. Never committed.
 

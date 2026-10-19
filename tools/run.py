@@ -531,6 +531,9 @@ def main() -> int:
         summary["captures"] = sorted(p.name for p in out.glob("cp-*.png"))
     (out / "run.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"exit code {proc.returncode}, {wall_s:.1f} s; {stop}")
+    if proc.returncode != 0 and "gcrt: DOL not found" in (out / "stderr.log").read_text(encoding="utf-8", errors="replace"):
+        print(f"HINT: the disc folder is empty or has no sys/main.dol. Extract it again with: "
+              f"py -3 tools/extract.py {args.game} --version {version} --force")
     if final:
         print(final[-1])
     if sc is not None:

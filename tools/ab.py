@@ -148,6 +148,7 @@ def build_in_worktree(game: str, version: str, rev: str, wt: Path, tag: str) -> 
     gen = wt / "generated" / game / version
     gen.mkdir(parents=True, exist_ok=True)
     make_link(tc.ROOT / "generated" / game / version / "disc", gen / "disc")
+    print(f"== this worktree contains junctions to the main checkout; remove it with: py -3 tools/worktree.py remove {wt}")
     manifest = tc.ROOT / "generated" / game / version / "manifest.json"
     if manifest.exists() and not (gen / "manifest.json").exists():
         shutil.copyfile(manifest, gen / "manifest.json")
