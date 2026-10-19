@@ -40,10 +40,10 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 3 | Recompilation | ✅ | Whole game recompiled to C, builds without errors. |
 | 4 | Minimal runtime | ✅ | Window, main loop, keyboard and gamepads. |
 | 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: only the health and safety warning has been compared with Dolphin. |
-| 6 | Audio | 🟡 | Music and effects work. Title music matches Dolphin (peak and RMS); still to do: intro and US comparison against Dolphin, and a listening test. |
+| 6 | Audio | 🟡 | Music and effects match Dolphin sample for sample on the title screen, the party and the living room (PAL and US), and the music loops with the same period; the differences that remain are listed under "Known differences with Dolphin". Still to do: the video cutscenes and a listening test. |
 | 7 | Saves | ✅ | Native PC saves: card always inserted, crash-safe writes (temporary file, then rename). |
 | 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; open issues from player reports are listed under "Known issues". |
-| 9 | Comparison with Dolphin | ⬜ | Key scenes compared; differences listed. |
+| 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The video cutscenes are not compared yet. |
 | 10 | No emulated hardware | ✅ | See below. |
 | 11 | Installer (private) | ⬜ | Disc check, extraction, install and uninstall, tested on a clean Windows. It stays private until the C++ version exists. |
 
@@ -147,6 +147,24 @@ and assets are read from the player's files.
 | M7 | Lua scripts in a sandbox |
 | M8 | Documentation and example mods for modders |
 
+## Known differences with Dolphin
+
+Measured on the native build against Dolphin 5.0 (same inputs, scenes aligned by content). None of them is a
+rendering or sound defect of the port; most come from the game's own random numbers or from the timing of the
+simulated disc.
+
+- **Disc timing.** The native disc model has no seek time, so loading is 2 to 3.6 times faster than in Dolphin,
+  and the silence the game leaves at the loop point of the title music is 60 to 85 ms shorter. The real console
+  has not been measured, so which model is closer to it is unknown. A seek-time model could be added as an option.
+- **Random sounds and animations.** Ambient sounds in the backyard and the living room, the background of the
+  title screen, and small idle animations depend on the game's random generator, whose state depends on what
+  happened before the scene (including loading time). With the same generator state on both sides the backyard
+  plays the same sounds at the same instants (one periodic sound stays 5 ms off, one audio frame).
+- **Menus.** The scrolling background and the bouncing letters of the file menus are not in the same phase as in
+  Dolphin; text and frames are identical. The cause is probably an animation tied to the time since start-up.
+- **Stretched viewport.** In the default `stretch` window mode the 3D image scores about 0.015 lower in SSIM than
+  with `fit`, because the port and Dolphin resample the picture differently.
+- **Not measured yet:** the video cutscenes.
 ## Known issues
 
 - Player reports with late saves (US version):
