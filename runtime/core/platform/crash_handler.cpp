@@ -1727,7 +1727,8 @@ void do_report() {
   close_threads();
 
   // An in-process MiniDumpWriteDump suspends every other thread of the process for the whole dump (seen: suspend
-  // count 1, no progress, tests/j8/hang2/mdsusp) and then needs the heap and the loader lock itself (version
+  // count 1 and no progress of a counting thread, read from a minidump callback) and then needs the heap and the
+  // loader lock itself (version
   // resources, module list): a thread it suspended while holding one of those locks blocks it, and the game, for
   // ever (seen in start-up reports: the main thread suspended inside RtlAllocateHeap or the delay-load resolver).
   // Microsoft Learn (MiniDumpWriteDump, Remarks) advises against calling it in the target process for that reason.
