@@ -588,6 +588,15 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
   - the reference SDK sources and headers under `src/Dolphin/` and `include/Dolphin/` (function order, sizes, prototypes).
 
   The unlicensed parts were not used as a source.
+- **Other CC0 GameCube decompilations, configuration files only** (appendix G). From each we read only `config/<ID>/symbols.txt` and `splits.txt`, for function names, sizes and object order. We read the licence in each repository's `LICENSE` file on 2026-10-19 (CC0 1.0), and nothing was copied:
+  - roeming/SA2B (https://github.com/roeming/SA2B, `GSNE8P`, commit `874a480379`);
+  - zcanann/FFCC-Decomp (https://github.com/zcanann/FFCC-Decomp, `GCCE01`, commit `14adbb5e37`);
+  - bfbbdecomp/tssm (https://github.com/bfbbdecomp/tssm, `GGVE78`, commit `50ea01767e`);
+  - dbalatoni13/nfsmw (https://github.com/dbalatoni13/nfsmw, `GOWE69`, commit `80993f3522`);
+  - zeldaret/tww (https://github.com/zeldaret/tww, `GZLE01`, commit `7af0acd67b`);
+  - TeamOrre/xd-decomp (https://github.com/TeamOrre/xd-decomp, `GXXE01`, commit `4989794e6c`). We also read the order of the function definitions in its `src/dolphin/card/CARDBios.c`, which its `configure.py` marks as matching, for `CARDSetFastMode` only; no code was copied.
+
+  Each of these names is used only where our own code shows the same role at the same place (appendix G).
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
 - **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied) and what its AX command handlers do with the AUX buffer addresses (`AX.cpp`; read only to learn which address the DSP writes and which it reads, nothing copied), the memory-card command numbers (`EXI_DeviceMemoryCard.h`; read only for their meaning, nothing copied), and the signature database `Data/Sys/totaldb.dsy` (function names with a size and an opcode checksum; read only to cross-check names whose code we had read, appendices E and F; nothing copied), and the way that database computes its opcode checksum (read in Dolphin's signature-database code only to understand the method, which we then re-implemented in our own words and code; nothing copied), and its frame-patch and HLE debug-print mechanism (`Core/PatchEngine.cpp`, `Core/GeckoCode.cpp`, the general debug print HLE function and the symbol database; read only to understand how a patch can write to the guest memory once per frame and how a fake `OSReport` is intercepted without touching the guest stack, section 14; nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
@@ -921,7 +930,7 @@ Functions of the Nintendo SDK and the Metrowerks libraries that `cbr_decomp`'s `
 |---|---|---|---|
 | `0x8017CD74` | `0x8017F5DC` | `0xC` | `AXFXSetHooks` |
 
-The other verified AXFX functions (`__AXFXAllocFunction`, `__AXFXFreeFunction`, `do_src1`, `do_src2` and the two `HandleReverb`) are in appendix F.
+The other verified AXFX functions are in appendix F (`__AXFXAllocFunction`, `__AXFXFreeFunction`, `do_src1`, `do_src2` and the two `HandleReverb`) and appendix G (the four effects).
 
 ### GX (113)
 
@@ -1517,7 +1526,7 @@ How each family was checked:
 | `+0x1C` | sync bits (fields to copy to the DSP PB) |
 | `+0x138` | the voice's copy of the PB: `running` at `+0x146` (PB `+0x0E`), ITD at `+0x16E` (PB `+0x36`) |
 
-Still unverified, kept out of this appendix: `__AXGetAuxAInput` (PAL `0x80179EC0`). Its code is known, but we have no source that fixes which of the two AUX buffer roles the SDK calls "input". The same holds for the nine AUX buffer getters that follow it, the studio depop function at PAL `0x8017B1B4`, and the AXFX effect functions except `AXFXSetHooks` and those verified in appendix F.
+Kept out of this appendix and verified later (appendix G): `__AXGetAuxAInput` (PAL `0x80179EC0`), the nine AUX buffer getters that follow it, the studio function at PAL `0x8017B1B4` (`__AXPrintStudio`), and the AXFX effect functions not verified in appendix F.
 
 ## Appendix E. OS, VI and CARD functions verified on 2026-10-19
 
@@ -1548,7 +1557,7 @@ US addresses: PAL − `0x28B0` for the EXI, SI, OS, DVD and VI functions of `sup
 | `0x8018063C` | `0x80182EA4` | `0x9C` | `__CARDFreeBlock` |
 | `0x80181B98` | `0x80184400` | `0x454` | `DoMount@CARDMount` |
 
-Still unverified, kept out of this appendix: the `static` functions of `OSLink.c` and two empty functions next to them, as well as the card-ID reader and the fast-mode setter and getter that `DoMount` uses. Their code and roles are known, but no licensed source names them for this code.
+Kept out of this appendix and verified later (appendix G): the `static` functions of `OSLink.c` and the two empty functions next to them, as well as the card-ID reader and the fast-mode setter and getter that `DoMount` uses.
 
 ## Appendix F. AXFX functions verified on 2026-10-19
 
@@ -1570,4 +1579,77 @@ US addresses: PAL − `0x2868`, the same delta as the rest of the AX library. Ev
 | `0x8017CD24` | `0x8017F58C` | `0x28` | `__AXFXAllocFunction` |
 | `0x8017CD4C` | `0x8017F5B4` | `0x28` | `__AXFXFreeFunction` |
 
-Still unverified, kept out of this appendix: the public `Init`, `Shutdown`, `Callback` and `Settings` functions of the four effects, and their internal create and free functions. Their roles are known from the code: the effect selector's four parameter blocks, the delay lines each effect allocates, and the callbacks it registers with `AXRegisterAuxACallback` and `AXRegisterAuxBCallback`. But no licensed source or database entry spells their names for this code. The same holds for the AUX buffer getters of the AX library and for the studio frame function called by `__AXOutNewFrame`.
+Kept out of this appendix and verified later (appendix G): the public `Init`, `Shutdown`, `Callback` and `Settings` functions of the four effects, their internal create, free and crosstalk functions, the AUX buffer getters of the AX library and the studio frame function called by `__AXOutNewFrame`.
+
+## Appendix G. AXFX, AUX, studio, OSLink and CARD names verified on 2026-10-19
+
+Appendices D to F left 38 SDK functions with a known role but no name source. We now name them from the decomp-toolkit configurations of other CC0 GameCube decompilations (section 15). We read only `config/<ID>/symbols.txt` and `splits.txt`: function names, addresses, sizes and the object each function belongs to. No code, comment or table was copied. Short names below: SA2B (roeming/SA2B), FFCC (zcanann/FFCC-Decomp), TSSM (bfbbdecomp/tssm), NFSMW (dbalatoni13/nfsmw), TWW (zeldaret/tww) and XD (TeamOrre/xd-decomp).
+
+**Method.** A name is `verified` only when all of these hold:
+- we read its code in our DOL and its role is known (appendices D to F, `supplement.tsv`);
+- in at least two independent decompilations, the same object file holds the same functions in the same order, and the name sits at the same rank;
+- our function and its neighbours have the sizes of those sources. When the size differs, a newer or older SDK revision, the function must be the only one of that rank and role in the object;
+- the PAL and US functions have the same Ghidra size, with a unique masked-code signature or an anchor between unique signatures.
+
+The names come from these objects:
+- **AXFX** (`reverb_hi.c`, `reverb_std.c`, `chorus.c`, `delay.c`, `axfx.c`): SA2B and FFCC. SA2B lists our 26 functions in our order. FFCC lists them in the same order, plus `ReverbHIModify`, `AXFXReverbHiSettings`, `ReverbSTDModify` and `AXFXReverbStdSettings`, which our DOL lacks. Eighteen of the 26 have our size in both sources; the eight others differ by revision.
+- **`AXAux.c`**: FFCC, TSSM and NFSMW. Every function they list has our size, in our order (NFSMW lacks `AXRegisterAuxBCallback`).
+- **`AXSPB.c`**: the same three. All five functions have our sizes.
+- **`OSLink.c`**: TWW and XD. They have our sizes for every function we have. Our DOL lacks `OSLinkFixed`, which both have between `OSLink` and `Undo`, and `OSSetStringTable`, which TWW has after `OSNotifyUnlink`.
+- **`CARDBios.c`**: NFSMW and XD. They have our sizes around `__CARDReadVendorID` and `CARDGetFastMode`.
+
+`CARDSetFastMode` is absent from both of those DOLs. XD marks its `CARDBios.c` as matching and defines `CARDSetFastMode` between `OnReset` and `CARDGetFastMode`, its exact place in our DOL. For that one name we compared the order of the definitions in that file, not a size.
+
+Facts this settles:
+- **Which reverb is "Hi".** The first reverb object is `ReverbHi`: `ReverbHICreate`, `DoCrossTalk`, `HandleReverb` (called per channel), `ReverbHIFree`, then `AXFXReverbHiInit`, `Shutdown` and `Callback`. It takes the HAL's effect type 1, with a 0x1E0-byte parameter block and 6 float parameters, the last of which is the crosstalk. The second object is `ReverbStd`, effect type 2 with 0x154 bytes and 5 floats; its `HandleReverb` runs once for all channels. The `Create`/`Free` names are spelled `HI` and `STD` in upper case, and `AXFXChorusSettings` has the `AXFX` prefix. This revision has neither `ReverbHIModify` nor `AXFXReverbHiSettings`.
+- **The AUX getters**, internal functions called only by `__AXNextFrame`. In order: `__AXGetAuxAInput`, `__AXGetAuxAInputDpl2`, `__AXGetAuxAOutput`, `__AXGetAuxAOutputDpl2R`, `__AXGetAuxAOutputDpl2Ls`, `__AXGetAuxAOutputDpl2Rs`, `__AXGetAuxBInput`, `__AXGetAuxBOutput`, `__AXGetAuxBForDPL2` and `__AXGetAuxBOutputDPL2`.
+  - "Input" is the buffer the DSP writes, the first address of AX command 4 or 5. It is returned only when the callback is registered.
+  - "Output" is the buffer of the other index, which the DSP reads back.
+  - The `Dpl2` getters feed command `0x13`. The two `DPL2` getters of AUX B feed command `0x10`, only in AX mode 2.
+- **The studio function** at PAL `0x8017B1B4` is `__AXPrintStudio`: the second function of `AXSPB.c`, which fills the block `__AXGetStudio` returns once per frame.
+- **`OSLink.c`**: `OSNotifyLink` and `OSNotifyUnlink` are the two empty functions at the start of the object. `Link` calls the first after linking, and `OSUnlink` calls the second right after `Undo`. `Relocate` and `Undo` are the `static` functions that apply and undo the relocations.
+
+`supplement.tsv` now lists all 38 as `verified`, each with its evidence. The `static` name `HandleReverb` stays out (appendix F).
+
+| US | PAL | size | name |
+|---|---|---|---|
+| `0x801676BC` | `0x80169F6C` | `0x4` | `OSNotifyLink` |
+| `0x801676C0` | `0x80169F70` | `0x4` | `OSNotifyUnlink` |
+| `0x801676C4` | `0x80169F74` | `0x2BC` | `Relocate` (`static`) |
+| `0x80167980` | `0x8016A230` | `0x2E0` | `Link` (`static`) |
+| `0x80167C84` | `0x8016A534` | `0x238` | `Undo` (`static`) |
+| `0x80177658` | `0x80179EC0` | `0x34` | `__AXGetAuxAInput` |
+| `0x8017768C` | `0x80179EF4` | `0x20` | `__AXGetAuxAInputDpl2` |
+| `0x801776AC` | `0x80179F14` | `0x1C` | `__AXGetAuxAOutput` |
+| `0x801776C8` | `0x80179F30` | `0x20` | `__AXGetAuxAOutputDpl2R` |
+| `0x801776E8` | `0x80179F50` | `0x20` | `__AXGetAuxAOutputDpl2Ls` |
+| `0x80177708` | `0x80179F70` | `0x20` | `__AXGetAuxAOutputDpl2Rs` |
+| `0x80177728` | `0x80179F90` | `0x34` | `__AXGetAuxBInput` |
+| `0x8017775C` | `0x80179FC4` | `0x1C` | `__AXGetAuxBOutput` |
+| `0x80177778` | `0x80179FE0` | `0x1C` | `__AXGetAuxBForDPL2` |
+| `0x80177794` | `0x80179FFC` | `0x1C` | `__AXGetAuxBOutputDPL2` |
+| `0x8017894C` | `0x8017B1B4` | `0x3F8` | `__AXPrintStudio` |
+| `0x8017A3E4` | `0x8017CC4C` | `0x588` | `ReverbHICreate` |
+| `0x8017A96C` | `0x8017D1D4` | `0x190` | `DoCrossTalk` |
+| `0x8017B008` | `0x8017D870` | `0x124` | `ReverbHIFree` |
+| `0x8017B12C` | `0x8017D994` | `0x70` | `AXFXReverbHiInit` |
+| `0x8017B19C` | `0x8017DA04` | `0x4C` | `AXFXReverbHiShutdown` |
+| `0x8017B1E8` | `0x8017DA50` | `0x104` | `AXFXReverbHiCallback` |
+| `0x8017B2EC` | `0x8017DB54` | `0x47C` | `ReverbSTDCreate` |
+| `0x8017BB1C` | `0x8017E384` | `0x124` | `ReverbSTDFree` |
+| `0x8017BC40` | `0x8017E4A8` | `0x6C` | `AXFXReverbStdInit` |
+| `0x8017BCAC` | `0x8017E514` | `0x4C` | `AXFXReverbStdShutdown` |
+| `0x8017BCF8` | `0x8017E560` | `0x30` | `AXFXReverbStdCallback` |
+| `0x8017C0AC` | `0x8017E914` | `0x248` | `AXFXChorusInit` |
+| `0x8017C2F4` | `0x8017EB5C` | `0x50` | `AXFXChorusShutdown` |
+| `0x8017C344` | `0x8017EBAC` | `0x110` | `AXFXChorusSettings` |
+| `0x8017C454` | `0x8017ECBC` | `0x350` | `AXFXChorusCallback` |
+| `0x8017C7A4` | `0x8017F00C` | `0x1D0` | `AXFXDelayCallback` |
+| `0x8017C974` | `0x8017F1DC` | `0x2C8` | `AXFXDelaySettings` |
+| `0x8017CC3C` | `0x8017F4A4` | `0x48` | `AXFXDelayInit` |
+| `0x8017CC84` | `0x8017F4EC` | `0xA0` | `AXFXDelayShutdown` |
+| `0x8017DDE8` | `0x80180650` | `0xF0` | `__CARDReadVendorID` |
+| `0x8017EE40` | `0x801816A8` | `0x34` | `CARDSetFastMode` |
+| `0x8017EE74` | `0x801816DC` | `0x1C` | `CARDGetFastMode` |
+
+US addresses: PAL − `0x28B0` for `OSLink.c`, PAL − `0x2868` for AX, AXFX and CARD (appendix E).
