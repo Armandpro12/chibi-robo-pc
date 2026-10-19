@@ -2,7 +2,7 @@
 # (tools/run.py --user-seed <party run>/user): the save made at the end of the first night. Title screen, Load Game,
 # file 1 (LEFT then RIGHT: there and back, as in load-game.scn), the game resumes in the Chibi-House (stage 5).
 # Chibi-Robo walks out down the stairs (stick down-right): stage 7, the living room, whose code is a REL module, so
-# the game links stage07.rel (first OSLink of a new game); the first-visit cutscene and Telly's lines (A every 54
+# the game links stage07.rel (first OSLink of a new game); the first-visit cutscene and the guide's lines (A every 54
 # frames), then stick up into the Chibi-House again (stage 5: OSUnlink of stage07), and out again (stick down: a
 # second OSLink of stage07). Checks it with "--trace dvd -- --hle-trace" (play/README.md).
 # Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
@@ -21,7 +21,7 @@ input 2850 LEFT 5    # file selection: file 1 -> file 3 (the cursor wraps around
 input 2900 RIGHT 5   # ... and back to file 1
 input 2950 A 10      # load file 1
 input 3150 SDOWN+SRIGHT 300   # Chibi-House: down the stairs, out to the living room
-input 3580 A 5       # living room: Telly's lines
+input 3580 A 5       # living room: the guide's lines
 input 3634 A 5
 input 3688 A 5
 input 3742 A 5

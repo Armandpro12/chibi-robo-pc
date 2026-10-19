@@ -20,13 +20,14 @@ two version folders is the same logical route.
 Scenarios (same name in `GGTE01/` and `GGTP01/`):
 
 - `first-task`: new game, birthday cutscene, the first task (the flower on the party table), Chibi-Copter tutorial.
-- `party`: `first-task`, then the rose given to Jenny and the end of the party, the first change of stage
+- `party`: `first-task`, then the rose given to the girl and the end of the party, the first change of stage
   (stage 14 to stage 5, the Chibi-House) and the first save (file 1). No REL module is loaded during it (stages
   14 and 5 have none).
 - `house-exit` (`after party`): Load Game, file 1, out of the Chibi-House to the living room (stage 7: first link
   of `stage07.rel`), back into the Chibi-House (unlink), out again (second link).
+- `staff-credits`: loads any save into the credits movie with `--stage staff-credit` (see the header of the file).
 
 Hints for writing a route: the stick directions are relative to the camera, which turns while Chibi-Robo walks;
-A with the stick pushed jumps; in these runs, A next to a "!" icon did nothing while the Chibi-Copter was equipped and
-talked once B had put it away.
+A with the stick pushed jumps; in these runs, A next to a "!" icon did nothing until B had put the Chibi-Copter away (that the equipped
+copter is the cause is only a hypothesis).
 In the Chibi-House, A next to the charger starts the ranking and save dialogue: no A there once Chibi-Robo is free.

@@ -1,14 +1,14 @@
 # Scenario "party" (US, milestone 8, playable game with replayed inputs): the whole birthday party (stage 14) of a new
 # game, from the title screen to the first change of stage. It replays play/GGTE01/first-task.scn (frames up to 11650)
-# then gives the rose to Jenny (the task Telly gives next), the candles, the end-of-party text on a black screen,
+# then gives the rose to the girl (the task the guide gives next), the candles, the end-of-party text on a black screen,
 # and the script's warp to stage 5 (the Chibi-House, first night), then the first save of the game: A through
-# Telly's lines, yes to the save offer, file 1, overwrite (the game created file 1 when the new game started; the
+# the guide's lines, yes to the save offer, file 1, overwrite (the game created file 1 when the new game started; the
 # cursor starts on no, LEFT selects yes), A: ends when the save is complete. The user folder of this run (saves/)
 # is the starting point of the chained progression scenarios ("after party", e.g. house-exit).
 # Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
 # Route from the vase (directions are relative to the camera, which turns as Chibi-Robo walks): stick up-left behind
-# the cake, up, then left twice to reach the table edge on Mrs. Sanderson's side, then up along the edge until the
-# "!" icon shows next to Jenny. B puts the Chibi-Copter away (copter equipped, A at the "!" did nothing in our runs),
+# the cake, up, then left twice to reach the table edge on the woman's side, then up along the edge until the
+# "!" icon shows next to the girl. B puts the Chibi-Copter away (observed: A at the "!" did nothing in our runs until B was pressed; that the equipped Chibi-Copter is the cause is only a hypothesis),
 # then A every 45 frames: talk, the give prompt, item menu (the rose is selected), every dialogue box.
 # Not run by tools/ab.py (progression scenario, see play/README.md); run it with tools/run.py --scenario <this file>.
 # Recorded on GGTE01; the PAL version of the same route is play/GGTP01/party.scn.

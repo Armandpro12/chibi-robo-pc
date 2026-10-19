@@ -1,5 +1,5 @@
 # Scenario "first-task" (PAL, milestone 8, playable game with replayed inputs): a new game played past the end of the
-# birthday cutscene, through the first task Telly gives (fetch the flower from the vase on the party table), up to the
+# birthday cutscene, through the first task the guide gives (fetch the flower from the vase on the party table), up to the
 # Chibi-Copter tutorial. Fresh user folder, native memory card (the game creates its save as in "new-game").
 # Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
 # Same logical route as play/GGTE01/first-task.scn, with PAL frame numbers (the camera and the distances per frame
