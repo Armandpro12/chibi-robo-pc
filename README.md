@@ -126,17 +126,20 @@ until the new copy is in place. What happens when an installation does not compl
   as it was (whatever Setup had already replaced is put back: the disc image, `disc/` and `manifest.json`, the
   executable, its DLLs and `BUILD-INFO.txt`; Setup keeps each previous file as `<name>.old` until the installation is complete, because
   Inno Setup's own rollback does not restore a file it has overwritten). So a failed update to the other version
-  (US to PAL, or the reverse) never leaves an executable of one version with the disc image of the other. Its
-  Programs-list entry is not expected to change (Setup does not write it when the installation failed; only checked
+  (US to PAL, or the reverse) is not expected to leave an executable of one version with the disc image of the
+  other (tested with simulated failures only, see below; not tested with a real cancel, a locked file or a power
+  loss). Its Programs-list entry is not expected to change (Setup does not write it when the installation failed; only checked
   in Setup's log so far, not in the registry). If a previous file cannot be put back (for example because it is
-  open in another program), Setup says so and keeps it as `<name>.old`: run the installer again, which puts it back
-  first;
+  open in another program), Setup keeps it as `<name>.old` and says so when it stops with an error; if Setup was
+  cancelled or stopped in another way, the message may only be written to Setup's log. Run the installer again,
+  which puts it back first;
 - a first installation into a new folder that does not complete in any of these ways leaves nothing behind in that
   folder: the folder is removed, and so are the parent folders Setup created for it if they are empty; no
   uninstaller is left, and no Programs-list entry is expected (Setup does not write it for a failed installation;
   only checked in Setup's log so far);
 - after a power loss or a crash during the installation, nothing is guaranteed: run the installer again over the
-  same folder, which puts back the previous files left as `<name>.old` (or finishes an interrupted replacement) and
+  same folder, which puts back a previous file left as `<name>.old` when the file itself is missing (when both
+  exist after an interruption, the `<name>.old` is discarded and the file is replaced by the new installation) and
   repairs the installation (a first installation interrupted that way has no uninstaller yet).
 
 A folder that exists but cannot be listed (access denied) is refused like a folder that holds other files.
