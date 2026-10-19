@@ -12,7 +12,11 @@
  *                                    indirectly referenced memory, unloaded modules, handles; comment stream = the
  *                                    whole native event ring);
  *   crash-<date>-<pid>-guest-ram.bin guest main memory (MEM1 and the area of the REL modules), raw, big-endian;
- *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game keeps running;
+ *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game is not killed, but every
+ *                                    other thread is suspended while their state is copied (at most
+ *                                    GCRT_CRASH_SUSPEND_LIMIT, default 5 s) and, for a game-loop hang, again while the
+ *                                    minidump is written, if it is; a start-up hang report is text only (no .dmp),
+ *                                    see below;
  *   crash-signatures.txt             one line per crash (signature, date): recurrence detection.
  * Text report: cause, exception, faulting address (module + offset), recurrence ("same signature as the crash of
  * <date>"), executable (name, SHA-1, PE time stamp, build commit), processor, microcode revision and firmware (read
@@ -36,10 +40,15 @@
  *
  * Variables: GCRT_CRASH_HANDLER=0 disables the handler and the watchdog (to let a debugger or Windows Error Reporting
  * see the exception first); GCRT_WATCHDOG=<seconds> without progress of the game loop before a hang report (default
- * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached);
+ * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached); before the game loop
+ * starts, the start-up (window creation, setup menu, game boot up to its first frame, gcrt_diag.h) is watched the
+ * same way, with GCRT_WATCHDOG_STARTUP=<seconds> (default: GCRT_WATCHDOG, at least 60; 0 = off; GCRT_WATCHDOG=0 turns
+ * both off);
  * GCRT_CRASH_SUSPEND_LIMIT=<seconds> the other threads may stay suspended while a report copies their state (default
- * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted (a report never freezes
- * the game).
+ * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted.
+ * A start-up hang report is text only: an in-process minidump suspends every other thread for the whole dump and can
+ * block for ever on a lock one of them holds, so it would turn a slow start-up into a freeze. A game-loop hang report
+ * writes a minidump last, only if the game loop is still stopped then; that step is not bounded (same risk).
  * Windows only; elsewhere the functions do nothing.
  */
 #ifndef GCRT_CRASH_H
@@ -64,10 +73,16 @@ void gcrt_crash_handler_set_default_dir(const char* dir_utf8);
 typedef const char* (*GcrtGuestSymbolizer)(u32 address, u32* start);
 void gcrt_crash_handler_set_guest_symbolizer(GcrtGuestSymbolizer fn);
 /* Extra lines written into the report by the platform (frames presented, guest time...): `write` appends text with
-   the provided function. Called from the reporting thread while the game thread is stopped. */
+   the provided function. Called from the reporting thread (the game thread stopped in a crash report, running in a
+   hang report), until gcrt_crash_handler_game_over. */
 typedef void (*GcrtCrashAppend)(void* sink, const char* text);
 typedef void (*GcrtCrashContextFn)(void* user, GcrtCrashAppend append, void* sink);
 void gcrt_crash_handler_set_context(GcrtCrashContextFn fn, void* user);
+/* The game has ended (the platform detaches) or will not run: the watchdog writes no more hang reports, and the guest
+   state (install) and the platform context (set_context) are forgotten as soon as a report in progress no longer
+   reads them (bounded wait: 60 s of wall-clock time), so that the caller may free them. Later reports (a crash during the exit) have
+   neither. */
+void gcrt_crash_handler_game_over(void);
 /* Process memory (working set, private bytes in bytes, handles); false if unavailable. */
 bool gcrt_process_memory(u64* working_set, u64* private_bytes, u32* handles);
 

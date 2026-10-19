@@ -153,9 +153,12 @@ folder is known. Only the 5 most recent reports are kept. A report has three fil
 - `crash-<date>-<time>-<pid>.dmp` (minidump) and `crash-<date>-<time>-<pid>-guest-ram.bin` (game memory): they
   contain game data and local paths. **Never publish them**; if a developer asks for them, send them privately.
 
-If the game stops progressing for 60 seconds (a freeze), a `hang-<date>-<time>-<pid>.txt` report (and `.dmp`) is
-written in the same folder while the game keeps running; `GCRT_WATCHDOG=<seconds>` changes the delay (`0` turns it
-off).
+If the game loop stops progressing for 60 seconds (a freeze), a `hang-<date>-<time>-<pid>.txt` report is written in
+the same folder, followed by a `.dmp` if the game is still stopped by then. The game is not killed, but it is paused
+while the report copies the state of its threads (at most a few seconds) and while the `.dmp` is written.
+`GCRT_WATCHDOG=<seconds>` changes the delay (`0` turns off both watchdogs). The start-up (window, setup menu, game
+boot up to its first frame) is watched too, with `GCRT_WATCHDOG_STARTUP=<seconds>` (default: `GCRT_WATCHDOG`, at
+least 60; `0` turns it off); a start-up report is a `.txt` only, never a `.dmp`.
 
 `GCRT_CRASH_DIR` chooses another folder. For developers, `tools/crash_inspect.py <report.dmp>` decodes the faulting
 instruction of a minidump, checks whether it explains the fault and lists the memory regions, the threads and the

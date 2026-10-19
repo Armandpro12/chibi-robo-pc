@@ -19,6 +19,10 @@
 //    to stderr, marks the .txt as incomplete and lets the process end as usual;
 //  - the text report is written first, section by section (whatever was composed is on disk if a later step hangs or
 //    faults), then the minidump, then the guest memory; the risky steps of phase 2 are guarded by SEH;
+//  - the in-process minidump suspends every other thread for the whole dump and is not bounded: none in a start-up
+//    hang report, none in a game-loop hang report if the game loop progressed again meanwhile (see do_report);
+//  - a report reads the guest state and the platform context under g_state_lock, and the end of the game forgets them
+//    under it before they are freed; a fault of the reporting thread itself only cuts its report (guarded_do_report);
 //  - if the folder cannot be written, the temporary folder is tried, then the report goes to stderr only; if the
 //    reporting thread does not answer, the faulting thread writes what was composed to stderr itself.
 #include "gcrt_crash.h"
@@ -59,6 +63,26 @@ DWORD g_game_thread = 0;
 GcrtGuestSymbolizer g_symbolizer = nullptr;
 GcrtCrashContextFn g_context_fn = nullptr;
 void* g_context_user = nullptr;
+// Guest state (g_cpu) and platform context (g_context_fn): a report reads them under this lock (shared, reporting
+// thread only), the game's end forgets them under it (exclusive, gcrt_crash_handler_game_over), so that a report still
+// being written when the game ends never reads them once freed (a start-up report slowed down on a busy computer was
+// seen still running at the exit, and the process then ended with an access violation instead of its exit code; the
+// platform deleted its context under it). Slim reader/writer locks do not allocate.
+SRWLOCK g_state_lock = SRWLOCK_INIT;
+bool g_state_locked = false;    // held (shared) by the reporting thread
+volatile LONG g_game_over = 0;  // the game ended: no more hang reports
+void state_lock() {
+  if (!g_state_locked) {
+    AcquireSRWLockShared(&g_state_lock);
+    g_state_locked = true;
+  }
+}
+void state_unlock() {
+  if (g_state_locked) {
+    g_state_locked = false;
+    ReleaseSRWLockShared(&g_state_lock);
+  }
+}
 volatile LONG g_reporting = 0; // 0 idle, 1 crash report, 2 hang report
 volatile LONG g_crash_finished = 0; // the crash report is complete (the process is about to end)
 bool g_installed = false;
@@ -1047,7 +1071,8 @@ DWORD g_suspend_limit_ms = 5000;     // GCRT_CRASH_SUSPEND_LIMIT (seconds)
 DWORD g_guard_tid = 0;
 DWORD g_watchdog_tid = 0;
 // Test (GCRT_CRASH_TEST_SUSPENDED): what the reporting thread does while the other threads are suspended. 0 nothing,
-// > 0 sleep that many ms, -1 a 1 MiB allocation on the process heap (the defect the guard protects against).
+// > 0 sleep that many ms, -1 ("heap") a 1 MiB allocation on the process heap (the defect the guard protects against),
+// -2 ("fault") a fault of the reporting thread (the report is cut, the threads resumed, the game left running).
 long g_test_suspended = 0;
 // Result of the last capture.
 int g_suspended_count = 0;
@@ -1244,8 +1269,10 @@ void capture_threads(DWORD faulting, bool copy_guest) {
   }
   if (g_test_suspended > 0) {
     Sleep(static_cast<DWORD>(g_test_suspended));
-  } else if (g_test_suspended < 0) {
+  } else if (g_test_suspended == -1) {
     HeapFree(GetProcessHeap(), 0, HeapAlloc(GetProcessHeap(), 0, 1u << 20));
+  } else if (g_test_suspended == -2) {
+    *static_cast<volatile int*>(nullptr) = 0; // a fault of the reporting thread itself (guarded_do_report)
   }
   resume_threads();
   // Read before the guard is told: a guard waking up after this point finds nothing left to resume.
@@ -1366,9 +1393,14 @@ struct CrashInput {
   wchar_t stem[MAX_PATH * 2];
 };
 CrashInput g_in;
+// Set by the watchdog before a hang report: the start-up stopped, not the game loop; and the beat it saw (to tell,
+// before the minidump, whether the game loop progressed again during the report).
+bool g_hang_in_startup = false;
+uint64_t g_hang_beat = 0;
 HANDLE g_request = nullptr; // auto-reset: a report is requested
 HANDLE g_done = nullptr;    // auto-reset: the report is finished
 DWORD g_reporter_tid = 0;
+HANDLE g_reporter = nullptr; // the reporting thread (priority raised by run_report)
 alignas(16) CONTEXT g_capture_ctx; // context captured by abort/terminate/purecall/invalid parameter
 EXCEPTION_RECORD g_capture_rec;
 EXCEPTION_POINTERS g_capture_ptrs;
@@ -1517,6 +1549,7 @@ void do_report() {
   g_report_len = 0;
   g_report_flushed = 0;
   g_phase1_done = 0;
+  state_lock(); // guest state and platform context stay valid until the text is written (g_state_lock)
 
   // Header, without the heap (the faulting thread may hold its lock): file created relative to the folder handle,
   // text in the fixed buffer, host addresses described with the module list of the startup (refreshed below).
@@ -1543,8 +1576,18 @@ void do_report() {
               : "");
     }
   } else {
-    out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game keeps running\n",
-        g_in.hang_seconds);
+    if (g_hang_in_startup) {
+      out("no exception: the start-up (window creation, setup menu, game boot up to its first frame) made no progress "
+          "for %u s (GCRT_WATCHDOG_STARTUP); the game is not killed: the other threads are suspended only while their "
+          "state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT), and a start-up report is text only (no minidump)\n",
+          g_in.hang_seconds);
+    } else {
+      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is not killed, but the "
+          "other threads are suspended while their state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT) and again, "
+          "without bound, while the minidump is written (last, and only if the game loop is still stopped then; see "
+          "the minidump line)\n",
+          g_in.hang_seconds);
+    }
   }
   const bool game_faulted = !hang && g_in.thread == g_game_thread;
   out("%s thread id %lu%s\n", hang ? "watched" : "faulting", static_cast<unsigned long>(g_in.thread),
@@ -1654,6 +1697,7 @@ void do_report() {
   }
   flush_text();
   g_phase1_done = 1;
+  state_unlock(); // the minidump below may take long or, in a hang report, block: the game's end must not wait for it
   if (hang) {
     // Activable trace (GCRT_TRACE platform), once the text is on disk (it may allocate). Hang reports only: after a
     // crash, the faulting thread may hold a lock of the trace output.
@@ -1664,6 +1708,10 @@ void do_report() {
   // Phase 2 (may allocate; guarded): symbolized stack, modules, minidump, guest memory, signature history.
   SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
   SymInitialize(process, nullptr, TRUE); // may fail if already initialized (host profiler): symbols still usable
+  // Kept for hang reports too, though they have no faulting thread to symbolize: it allocates on the process heap,
+  // so a thread holding the heap lock (still running here) is waited for before the minidump suspends it; without
+  // it, the hangheap test froze for ever in MiniDumpWriteDump (it suspends every other thread, the suspension guard
+  // included, then needs the heap). Not a guarantee: the lock can be taken again just before the dump.
   if (ctx != nullptr) {
     out("\n== Host call stack of the faulting thread (dbghelp, function names when a PDB is present)\n");
     if (!guarded_symbolized_stack(process, ctx, g_in.thread)) {
@@ -1680,7 +1728,30 @@ void do_report() {
   flush_text();
   close_threads();
 
-  if (g_in.stem[0] != 0) {
+  // An in-process MiniDumpWriteDump suspends every other thread of the process for the whole dump (seen: suspend
+  // count 1 and no progress of a counting thread, read from a minidump callback) and then needs the heap and the
+  // loader lock itself (version
+  // resources, module list): a thread it suspended while holding one of those locks blocks it, and the game, for
+  // ever (seen in start-up reports: the main thread suspended inside RtlAllocateHeap or the delay-load resolver).
+  // Microsoft Learn (MiniDumpWriteDump, Remarks) advises against calling it in the target process for that reason.
+  // A crash report keeps it (the process ends anyway, the faulting thread waits at most kReportWaitMs). A hang report
+  // must leave a running game running: none for the start-up (it is alive in almost every case, a slow window
+  // creation or setup menu, and its threads allocate all the time; the raw stacks above are what matters), and none
+  // for the game loop either if it progressed again while the text was written (the game is running again).
+  const char* no_dump = nullptr;
+  if (hang && g_hang_in_startup) {
+    no_dump = "start-up hang report: an in-process minidump suspends every other thread while it is written, and a "
+              "thread suspended while holding the heap or loader lock would block it and the game for ever; the raw "
+              "stacks of every thread are above";
+  } else if (hang && g_gcrt_heartbeat != g_hang_beat) {
+    no_dump = "the game loop progressed again while this report was written: a minidump would suspend a running game";
+  }
+  if (g_in.stem[0] != 0 && no_dump != nullptr) {
+    out("\nminidump: not written (%s)\n", no_dump);
+    flush_text();
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "hang report: no minidump (%s)",
+                      g_hang_in_startup ? "start-up report" : "the game loop progressed again");
+  } else if (g_in.stem[0] != 0) {
     // Comment stream of the minidump: the whole event ring (the .txt holds the last kTextEvents).
     g_events_full_len = 0;
     g_out_buf = g_events_full;
@@ -1730,10 +1801,14 @@ void do_report() {
       out(" (error %lu)\n", static_cast<unsigned long>(dump_error));
     }
     flush_text();
-    if (!hang && g_cpu != nullptr && g_cpu->state.ram != nullptr) {
-      swprintf_s(path, L"%s-guest-ram.bin", g_in.stem);
-      write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
-      out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
+    if (!hang) {
+      state_lock();
+      if (g_cpu != nullptr && g_cpu->state.ram != nullptr) {
+        swprintf_s(path, L"%s-guest-ram.bin", g_in.stem);
+        write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
+        out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
+      }
+      state_unlock();
     }
     if (!hang && g_dir[0] != 0) {
       append_signature(st);
@@ -1749,13 +1824,63 @@ void do_report() {
   }
   char where_files[MAX_PATH * 2];
   WideCharToMultiByte(CP_UTF8, 0, g_in.stem, -1, where_files, sizeof(where_files), nullptr, nullptr);
-  std::fprintf(stderr, "gcrt: %s report written: %s.txt (.dmp%s)\n", hang ? "hang" : "crash", where_files,
-               hang ? "" : ", -guest-ram.bin");
+  std::fprintf(stderr, "gcrt: %s report written: %s.txt (%s)\n", hang ? "hang" : "crash", where_files,
+               no_dump != nullptr ? "text only" : hang ? ".dmp" : ".dmp, -guest-ram.bin");
   std::fflush(stderr);
 }
 
+// A fault inside the reporting thread (a state changed or freed under it) cuts the report instead of ending the
+// process with the reporting thread's exception (the unhandled filter does not report the reporting thread): what is
+// written stays, the threads it suspended are resumed, and a hang report leaves the game running.
+DWORD g_cut_code = 0;
+void* g_cut_address = nullptr;
+
+int cut_filter(EXCEPTION_POINTERS* e) {
+  g_cut_code = e->ExceptionRecord->ExceptionCode;
+  g_cut_address = e->ExceptionRecord->ExceptionAddress;
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
+void report_cut() {
+  resume_threads();
+  if (g_suspend_end != nullptr) {
+    SetEvent(g_suspend_end);
+  }
+  state_unlock();
+  g_out_buf = g_report;
+  g_out_cap = kReportSize;
+  g_out_len = &g_report_len;
+  char where[400] = "";
+  describe_host_address(reinterpret_cast<DWORD64>(g_cut_address), where, sizeof(where));
+  char line[600];
+  const int n = std::snprintf(line, sizeof(line),
+                              "\ngcrt: report cut: the reporting thread faulted (exception 0x%08lX at %s); the %s\n",
+                              static_cast<unsigned long>(g_cut_code), where,
+                              g_in.cause == Cause::Hang ? "game is left running" : "process ends as usual");
+  out("%s", line + 1);
+  flush_text();
+  if (g_txt != INVALID_HANDLE_VALUE) {
+    CloseHandle(g_txt);
+    g_txt = INVALID_HANDLE_VALUE;
+  }
+  HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+  DWORD written = 0;
+  if (err != nullptr && err != INVALID_HANDLE_VALUE && n > 0) {
+    WriteFile(err, line, static_cast<DWORD>(std::min<int>(n, static_cast<int>(sizeof(line)) - 1)), &written, nullptr);
+  }
+}
+
+void guarded_do_report() {
+  __try {
+    do_report();
+  } __except (cut_filter(GetExceptionInformation())) {
+    report_cut();
+  }
+}
+
 DWORD WINAPI reporter_main(LPVOID) {
-  // Executable fingerprint, once, at low priority (reads the file).
+  // Executable fingerprint, once, at low priority (reads the file); a report requested meanwhile raises the priority
+  // (run_report): on a busy computer the fingerprint alone could otherwise delay it for minutes.
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
   wchar_t wpath[MAX_PATH * 2] = L"";
   const DWORD len = GetModuleFileNameW(nullptr, wpath, MAX_PATH * 2);
@@ -1770,11 +1895,11 @@ DWORD WINAPI reporter_main(LPVOID) {
     if (WaitForSingleObject(g_request, INFINITE) != WAIT_OBJECT_0) {
       return 0;
     }
-    do_report();
+    guarded_do_report();
     const bool hang = g_in.cause == Cause::Hang;
     SetEvent(g_done); // before g_reporting is released: the next report resets g_done once it owns g_reporting
     if (hang) {
-      InterlockedExchange(&g_reporting, 0); // the game keeps running: later hangs or crashes can be reported
+      InterlockedExchange(&g_reporting, 0); // the game was not killed: later hangs or crashes can be reported
     }
   }
 }
@@ -1819,6 +1944,9 @@ void run_report(EXCEPTION_POINTERS* info, Cause cause, DWORD thread, unsigned ha
   g_in.hang_seconds = hang_seconds;
   if (g_request != nullptr && g_done != nullptr) {
     ResetEvent(g_done); // a late end of an earlier report (after its wait expired) must not end this wait
+    if (g_reporter != nullptr) {
+      SetThreadPriority(g_reporter, THREAD_PRIORITY_HIGHEST); // it may still be at its low-priority start
+    }
     SetEvent(g_request);
     if (WaitForSingleObject(g_done, kReportWaitMs) != WAIT_OBJECT_0 && !g_phase1_done) {
       // The reporting thread did not finish phase 1 (blocked, e.g. on a lock held by the faulting thread): what is
@@ -1893,40 +2021,61 @@ void __cdecl on_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*
 
 // --- Hang watchdog ------------------------------------------------------------------------------------------------
 unsigned g_watchdog_seconds = 0;
+unsigned g_startup_watchdog_seconds = 0; // before the game loop: GCRT_WATCHDOG_STARTUP, else max(GCRT_WATCHDOG, 60)
 constexpr int kMaxHangReports = 3;
 
 DWORD WINAPI watchdog_main(LPVOID) {
-  uint64_t last = g_gcrt_heartbeat;
+  uint64_t last = 0;
+  bool lastStartup = true;
   unsigned still = 0;
   bool reported = false;
   int reports = 0;
   for (;;) {
     // Counting sleeps, not clock time: after a system sleep or hibernation only one more tick has passed.
     Sleep(1000);
-    const uint64_t beat = g_gcrt_heartbeat;
-    if (beat == 0) {
-      continue; // the game loop has not started (setup menu, boot)
+    if (g_game_over != 0) {
+      return 0; // the game ended (gcrt_crash_handler_game_over): the exit is not watched
     }
-    if (beat != last) {
+    // Before the game loop beats: the start-up beat (gcrt_diag.h), armed when the platform starts opening the window,
+    // then window creation, setup menu passes, input and console set-up; its last beat comes at the end of the
+    // platform attachment, so the game's boot up to its first frame is watched as start-up too (with the start-up
+    // threshold, at least 60 s by default: a freeze there gets a report; a slow boot on a busy computer does not).
+    // Before the first beat (process start, disc and executable loading), nothing is watched.
+    const uint64_t loop = g_gcrt_heartbeat;
+    const bool startup = loop == 0;
+    const uint64_t beat = startup ? g_gcrt_startup_beat : loop;
+    if (beat == 0) {
+      continue;
+    }
+    if (beat != last || startup != lastStartup) {
       if (reported) {
-        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: the game loop progresses again after %u s", still);
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: the %s progresses again after %u s",
+                          lastStartup ? "start-up" : "game loop", still);
       }
       last = beat;
+      lastStartup = startup;
       still = 0;
       reported = false;
       continue;
     }
     still++;
-    if (still == g_watchdog_seconds && !reported) {
+    if (still == (startup ? g_startup_watchdog_seconds : g_watchdog_seconds) && !reported) {
       reported = true;
       if (IsDebuggerPresent()) {
         continue; // a breakpoint is not a hang
       }
-      gcrt_diag_event(GCRT_EV_WATCHDOG, still, 0);
-      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the game loop for %u s%s", still,
-                        reports < kMaxHangReports ? ", writing a hang report (the game keeps running)" : "");
+      gcrt_diag_event(GCRT_EV_WATCHDOG, still, startup ? 1u : 0u);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the %s for %u s%s",
+                        startup ? "start-up (window creation, setup menu, game boot)" : "game loop", still,
+                        reports >= kMaxHangReports ? ""
+                        : startup ? ", writing a hang report, text only (the game is not killed; its threads are "
+                                    "suspended while their state is copied)"
+                                  : ", writing a hang report (the game is not killed; its threads are suspended while "
+                                    "their state is copied and while the minidump, if any, is written)");
       if (reports < kMaxHangReports) {
         reports++;
+        g_hang_in_startup = startup;
+        g_hang_beat = beat;
         run_report(nullptr, Cause::Hang, g_game_thread, still);
       }
     }
@@ -1981,7 +2130,7 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   HANDLE t = CreateThread(nullptr, 1 << 20, reporter_main, nullptr, 0, &g_reporter_tid);
   if (t != nullptr) {
     SetThreadDescription(t, L"gcrt crash reporter");
-    CloseHandle(t);
+    g_reporter = t; // kept open for the life of the process
   } else {
     CloseHandle(g_request);
     CloseHandle(g_done);
@@ -1993,7 +2142,9 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
     g_suspend_limit_ms = static_cast<DWORD>(std::min<unsigned long>(std::max<unsigned long>(s, 1ul), 3600ul) * 1000ul);
   }
   if (env_set(L"GCRT_CRASH_TEST_SUSPENDED", buf, 32)) {
-    g_test_suspended = _wcsicmp(buf, L"heap") == 0 ? -1 : static_cast<long>(wcstoul(buf, nullptr, 10));
+    g_test_suspended = _wcsicmp(buf, L"heap") == 0    ? -1
+                       : _wcsicmp(buf, L"fault") == 0 ? -2
+                                                      : static_cast<long>(wcstoul(buf, nullptr, 10));
   }
   g_suspend_begin = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   g_suspend_end = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -2020,6 +2171,13 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   g_watchdog_seconds = 60;
   if (env_set(L"GCRT_WATCHDOG", buf, 32)) {
     g_watchdog_seconds = static_cast<unsigned>(wcstoul(buf, nullptr, 10));
+  }
+  // Start-up (window creation, setup menu): at least 60 s, so that the short GCRT_WATCHDOG of the tests of the game
+  // loop hang (a few seconds) does not also report a slow window creation on a busy computer; GCRT_WATCHDOG_STARTUP
+  // sets it apart (test of this watch). Off with GCRT_WATCHDOG=0.
+  g_startup_watchdog_seconds = g_watchdog_seconds > 60 ? g_watchdog_seconds : 60;
+  if (env_set(L"GCRT_WATCHDOG_STARTUP", buf, 32)) {
+    g_startup_watchdog_seconds = static_cast<unsigned>(wcstoul(buf, nullptr, 10));
   }
   if (g_watchdog_seconds > 0) {
     HANDLE w = CreateThread(nullptr, 64 * 1024, watchdog_main, nullptr, 0, &g_watchdog_tid);
@@ -2068,6 +2226,42 @@ extern "C" void gcrt_crash_handler_set_context(GcrtCrashContextFn fn, void* user
   g_context_user = user;
 }
 
+extern "C" void gcrt_crash_handler_game_over(void) {
+  InterlockedExchange(&g_game_over, 1);
+  if (GetCurrentThreadId() == g_reporter_tid) {
+    return;
+  }
+  // Polling, never blocking: a report in progress holds the lock (shared) only while it writes its text, which has no
+  // unbounded wait (the suspension is bounded by the guard); past kReportWaitMs of wall-clock time (GetTickCount64,
+  // not a count of Sleep calls, whose real length depends on the timer resolution) the state is forgotten anyway and a
+  // fault of the reporting thread on it only cuts that report (guarded_do_report).
+  const ULONGLONG start = GetTickCount64();
+  bool locked = TryAcquireSRWLockExclusive(&g_state_lock) != 0;
+  const bool waited = !locked;
+  if (waited) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: end of the game: a report in progress reads the game "
+                      "state, waiting for it (at most %d s)", kReportWaitMs / 1000);
+  }
+  while (!locked && GetTickCount64() - start < static_cast<ULONGLONG>(kReportWaitMs)) {
+    Sleep(10);
+    locked = TryAcquireSRWLockExclusive(&g_state_lock) != 0;
+  }
+  const double waited_s = static_cast<double>(GetTickCount64() - start) / 1000.0;
+  g_cpu = nullptr;
+  g_context_fn = nullptr;
+  g_context_user = nullptr;
+  if (locked) {
+    ReleaseSRWLockExclusive(&g_state_lock);
+    if (waited) {
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: end of the game: waited %.2f s for the report in "
+                        "progress to be done with the game state", waited_s);
+    }
+  } else {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: a report was still being written %.2f s after the end of "
+                      "the game; the game state is released anyway", waited_s);
+  }
+}
+
 extern "C" void gcrt_crash_handler_set_gpu_info(const char* text) {
   if (text == nullptr) {
     return;
@@ -2112,6 +2306,7 @@ extern "C" void gcrt_crash_handler_rearm(void) {}
 extern "C" void gcrt_crash_handler_set_default_dir(const char*) {}
 extern "C" void gcrt_crash_handler_set_guest_symbolizer(GcrtGuestSymbolizer) {}
 extern "C" void gcrt_crash_handler_set_context(GcrtCrashContextFn, void*) {}
+extern "C" void gcrt_crash_handler_game_over(void) {}
 extern "C" void gcrt_crash_handler_set_gpu_info(const char*) {}
 extern "C" bool gcrt_process_memory(u64*, u64*, u32*) { return false; }
 

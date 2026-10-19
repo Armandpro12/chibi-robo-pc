@@ -1000,9 +1000,15 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   if (!p->captureTimes.empty() || !p->captureFrames.empty() || !p->captureFields.empty()) {
     fs::create_directories(p->captureDir, ec);
   }
+  // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
+  // Chosen before the window opens: a hang report of the start-up (window creation, setup menu) lands there too.
+  if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
+    gcrt_crash_handler_set_default_dir((std::string(userDir) + "crashes").c_str());
+  }
   if (!gcrt::platform::host_init(host)) {
     // The window was closed from the setup menu, before the game started: quit without running it.
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
+    gcrt_crash_handler_game_over(); // the exit is not watched (gcrt_crash.h)
     std::fflush(nullptr);
     std::exit(0);
   }
@@ -1025,10 +1031,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     const int request = gcrt_console_request();
     gcrt_console_start(request == 1 ? GCRT_CONSOLE_OPEN : request == 0 ? GCRT_CONSOLE_NONE : GCRT_CONSOLE_PARENT);
   }
-  // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
-  if (const char* userDir = gcrt_user_dir(); userDir != nullptr && userDir[0] != '\0') {
-    gcrt_crash_handler_set_default_dir((std::string(userDir) + "crashes").c_str());
-  }
+  gcrt_diag_startup_beat(); // console opened: start-up progress (gcrt_diag.h) until the game loop beats
   gcrt_crash_handler_set_context(crash_context, p);
   // GX command processor (bridge to Aurora): end of frame at the display copy; the stream comes from native drawing.
   p->bridge.set_guest_memory(g->state.ram, std::min<uint32_t>(g->state.ram_size, GCRT_MEM1_SIZE));
@@ -1082,6 +1085,9 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
   if (p == nullptr) {
     return;
   }
+  // The game loop has ended: no hang report during the exit, and a report still being written (a slow one on a busy
+  // computer) is done with the platform context and the guest state before they are freed (gcrt_crash.h).
+  gcrt_crash_handler_game_over();
   // Screenshots requested but not read back yet: a few more frames.
   if (p->frameOpen) {
     gcrt::platform::host_end_frame();
