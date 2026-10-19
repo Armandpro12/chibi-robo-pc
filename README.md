@@ -118,22 +118,37 @@ installation folder as `game.iso`, `sys/` is extracted next to it, and a Start m
 (desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache
 (a folder that still holds other files is kept): saves and settings stay in
 `%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
-image already installed is offered and not copied again). What happens when an installation does not complete:
-- the new image is refused, or its extraction or the check of its copy fails: a previous installation keeps its
-  files (its disc image, `disc/` and `manifest.json` are put back if they had already been replaced);
-- Setup is cancelled, or stopped by an error, while it installs the program files: the previous disc image, `disc/`
-  and `manifest.json` are put back, but an executable or DLL that Setup had already replaced is not (Inno Setup's
-  rollback does not restore overwritten files): run the installer again to repair the installation;
-- a first installation into a new folder that does not complete in any of these ways leaves nothing behind: the
-  folder is removed, with no uninstaller and no Programs-list entry;
+image already installed is offered and not copied again). Free disk space is checked before anything is written:
+an update needs as much free space as a first installation (about 1.6 GB), because the previous disc image is kept
+until the new copy is in place. What happens when an installation does not complete:
+- the new image is refused, there is not enough free space, or the extraction or the check of the copy fails, or
+  Setup is cancelled or stopped by an error while it installs the program files: a previous installation is kept
+  as it was (whatever Setup had already replaced is put back: the disc image, `disc/` and `manifest.json`, the
+  executable, its DLLs and `BUILD-INFO.txt`; Setup keeps each previous file as `<name>.old` until the installation is complete, because
+  Inno Setup's own rollback does not restore a file it has overwritten). So a failed update to the other version
+  (US to PAL, or the reverse) is not expected to leave an executable of one version with the disc image of the
+  other (tested with simulated failures only, see below; not tested with a real cancel, a locked file or a power
+  loss). Its Programs-list entry is not expected to change (Setup does not write it when the installation failed; only checked
+  in Setup's log so far, not in the registry). If a previous file cannot be put back (for example because it is
+  open in another program), Setup keeps it as `<name>.old` and says so when it stops with an error; if Setup was
+  cancelled or stopped in another way, the message may only be written to Setup's log. Run the installer again,
+  which puts it back first;
+- a first installation into a new folder that does not complete in any of these ways leaves nothing behind in that
+  folder: the folder is removed, and so are the parent folders Setup created for it if they are empty; no
+  uninstaller is left, and no Programs-list entry is expected (Setup does not write it for a failed installation;
+  only checked in Setup's log so far);
 - after a power loss or a crash during the installation, nothing is guaranteed: run the installer again over the
-  same folder, which puts back or finishes an interrupted replacement of the image files and repairs the
-  installation (a first installation interrupted that way has no uninstaller yet).
+  same folder, which puts back a previous file left as `<name>.old` when the file itself is missing (when both
+  exist after an interruption, the `<name>.old` is discarded and the file is replaced by the new installation) and
+  repairs the installation (a first installation interrupted that way has no uninstaller yet).
+
+A folder that exists but cannot be listed (access denied) is refused like a folder that holds other files.
 
 Silent install: `setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>` (exit
-code 0 on success, 1 if the image or the folder is refused, 7 if the image could not be extracted or the folder is
-refused at the last check, 9 if its copy could not be checked or put in place, 5 if the installation was cancelled or
-stopped by a file error).
+code 0 on success, 1 if the image or the folder is refused, 7 if the image could not be extracted, the folder is
+refused at the last check, there is not enough free disk space or a previous file left by an interrupted run could not
+be put back, 9 if its copy could not be checked or put in place, 5 if the installation was cancelled or stopped by a
+file error).
 
 The build recompiles the game with DolRecomp, then compiles it with clang-cl. The first build in each build folder
 (`build/<game>-<ID>-<config>`) needs an internet connection: CMake downloads Aurora's dependencies into it (prebuilt
