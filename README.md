@@ -134,7 +134,7 @@ speakers).
 
 ### Setup menu
 
-A direct launch opens a small setup menu first: window size, fullscreen and render scale (Enter or "Start game"
+A direct launch opens a small setup menu first: window size, fullscreen, render scale and graphics backend (Enter or "Start game"
 starts the game; launches by the project's tools never show it; `GCRT_SETUP_MENU=0` disables it, `=1` forces
 it). The choices are
 saved in `game_config.ini` in the same folder as `controls.ini` (see below). Tick "Skip this menu next time"
@@ -148,6 +148,20 @@ so the output follows the prompt). The choice is saved as `console=1` or `consol
 `game_config.ini`; with "Skip this menu next time", the saved value applies. `--console` and `--no-console` decide
 for one launch only: the box starts checked or unchecked and the file is changed only if you toggle the box. When the
 output is redirected (to a file or a pipe, as `tools/run.py` and the test benches do), no console is ever opened.
+
+**Graphics backend.** The menu's "Graphics backend" list offers Auto (the default), Direct3D 12 and Vulkan, saved as
+`backend=auto|d3d12|vulkan` in `game_config.ini`. The window is already open when the menu shows, so a change applies
+the next time the game starts. `--backend d3d12|vulkan|auto` or `GCRT_BACKEND` choose for one launch only (not saved).
+Auto uses Direct3D 12, with Vulkan as the alternative. Direct3D 12 compiles its shaders with FXC
+(`d3dcompiler_47.dll`, taken from the Windows system folder; present on the development machine, not established on
+every Windows), so no extra DLL is needed next to the executable. If the backend asked for cannot start, Aurora goes on
+by itself with its own order (Direct3D 12, Vulkan, then its last resorts Direct3D 11 and null), and the game says so on
+stderr and in the trace. A PC without a usable GPU (software adapter only) has not been tested. An unknown name falls
+back to Auto with a message. On the development machine, Direct3D 12 and Vulkan give the same picture up to tiny
+rounding differences: the title-boot captures of both versions are identical, and in some 3D scenes Vulkan differs by
+1 or 2 colour levels on at most 0.05 % of the pixels. Direct3D 11 is not offered: Dawn starts it, but its picture
+differs on the US version. The trace line `graphics backend: ... in use, requested ...` and crash reports name the
+backend actually used.
 
 ### Controls
 
