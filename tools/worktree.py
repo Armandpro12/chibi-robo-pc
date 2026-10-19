@@ -149,6 +149,15 @@ def cmd_remove(args: argparse.Namespace) -> int:
         print("dry run: nothing removed")
         return 0
 
+    # Check the status BEFORE touching anything, so that a refusal leaves the worktree usable. A junction that is
+    # not ignored shows up as "?? <link>/": those lines are the links themselves, not changes.
+    link_names = {str(link.relative_to(root)).replace(os.sep, "/") for link in links}
+    status = "\n".join(line for line in git("status", "--porcelain", cwd=root).splitlines()
+                       if not (line.startswith("?? ") and line[3:].rstrip("/") in link_names)).strip()
+    if status and not args.discard:
+        raise Refusal("the worktree has uncommitted changes (shown below); nothing was removed. Commit them, or use "
+                      "--discard to throw them away:\n" + status)
+
     for link in links:
         try:
             remove_link(link)
@@ -159,10 +168,6 @@ def cmd_remove(args: argparse.Namespace) -> int:
     if left:
         raise Refusal("links still present, the worktree is NOT removed: " + ", ".join(str(p) for p in left))
 
-    status = git("status", "--porcelain", cwd=root).strip()
-    if status and not args.discard:
-        raise Refusal("the worktree has uncommitted changes (shown below), the worktree is NOT removed (its links "
-                      "were already removed). Commit them, or use --discard to throw them away:\n" + status)
     git("worktree", "remove", *(["--force"] if args.discard else []), str(root), cwd=main)
     git("worktree", "prune", cwd=main)
     print(f"worktree removed: {root}")
