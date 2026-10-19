@@ -75,6 +75,15 @@ py -3 tools/build.py chibi-robo                      # -> build/chibi-robo-GGTP0
 py -3 tools/build.py chibi-robo --version GGTE01
 ```
 
+`tools/gcextract/` is a native, dependency-free version of the extraction (C++, for the player installer, which
+cannot rely on Python). It gives the same `disc/` tree, byte for byte, and refuses images that are not listed in
+`game.toml`:
+
+```
+py -3 tools/gcextract/build.py                       # -> build/gcextract/gcextract.exe
+build\gcextract\gcextract.exe <image.iso> <output folder> --game-toml games/chibi-robo/game.toml --u8 files/qp.bin
+```
+
 The build recompiles the game with DolRecomp, then compiles it with clang-cl. The first build in each build folder
 (`build/<game>-<ID>-<config>`) needs an internet connection: CMake downloads Aurora's dependencies into it (prebuilt
 Dawn and SDL3 packages and ten source libraries); later builds in the same folder reuse them.
