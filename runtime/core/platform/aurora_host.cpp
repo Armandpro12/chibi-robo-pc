@@ -186,6 +186,8 @@ bool host_init(const HostConfig& config) {
     requestSource = "game_config.ini";
   }
   int requested = gcrt_backend_from_name(requestedName.c_str());
+  // What the trace line below says was asked for: the name as given when it was refused.
+  std::string requestDesc;
   if (requested < 0 || !gcrt_backend_available(requested)) {
     const char* why = requested < 0 ? "unknown name (auto|d3d12|vulkan)" : "not available in this build";
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s \"%s\" ignored, %s: auto used", requestSource,
@@ -193,6 +195,9 @@ bool host_init(const HostConfig& config) {
     std::fprintf(stderr, "gcrt: graphics backend \"%s\" (%s) ignored, %s; using auto\n", requestedName.c_str(),
                  requestSource, why);
     requested = BACKEND_AUTO;
+    requestDesc = "'" + requestedName + "' (" + requestSource + "), using auto";
+  } else {
+    requestDesc = std::string(gcrt_backend_name(requested)) + " (" + requestSource + ")";
   }
   ac.desiredBackend = static_cast<AuroraBackend>(requested);
   char* argv0 = const_cast<char*>(g_title.c_str());
@@ -208,9 +213,9 @@ bool host_init(const HostConfig& config) {
         offered += gcrt_backend_name(list[i]);
       }
     }
-    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s in use (Aurora %d), requested %s (%s); this build: %s",
-                      gcrt_backend_label(info.backend), static_cast<int>(info.backend), gcrt_backend_name(requested),
-                      requestSource, offered.c_str());
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s in use (Aurora %d), requested %s; this build: %s",
+                      gcrt_backend_label(info.backend), static_cast<int>(info.backend), requestDesc.c_str(),
+                      offered.c_str());
     if (requested != BACKEND_AUTO && info.backend != requested) {
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s could not be started, Aurora fell back to %s",
                         gcrt_backend_label(requested), gcrt_backend_label(info.backend));

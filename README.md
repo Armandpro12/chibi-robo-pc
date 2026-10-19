@@ -152,13 +152,16 @@ output is redirected (to a file or a pipe, as `tools/run.py` and the test benche
 **Graphics backend.** The menu's "Graphics backend" list offers Auto (the default), Direct3D 12 and Vulkan, saved as
 `backend=auto|d3d12|vulkan` in `game_config.ini`. The window is already open when the menu shows, so a change applies
 the next time the game starts. `--backend d3d12|vulkan|auto` or `GCRT_BACKEND` choose for one launch only (not saved).
-Auto tries Direct3D 12, then Vulkan (then Aurora's last resorts, Direct3D 11 and null). In this build Direct3D 12
-needs `dxil.dll`: when it is missing from the executable's folder (the installer does not ship it), Direct3D 12 cannot
-start and the game uses Vulkan, with a message on stderr and in the trace when Direct3D 12 was asked for. An unknown
-name falls back to Auto with a message. On the development machine, the title-boot captures of both versions are
-identical with Direct3D 12 and with Vulkan. Direct3D 11 is not offered: Dawn starts it, but its picture differs on
-the US version. The trace line `graphics backend: ... in use, requested ...` and crash reports name the backend
-actually used.
+Auto uses Direct3D 12, with Vulkan as the alternative. Direct3D 12 compiles its shaders with FXC
+(`d3dcompiler_47.dll`, taken from the Windows system folder; present on the development machine, not established on
+every Windows), so no extra DLL is needed next to the executable. If the backend asked for cannot start, Aurora goes on
+by itself with its own order (Direct3D 12, Vulkan, then its last resorts Direct3D 11 and null), and the game says so on
+stderr and in the trace. A PC without a usable GPU (software adapter only) has not been tested. An unknown name falls
+back to Auto with a message. On the development machine, Direct3D 12 and Vulkan give the same picture up to tiny
+rounding differences: the title-boot captures of both versions are identical, and in some 3D scenes Vulkan differs by
+1 or 2 colour levels on at most 0.05 % of the pixels. Direct3D 11 is not offered: Dawn starts it, but its picture
+differs on the US version. The trace line `graphics backend: ... in use, requested ...` and crash reports name the
+backend actually used.
 
 ### Controls
 

@@ -408,8 +408,9 @@ bool gcrt_game_config_run_menu(const char* title) {
       ImGui::EndCombo();
     }
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-    ImGui::TextWrapped("In use: %s. A change applies the next time the game starts. Auto picks the best available; "
-                       "all of them give the same image.",
+    // Measured: Vulkan and Direct3D 12 differ by 1-2 levels on a few pixels of some 3D scenes, hence "up to".
+    ImGui::TextWrapped("In use: %s. A change applies the next time the game starts. Auto tries Direct3D 12, then "
+                       "Vulkan; both give the same picture, up to tiny rounding differences.",
                        gcrt_backend_label(g_activeBackend));
     ImGui::PopStyleColor();
 #if defined(_WIN32)
