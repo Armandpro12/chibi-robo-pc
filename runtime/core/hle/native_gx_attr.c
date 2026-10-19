@@ -1042,7 +1042,7 @@ static bool hle_set_disp_copy_frame2field(GcrtCpu* g, u32 address) {
     return true;
 }
 
-/* GXSetCopyClamp(clamp) (catalog name: __GXGetNumXfbLines; the code is that of GXSetCopyClamp). */
+/* GXSetCopyClamp(clamp): bits 0-1 (clamp top, clamp bottom) of the display and texture copy controls. */
 static bool hle_set_copy_clamp(GcrtCpu* g, u32 address) {
     (void)address;
     gx_enter(g);
@@ -1299,7 +1299,7 @@ void gcrt_native_gx_attr_install(GcrtCpu* g) {
     gx_replace(g, "GXSetDispCopyDst", hle_set_disp_copy_dst, NULL, 0, NULL);
     gx_replace(g, "GXSetTexCopyDst", hle_set_tex_copy_dst, NULL, 0, NULL);
     gx_replace(g, "GXSetDispCopyFrame2Field", hle_set_disp_copy_frame2field, NULL, 0, NULL);
-    gx_replace(g, "__GXGetNumXfbLines", hle_set_copy_clamp, NULL, 0, NULL);
+    gx_replace(g, "GXSetCopyClamp", hle_set_copy_clamp, NULL, 0, NULL);
     gx_replace(g, "GXSetDispCopyYScale", hle_set_disp_copy_y_scale, NULL, 0, NULL);
     gx_replace(g, "GXSetCopyClear", hle_set_copy_clear, NULL, 0, NULL);
     gx_replace(g, "GXSetCopyFilter", hle_set_copy_filter, NULL, 0, NULL);

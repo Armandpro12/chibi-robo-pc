@@ -1290,7 +1290,7 @@ void gcrt_native_audio_install(GcrtCpu* g) {
     *n += gcrt_native_replace(g, "AIGetStreamPlayState", "AI", hle_ai_get_stream_play_state, NULL, 0, NULL, m, ms);
     *n += gcrt_native_replace(g, "AISetDSPSampleRate", "AI", hle_ai_set_dsp_sample_rate, NULL, 0, NULL, m, ms);
     *n += gcrt_native_replace(g, "AIGetDSPSampleRate", "AI", hle_ai_get_dsp_sample_rate, NULL, 0, NULL, m, ms);
-    *n += gcrt_native_replace(g, "AISetStreamSampleRate", "AI", hle_ai_set_stream_sample_rate, NULL, 0, NULL, m, ms);
+    *n += gcrt_native_replace(g, "__AI_set_stream_sample_rate", "AI", hle_ai_set_stream_sample_rate, NULL, 0, NULL, m, ms);
     *n += gcrt_native_replace(g, "AIGetStreamSampleRate", "AI", hle_ai_get_stream_sample_rate, NULL, 0, NULL, m, ms);
     *n += gcrt_native_replace(g, "AISetStreamVolLeft", "AI", hle_ai_set_stream_vol_left, NULL, 0, NULL, m, ms);
     *n += gcrt_native_replace(g, "AIGetStreamVolLeft", "AI", hle_ai_get_stream_vol_left, NULL, 0, NULL, m, ms);
