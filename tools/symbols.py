@@ -55,7 +55,13 @@ import gcinfo  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 SYM_RE = re.compile(r"^(\S+)\s*=\s*([^:\s]+):0x([0-9A-Fa-f]+);\s*//\s*(.*)$")
-AUTO_RE = re.compile(r"^(fn_[0-9A-Fa-f_]+|zz_[0-9A-Fa-f]{8}.*|lbl_.*|@.*|func_[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+)$")
+# Automatic names (no real name known): address-based placeholders. dtk writes them as fn_XXXXXXXX or
+# fn_0xXXXXXXXX, and cbr_decomp also has fn_XXXXXXXX_unk__Fi / fn_XXXXXXXX__5CFileFv (placeholder plus
+# the mangled signature suffix): the placeholder part embeds the address of the reference version, wrong
+# for any other version, and the real base name is unknown, so they are all treated as automatic.
+# Applies to the dtk names only: the verified names of supplement.tsv never go through this filter.
+AUTO_RE = re.compile(r"^(fn_(0x)?[0-9A-Fa-f_]+|fn_(0x)?[0-9A-Fa-f]{8}_.*|zz_[0-9A-Fa-f]{8}.*|lbl_.*|@.*"
+                     r"|func_(0x)?[0-9A-Fa-f]+|sub_(0x)?[0-9A-Fa-f]+)$")
 SDA_REGS = (2, 13)
 PREFIX = 8  # length (in words) of the index key
 
