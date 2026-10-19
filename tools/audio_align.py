@@ -15,6 +15,9 @@ offset ("inf" = identical samples). Then:
   - the jump positions are refined to 5 ms by a residual scan between the two anchors;
   - drift: slope of the offset over time (parts per million), zero when both play at the same rate; it is computed over
     the whole file, so it is only meaningful when there is no jump (with loop seams it reports the seams, not a drift).
+Limits: a --search-first window wider than the period of a periodic signal can lock onto the wrong period when two
+alignments tie; --search-first smaller than --search narrows the first window; --search and --search-first must
+be finite and greater than 0 (exit code 2 otherwise).
 Limits: the cross-correlation is not normalized by the local energy, so an anchor can lock onto a louder passage
 (low SNR) although an exact match exists elsewhere in the search window: such an anchor is reported as not matched.
 In JSON output an infinite SNR is the string "inf".
@@ -150,6 +153,11 @@ def main() -> int:
                    help="search window (s) around --offset until a first anchor matches (default: --search)")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
+    import math
+    for name, v in (('--search', a.search), ('--search-first', a.search_first)):
+        if v is not None and not (math.isfinite(v) and v > 0):
+            print(f"error: {name} must be a finite number of seconds greater than 0, got {v}", file=sys.stderr)
+            return 2
     r = align(a.a, a.b, a.start, a.end, a.step, a.block, a.search, a.offset, a.search_first)
     if a.json:
         print(json.dumps(strict(r), indent=1))
