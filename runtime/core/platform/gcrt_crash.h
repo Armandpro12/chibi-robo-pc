@@ -69,10 +69,16 @@ void gcrt_crash_handler_set_default_dir(const char* dir_utf8);
 typedef const char* (*GcrtGuestSymbolizer)(u32 address, u32* start);
 void gcrt_crash_handler_set_guest_symbolizer(GcrtGuestSymbolizer fn);
 /* Extra lines written into the report by the platform (frames presented, guest time...): `write` appends text with
-   the provided function. Called from the reporting thread while the game thread is stopped. */
+   the provided function. Called from the reporting thread (the game thread stopped in a crash report, running in a
+   hang report), until gcrt_crash_handler_game_over. */
 typedef void (*GcrtCrashAppend)(void* sink, const char* text);
 typedef void (*GcrtCrashContextFn)(void* user, GcrtCrashAppend append, void* sink);
 void gcrt_crash_handler_set_context(GcrtCrashContextFn fn, void* user);
+/* The game has ended (the platform detaches) or will not run: the watchdog writes no more hang reports, and the guest
+   state (install) and the platform context (set_context) are forgotten as soon as a report in progress no longer
+   reads them (bounded wait: 60 s), so that the caller may free them. Later reports (a crash during the exit) have
+   neither. */
+void gcrt_crash_handler_game_over(void);
 /* Process memory (working set, private bytes in bytes, handles); false if unavailable. */
 bool gcrt_process_memory(u64* working_set, u64* private_bytes, u32* handles);
 

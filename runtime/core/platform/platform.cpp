@@ -1008,6 +1008,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   if (!gcrt::platform::host_init(host)) {
     // The window was closed from the setup menu, before the game started: quit without running it.
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
+    gcrt_crash_handler_game_over(); // the exit is not watched (gcrt_crash.h)
     std::fflush(nullptr);
     std::exit(0);
   }
@@ -1084,6 +1085,9 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
   if (p == nullptr) {
     return;
   }
+  // The game loop has ended: no hang report during the exit, and a report still being written (a slow one on a busy
+  // computer) is done with the platform context and the guest state before they are freed (gcrt_crash.h).
+  gcrt_crash_handler_game_over();
   // Screenshots requested but not read back yet: a few more frames.
   if (p->frameOpen) {
     gcrt::platform::host_end_frame();
