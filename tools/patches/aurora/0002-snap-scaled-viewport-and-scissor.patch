@@ -1,0 +1,107 @@
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 9d1df79..1390345 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -580,7 +580,8 @@ void begin_recording(FramePacket& packet, size_t frameSlot) {
+   pass.colorAttachments[SceneColorAttachmentIndex].clearValue = gx::g_gxState.clearColor;
+   pass.clearDepthValue = gx::clear_depth_value();
+   g_recorder.currentRenderPass = 0;
+-  g_recorder.cachedViewport = gx::map_logical_viewport(gx::g_gxState.logicalViewport);
++  g_recorder.cachedViewport = gx::snap_mapped_viewport(gx::g_gxState.logicalViewport,
++                                                      gx::map_logical_viewport(gx::g_gxState.logicalViewport));
+   g_recorder.cachedScissor = gx::map_logical_scissor(gx::g_gxState.logicalScissor);
+   push_command(CommandType::SetViewport, Command::Data{.setViewport = g_recorder.cachedViewport});
+   push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 30a9b58..936b495 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -223,6 +223,11 @@ wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
+ }
+ } // namespace
+ 
++namespace {
++// Nearest pixel boundary of a target coordinate (halves go up).
++int32_t snap_to_pixel(float v) noexcept { return static_cast<int32_t>(std::floor(v + 0.5f)); }
++} // namespace
++
+ void set_viewport_policy(AuroraViewportPolicy policy) noexcept {
+   sPendingViewportPolicy.store(policy, std::memory_order_release);
+ }
+@@ -287,12 +292,15 @@ gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept
+   const float right = static_cast<float>(logicalScissor.x + logicalScissor.width) * scaleX;
+   const float bottom = static_cast<float>(logicalScissor.y + logicalScissor.height) * scaleY;
+ 
+-  const auto mappedLeft = std::clamp(static_cast<int32_t>(std::floor(left)), 0, static_cast<int32_t>(targetWidth));
+-  const auto mappedTop = std::clamp(static_cast<int32_t>(std::floor(top)), 0, static_cast<int32_t>(targetHeight));
+-  const auto mappedRight =
+-      std::clamp(static_cast<int32_t>(std::ceil(right)), mappedLeft, static_cast<int32_t>(targetWidth));
+-  const auto mappedBottom =
+-      std::clamp(static_cast<int32_t>(std::ceil(bottom)), mappedTop, static_cast<int32_t>(targetHeight));
++  // Each edge goes to the nearest target pixel boundary, like the edges of a viewport mapped by
++  // snap_mapped_viewport: at a non-integer scale, the scissor and an EFB copy of a logical rectangle then hold
++  // exactly the pixels that a viewport of the same rectangle covers. Rounding outwards (floor/ceil) added a line or
++  // column that no draw of that viewport fills, and a copy of it then had a stale edge, which a clamped texture
++  // spreads over everything beyond it.
++  const auto mappedLeft = std::clamp(snap_to_pixel(left), 0, static_cast<int32_t>(targetWidth));
++  const auto mappedTop = std::clamp(snap_to_pixel(top), 0, static_cast<int32_t>(targetHeight));
++  const auto mappedRight = std::clamp(snap_to_pixel(right), mappedLeft, static_cast<int32_t>(targetWidth));
++  const auto mappedBottom = std::clamp(snap_to_pixel(bottom), mappedTop, static_cast<int32_t>(targetHeight));
+ 
+   return {
+       .x = mappedLeft,
+@@ -302,13 +310,39 @@ gfx::ClipRect map_logical_scissor(const gfx::ClipRect& logicalScissor) noexcept
+   };
+ }
+ 
++gfx::Viewport snap_mapped_viewport(const gfx::Viewport& logicalViewport, const gfx::Viewport& mapped) noexcept {
++  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE || !(logicalViewport.width > 0.f) ||
++      !(logicalViewport.height > 0.f)) {
++    return mapped;
++  }
++  // An edge on a whole logical pixel goes to the nearest target pixel boundary. At a non-integer scale, the mapped
++  // edge otherwise ends inside a line or column whose coverage then depends on the GPU, while the scissor and the
++  // EFB copies of the same logical rectangle count it in. Edges between logical pixels (field jitter) keep their
++  // exact position; at an integer scale nothing changes.
++  const float scaleX = mapped.width / logicalViewport.width;
++  const float scaleY = mapped.height / logicalViewport.height;
++  const auto edge = [](float logical, float target, float scale) {
++    return logical == std::floor(logical) ? static_cast<float>(snap_to_pixel(logical * scale)) : target;
++  };
++  const float left = edge(logicalViewport.left, mapped.left, scaleX);
++  const float top = edge(logicalViewport.top, mapped.top, scaleY);
++  const float right = edge(logicalViewport.left + logicalViewport.width, mapped.left + mapped.width, scaleX);
++  const float bottom = edge(logicalViewport.top + logicalViewport.height, mapped.top + mapped.height, scaleY);
++  gfx::Viewport out = mapped;
++  out.left = left;
++  out.top = top;
++  out.width = right - left;
++  out.height = bottom - top;
++  return out;
++}
++
+ void set_logical_viewport(const gfx::Viewport& viewport) noexcept {
+   if (viewport.left != g_gxState.logicalViewport.left || viewport.width != g_gxState.logicalViewport.width ||
+       viewport.height != g_gxState.logicalViewport.height) {
+     g_gxState.dirty |= DirtyUniform;
+   }
+   g_gxState.logicalViewport = viewport;
+-  set_render_viewport(map_logical_viewport(viewport));
++  set_render_viewport(snap_mapped_viewport(viewport, map_logical_viewport(viewport)));
+ }
+ 
+ void set_render_viewport(const gfx::Viewport& viewport) noexcept {
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 23bda18..ab66cb0 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -451,6 +451,9 @@ void set_logical_viewport(const gfx::Viewport& viewport) noexcept;
+ void set_render_viewport(const gfx::Viewport& viewport) noexcept;
+ void set_logical_scissor(const gfx::ClipRect& scissor) noexcept;
+ void set_render_scissor(const gfx::ClipRect& scissor) noexcept;
++// Viewport mapped by map_logical_viewport with its whole-logical-pixel edges moved to the nearest target pixel
++// boundary (the rounding of map_logical_scissor).
++gfx::Viewport snap_mapped_viewport(const gfx::Viewport& logicalViewport, const gfx::Viewport& mapped) noexcept;
+ void copy_tex(const void* dest, GXBool clear) noexcept;
+ const gfx::TextureBind& get_texture(GXTexMapID id) noexcept;
+ void resolve_sampled_textures(const ShaderInfo& info) noexcept;
