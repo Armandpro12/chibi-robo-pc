@@ -21,9 +21,16 @@ Method (documented choices):
 - "flat": number of candidates whose coarse error is within 1 % of the best one: a large value means the
   scene is static over that many frames (the pairing is then exact in content but not in time).
 - --diffs: writes <out>/diffs/<capture>.png = native | Dolphin | |difference| x4 (RGB), to be read by eye.
-- The reduced Dolphin frames are cached in <out>/dolphin-cache.npz (key: folder, count, size).
+- The reduced Dolphin frames are cached in <out>/dolphin-cache.npz (key: folder, count, size, newest file time).
 
-Output: <out>/match.json (one entry per capture) and <out>/match.md (table). Exit code 0.
+Limits: the PSNR is only indicative once the Dolphin frame is resized (about 10 to 15 dB are lost even for
+identical content: use the SSIM); the reference size is the size of the first native capture; on a static scene
+the pairing is exact in content but not in time (see "flat").
+
+Output: <out>/match.json (one entry per capture) and <out>/match.md (table). In match.json an infinite PSNR
+(identical pair) is null and "identical" is true.
+Exit code: 0 when at least one pair was measured (whether it passes or not), 1 when none could be measured,
+2 for an invalid input (no capture, no Dolphin frame, bad --window or --top).
 Dependencies: Pillow and numpy, as tools/compare_images.py.
 """
 from __future__ import annotations
@@ -60,8 +67,11 @@ def load_dolphin(frames_dir: Path, shape: tuple[int, int], cache: Path) -> tuple
         n = frame_number(p)
         if n is not None:
             files[n] = p
+    if not files:
+        raise SystemExit(f"no framedump_<n>.png frame in {frames_dir}")
     nums = np.array(sorted(files), dtype=np.int64)
-    key = f"{frames_dir.resolve()}|{len(nums)}|{shape}"
+    newest = max(p.stat().st_mtime_ns for p in files.values())
+    key = f"{frames_dir.resolve()}|{len(nums)}|{shape}|{newest}"
     if cache.exists():
         z = np.load(cache, allow_pickle=False)
         if str(z["key"]) == key:
@@ -95,14 +105,29 @@ def main() -> int:
     ap.add_argument("--ssim-threshold", type=float, default=ci.DEFAULT_SSIM_THRESHOLD)
     args = ap.parse_args()
 
+    if args.top < 1:
+        print("--top must be at least 1", file=sys.stderr)
+        return 2
+    win = None
+    if args.window:
+        try:
+            win = tuple(int(v) for v in args.window.split(","))
+            if len(win) != 2 or win[0] > win[1]:
+                raise ValueError
+        except ValueError:
+            print(f"--window expects LO,HI with LO <= HI (two integers), got {args.window!r}", file=sys.stderr)
+            return 2
     caps = sorted(args.native.glob(args.pattern), key=ci._natural_key)
     if not caps:
         print(f"no capture matching {args.pattern} in {args.native}", file=sys.stderr)
         return 2
     args.out.mkdir(parents=True, exist_ok=True)
     shape = ci.load_luma(caps[0]).shape
-    nums, small = load_dolphin(args.dolphin, shape, args.out / "dolphin-cache.npz")
-    win = tuple(int(v) for v in args.window.split(",")) if args.window else None
+    try:
+        nums, small = load_dolphin(args.dolphin, shape, args.out / "dolphin-cache.npz")
+    except SystemExit as e:
+        print(e, file=sys.stderr)
+        return 2
     rows = []
     for cap in caps:
         n = frame_number(cap)
@@ -144,8 +169,10 @@ def main() -> int:
                      f"{r['flat']} | {'yes' if r['pass'] else 'NO'} |")
     (args.out / "match.md").write_text("\n".join(lines) + "\n")
     ok = sum(1 for r in rows if r.get("pass"))
-    print(f"{ok}/{len(rows)} pairs with SSIM >= {args.ssim_threshold}; table: {args.out / 'match.md'}")
-    return 0
+    measured = sum(1 for r in rows if r.get("dolphin") is not None)
+    print(f"{ok}/{len(rows)} pairs with SSIM >= {args.ssim_threshold} ({measured} measured); "
+          f"table: {args.out / 'match.md'}")
+    return 0 if measured else 1
 
 
 if __name__ == "__main__":
