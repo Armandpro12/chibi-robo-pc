@@ -1578,12 +1578,14 @@ void do_report() {
   } else {
     if (g_hang_in_startup) {
       out("no exception: the start-up (window creation, setup menu, game boot up to its first frame) made no progress "
-          "for %u s (GCRT_WATCHDOG_STARTUP); the game keeps running: a start-up report is text only (no minidump)\n",
+          "for %u s (GCRT_WATCHDOG_STARTUP); the game is not killed: the other threads are suspended only while their "
+          "state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT), and a start-up report is text only (no minidump)\n",
           g_in.hang_seconds);
     } else {
-      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is left running, but the "
-          "minidump, written last and only if the game loop is still stopped then, suspends every other thread while "
-          "it is written (see the minidump line)\n",
+      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is not killed, but the "
+          "other threads are suspended while their state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT) and again, "
+          "without bound, while the minidump is written (last, and only if the game loop is still stopped then; see "
+          "the minidump line)\n",
           g_in.hang_seconds);
     }
   }
@@ -1897,7 +1899,7 @@ DWORD WINAPI reporter_main(LPVOID) {
     const bool hang = g_in.cause == Cause::Hang;
     SetEvent(g_done); // before g_reporting is released: the next report resets g_done once it owns g_reporting
     if (hang) {
-      InterlockedExchange(&g_reporting, 0); // the game keeps running: later hangs or crashes can be reported
+      InterlockedExchange(&g_reporting, 0); // the game was not killed: later hangs or crashes can be reported
     }
   }
 }
@@ -2066,8 +2068,10 @@ DWORD WINAPI watchdog_main(LPVOID) {
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the %s for %u s%s",
                         startup ? "start-up (window creation, setup menu, game boot)" : "game loop", still,
                         reports >= kMaxHangReports ? ""
-                        : startup              ? ", writing a hang report, text only (the game keeps running)"
-                                               : ", writing a hang report (the game is left running)");
+                        : startup ? ", writing a hang report, text only (the game is not killed; its threads are "
+                                    "suspended while their state is copied)"
+                                  : ", writing a hang report (the game is not killed; its threads are suspended while "
+                                    "their state is copied and while the minidump, if any, is written)");
       if (reports < kMaxHangReports) {
         reports++;
         g_hang_in_startup = startup;
@@ -2228,29 +2232,33 @@ extern "C" void gcrt_crash_handler_game_over(void) {
     return;
   }
   // Polling, never blocking: a report in progress holds the lock (shared) only while it writes its text, which has no
-  // unbounded wait (the suspension is bounded by the guard); past kReportWaitMs the state is forgotten anyway and a
+  // unbounded wait (the suspension is bounded by the guard); past kReportWaitMs of wall-clock time (GetTickCount64,
+  // not a count of Sleep calls, whose real length depends on the timer resolution) the state is forgotten anyway and a
   // fault of the reporting thread on it only cuts that report (guarded_do_report).
-  bool locked = false;
-  int waits = 0;
-  for (; waits < kReportWaitMs / 10; waits++) {
-    if (TryAcquireSRWLockExclusive(&g_state_lock)) {
-      locked = true;
-      break;
-    }
-    Sleep(10);
+  const ULONGLONG start = GetTickCount64();
+  bool locked = TryAcquireSRWLockExclusive(&g_state_lock) != 0;
+  const bool waited = !locked;
+  if (waited) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: end of the game: a report in progress reads the game "
+                      "state, waiting for it (at most %d s)", kReportWaitMs / 1000);
   }
+  while (!locked && GetTickCount64() - start < static_cast<ULONGLONG>(kReportWaitMs)) {
+    Sleep(10);
+    locked = TryAcquireSRWLockExclusive(&g_state_lock) != 0;
+  }
+  const double waited_s = static_cast<double>(GetTickCount64() - start) / 1000.0;
   g_cpu = nullptr;
   g_context_fn = nullptr;
   g_context_user = nullptr;
   if (locked) {
     ReleaseSRWLockExclusive(&g_state_lock);
-    if (waits > 0) {
+    if (waited) {
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: end of the game: waited %.2f s for the report in "
-                        "progress to be done with the game state", waits * 0.01);
+                        "progress to be done with the game state", waited_s);
     }
   } else {
-    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: a report was still being written %d s after the end of the "
-                      "game; the game state is released anyway", kReportWaitMs / 1000);
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: a report was still being written %.2f s after the end of "
+                      "the game; the game state is released anyway", waited_s);
   }
 }
 

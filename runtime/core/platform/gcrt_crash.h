@@ -12,7 +12,11 @@
  *                                    indirectly referenced memory, unloaded modules, handles; comment stream = the
  *                                    whole native event ring);
  *   crash-<date>-<pid>-guest-ram.bin guest main memory (MEM1 and the area of the REL modules), raw, big-endian;
- *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game keeps running;
+ *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game is not killed, but every
+ *                                    other thread is suspended while their state is copied (at most
+ *                                    GCRT_CRASH_SUSPEND_LIMIT, default 5 s) and, for a game-loop hang, again while the
+ *                                    minidump is written, if it is; a start-up hang report is text only (no .dmp),
+ *                                    see below;
  *   crash-signatures.txt             one line per crash (signature, date): recurrence detection.
  * Text report: cause, exception, faulting address (module + offset), recurrence ("same signature as the crash of
  * <date>"), executable (name, SHA-1, PE time stamp, build commit), processor, microcode revision and firmware (read
@@ -76,7 +80,7 @@ typedef void (*GcrtCrashContextFn)(void* user, GcrtCrashAppend append, void* sin
 void gcrt_crash_handler_set_context(GcrtCrashContextFn fn, void* user);
 /* The game has ended (the platform detaches) or will not run: the watchdog writes no more hang reports, and the guest
    state (install) and the platform context (set_context) are forgotten as soon as a report in progress no longer
-   reads them (bounded wait: 60 s), so that the caller may free them. Later reports (a crash during the exit) have
+   reads them (bounded wait: 60 s of wall-clock time), so that the caller may free them. Later reports (a crash during the exit) have
    neither. */
 void gcrt_crash_handler_game_over(void);
 /* Process memory (working set, private bytes in bytes, handles); false if unavailable. */
