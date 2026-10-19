@@ -4,8 +4,25 @@
 #include "hle/native_gx.h"
 #include "platform/trace.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 static u32 s_default_tex_cb, s_default_tlut_cb; /* guest addresses of the SDK default region callbacks */
 static u64 s_guest_region_calls;
+
+/* GCRT_GX_TEV_COLOR_TRACE=1 (diagnostic): one stderr line per GXSetTevColor / GXSetTevKColor call,
+ * "TEVCOLOR C|K <id> <RRGGBBAA> <return address>", to compare the colors the game passes with another run or an
+ * emulator (game code may build them partly from uninitialized stack memory). */
+static int s_tev_color_trace = -1;
+
+static void tev_color_trace(GcrtCpu* g, char kind, u32 id, u32 color) {
+    if (s_tev_color_trace < 0) {
+        const char* e = getenv("GCRT_GX_TEV_COLOR_TRACE");
+        s_tev_color_trace = e && e[0] == '1';
+    }
+    if (s_tev_color_trace)
+        fprintf(stderr, "TEVCOLOR %c %u %08X %08X\n", kind, (unsigned)id, (unsigned)color, (unsigned)g->state.lr);
+}
 
 /* BP register identifiers of a texture map (register map of the graphics processor: maps 0-3 at 0x80+, 4-7 at
  * 0xA0+; same values as the SDK tables). */
@@ -506,6 +523,7 @@ static bool hle_set_tev_color(GcrtCpu* g, u32 address) {
     (void)address;
     gx_enter(g);
     const u32 id = gx_arg(g, 0), color = mem_read32(&g->state, gx_arg(g, 1));
+    tev_color_trace(g, 'C', id, color);
     const u32 r = color >> 24, gg = (color >> 16) & 0xFFu, b = (color >> 8) & 0xFFu, a = color & 0xFFu;
     const u32 ra = ((id * 2u + 0xE0u) << 24) | r | (a << 12);
     const u32 bg = ((id * 2u + 0xE1u) << 24) | b | (gg << 12);
@@ -538,6 +556,7 @@ static bool hle_set_tev_k_color(GcrtCpu* g, u32 address) {
     (void)address;
     gx_enter(g);
     const u32 id = gx_arg(g, 0), color = mem_read32(&g->state, gx_arg(g, 1));
+    tev_color_trace(g, 'K', id, color);
     const u32 r = color >> 24, gg = (color >> 16) & 0xFFu, b = (color >> 8) & 0xFFu, a = color & 0xFFu;
     gxw_bp(((id * 2u + 0xE0u) << 24) | (8u << 20) | r | (a << 12));
     gxw_bp(((id * 2u + 0xE1u) << 24) | (8u << 20) | b | (gg << 12));

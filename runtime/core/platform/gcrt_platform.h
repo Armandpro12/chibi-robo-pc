@@ -104,7 +104,17 @@
  *   GCRT_GX_STREAM     diagnostic: fingerprint of the received GX command stream, one line per frame ("frame bytes
  *                      fnv64 draws") in this file; "1" = gx-stream.txt in GCRT_CAPTURE_DIR. GCRT_GX_STREAM_DUMP:
  *                      frames ("12,500") whose full stream is also written (<file>.<frame>.bin)
- *   GCRT_REPORT        period of the intermediate report in seconds (default 5); each report also gives the process
+ *                      With GCRT_GX_STREAM on, two more diagnostics use its frame numbers and the draw index within
+ *                      the frame (0-based, every draw counted, display lists included): GCRT_GX_SKIP_DRAWS
+ *                      ("FRAME:FIRST-LAST[,...]") does not forward those draws to Aurora (find which draw makes a
+ *                      pixel by bisection), GCRT_GX_DRAW_DUMP ("FRAME:DRAW[,...]") writes the state that draw uses
+ *                      to stderr (lines "GXDRAW": BP, CP, XF registers, matrices, array bases, vertex bytes)
+ *   GCRT_GX_TEV_COLOR_TRACE diagnostic: "1" writes one stderr line per GXSetTevColor / GXSetTevKColor call
+ *                      ("TEVCOLOR C|K id RRGGBBAA return-address") (hle/native_gx_tev.c)
+ *   GCRT_HLE_STACK_FILL diagnostic: "BYTE[:SIZE]" (hex byte, SIZE bytes, default 256) writes BYTE into the free guest
+ *                      stack below r1 on entry into every replacement, where the original SDK code had its stack
+ *                      frames: shows whether game code that reads uninitialized locals changes the output (hle/hle.c)
+ *   GCRT_REPORT       period of the intermediate report in seconds (default 5); each report also gives the process
  *                      memory (working set, private bytes, handles)
  *   GCRT_CRASH_DIR, GCRT_CRASH_HANDLER: crash reports (platform/gcrt_crash.h; default folder <user folder>/crashes/,
  *                      or GCRT_CAPTURE_DIR in automated runs); GCRT_CRASH_TEST=<kind>:<frame>: deliberate fault once
