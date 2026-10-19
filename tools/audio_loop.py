@@ -7,6 +7,7 @@ Usage:
 Meant for a scene recorded without any input (a menu or a room left alone), where only the music changes.
   1. coarse period: self-correlation of the envelope (dB per 100 ms window) between --min-period and
      --max-period, keeping the smallest lag within 0.01 of the best score (a multiple scores as high);
+     (its resolution is 0.1 s: the exact period comes from the passes, see 3.);
   2. seams: runs of digital silence (|sample| < 1 on every channel, at least --gap-ms long) that come back once
      per period (+-2 s); a stream restarted by the game at its loop point leaves such a gap;
   3. each pass (sound between two seams): length in samples, and SNR of the pass against the previous one,
@@ -173,13 +174,17 @@ def main() -> int:
     if a.compare:
         out["b"] = analyze(a.compare, a.start if a.start_b is None else a.start_b, a.end if a.end_b is None else a.end_b,
                            a.min_period, a.max_period, a.gap_ms)
+        if out["a"].get("rate") != out["b"].get("rate"):
+            print(f"error: the sample rates differ ({out['a'].get('rate')} and {out['b'].get('rate')} Hz): "
+                  "lengths are compared in samples", file=sys.stderr)
+            return 1
         pa, pb = out["a"].get("passes", []), out["b"].get("passes", [])
         out["pairs"] = [{"pass": i + 1, "sound_a": x["sound_samples"], "sound_b": y["sound_samples"],
                          "sound_diff": y["sound_samples"] - x["sound_samples"]} for i, (x, y) in enumerate(zip(pa, pb))]
         sa, sb = out["a"].get("seams", []), out["b"].get("seams", [])
         out["gaps_ms"] = {"a": [s["gap_ms"] for s in sa], "b": [s["gap_ms"] for s in sb]}
     if a.json:
-        print(json.dumps(out, indent=1, default=float))
+        print(json.dumps(audio_align.strict(out), indent=1))
         return 0
     print(summary(out["a"]))
     if "b" in out:

@@ -12,7 +12,11 @@ offset ("inf" = identical samples). Then:
   - runs: consecutive anchors with the same offset; between two runs, a jump of N samples means that one side
     played N samples more (positive: B is later, e.g. a pause or a gap inserted in B) somewhere in between;
   - the jump positions are refined to 5 ms by a residual scan between the two anchors;
-  - drift: slope of the offset over time (parts per million), zero when both play at the same rate.
+  - drift: slope of the offset over time (parts per million), zero when both play at the same rate; it is computed over
+    the whole file, so it is only meaningful when there is no jump (with loop seams it reports the seams, not a drift).
+Limits: the cross-correlation is not normalized by the local energy, so an anchor can lock onto a louder passage
+(low SNR) although an exact match exists elsewhere in the search window: such an anchor is reported as not matched.
+In JSON output an infinite SNR is the string "inf".
 Rates must be equal (the comparison is in samples). No game data is read or written.
 """
 from __future__ import annotations
@@ -26,6 +30,23 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_ab import read_wav  # noqa: E402
+
+
+def strict(o):
+    """JSON-safe copy of a result: +inf / -inf become the strings "inf" / "-inf" and NaN becomes null
+    (json.dumps would write the invalid tokens Infinity / NaN, which a strict parser refuses)."""
+    if isinstance(o, dict):
+        return {k: strict(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [strict(v) for v in o]
+    if isinstance(o, (float, np.floating)):
+        v = float(o)
+        if v != v:
+            return None
+        return "inf" if v == float("inf") else "-inf" if v == float("-inf") else v
+    if isinstance(o, np.integer):
+        return int(o)
+    return o
 
 
 def xcorr_lag(ref: np.ndarray, cand: np.ndarray) -> int:
@@ -124,7 +145,7 @@ def main() -> int:
     a = p.parse_args()
     r = align(a.a, a.b, a.start, a.end, a.step, a.block, a.search, a.offset)
     if a.json:
-        print(json.dumps(r, indent=1, default=float))
+        print(json.dumps(strict(r), indent=1))
         return 0
     print(f"{r['a']} -> {r['b']} ({r['rate']} Hz): {r['matched']}/{r['anchors']} anchors matched, "
           f"{r['identical']} identical to the sample, lowest finite SNR {r['min_snr_db']}, drift {r['drift_ppm']} ppm")

@@ -6,7 +6,11 @@ script prints the level of A, of B and of A - B (dBFS, mono mix). Where A - B is
 match; where A - B is close to one side's level, that side holds a sound the other lacks (or plays it elsewhere).
 Consecutive differing windows are grouped into events; with --events only those are printed.
 
-  py -3 tools/audio_residual.py a.wav b.wav --offset-samples -259784 --start 80 --end 420 [--win 0.25] [--events]
+  py -3 tools/audio_residual.py a.wav b.wav --offset-samples 12345 --start 80 --end 420 [--win 0.25] [--events]
+
+Limits: both recordings must have the same sample rate (the offset is in samples); the comparison is on the mono
+mix of the channels; a window counts as different when A - B is less than 20 dB below the louder of the two.
+Sign: 'A louder' means the sound is in A only (B holds silence or another sound there); 'B louder' the reverse.
 """
 import argparse
 import os
