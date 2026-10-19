@@ -2,12 +2,13 @@
 
 Usage:
   py -3 tools/audio_align.py <a.wav> <b.wav> [--start 0] [--end E] [--step 2] [--block 0.5] [--search 3]
-                             [--offset S] [--json]
+                             [--offset S] [--search-first S] [--json]
   py -3 tools/audio_align.py <a.wav> <a.wav> --offset <period in s>      (repetition of a loop, see audio_loop.py)
 
 For each anchor of A (a block of --block seconds every --step seconds), finds the position in B with the
 highest cross-correlation (FFT), within +-search seconds around the offset of the previous anchor (the first
-anchor is searched around --offset). Each anchor gets its offset in samples and the SNR of B against A at that
+anchor is searched around --offset; with --search-first, within +-that many seconds until a first anchor matches, to find
+an unknown starting offset). Each anchor gets its offset in samples and the SNR of B against A at that
 offset ("inf" = identical samples). Then:
   - runs: consecutive anchors with the same offset; between two runs, a jump of N samples means that one side
     played N samples more (positive: B is later, e.g. a pause or a gap inserted in B) somewhere in between;
@@ -76,13 +77,15 @@ def refine_jump(ma, mb, i_lo, i_hi, off_before, off_after, rate):
 
 
 def align(pa: Path, pb: Path, start: float, end: float | None, step: float, block: float, search: float,
-          offset: float) -> dict:
+          offset: float, search_first: float | None = None) -> dict:
     ra, xa = read_wav(pa)
     rb, xb = read_wav(pb)
     if ra != rb:
         raise SystemExit(f"different rates ({ra} / {rb} Hz): compare at equal rates")
     ma, mb = xa.mean(axis=1), xb.mean(axis=1)
     blk, sp = int(block * ra), int(search * ra)
+    sp_first = sp if search_first is None else int(search_first * ra)
+    found = False
     off = int(round(offset * ra))
     anchors = []
     t = start
@@ -93,14 +96,16 @@ def align(pa: Path, pb: Path, start: float, end: float | None, step: float, bloc
         if np.abs(ref).max() < 1.0:      # silent anchor: nothing to align
             t += step
             continue
-        lo = max(0, i + off - sp)
-        cand = mb[lo: i + off + blk + sp]
+        w = sp if found else sp_first
+        lo = max(0, i + off - w)
+        cand = mb[lo: i + off + blk + w]
         if len(cand) < blk:
             break
         j = lo + xcorr_lag(ref, cand)
         s = snr(ref, mb[j:j + blk])
         if s >= 10:                      # a real match: follow it
             off = j - i
+            found = True
         anchors.append({"t": round(t, 3), "offset": j - i, "snr_db": s})
         t += step
     runs = []
@@ -141,9 +146,11 @@ def main() -> int:
     p.add_argument("--block", type=float, default=0.5)
     p.add_argument("--search", type=float, default=3.0)
     p.add_argument("--offset", type=float, default=0.0, help="expected offset of B against A at the first anchor (s)")
+    p.add_argument("--search-first", type=float, default=None,
+                   help="search window (s) around --offset until a first anchor matches (default: --search)")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
-    r = align(a.a, a.b, a.start, a.end, a.step, a.block, a.search, a.offset)
+    r = align(a.a, a.b, a.start, a.end, a.step, a.block, a.search, a.offset, a.search_first)
     if a.json:
         print(json.dumps(strict(r), indent=1))
         return 0
