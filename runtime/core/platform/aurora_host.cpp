@@ -221,6 +221,14 @@ bool host_init(const HostConfig& config) {
                         gcrt_backend_label(requested), gcrt_backend_label(info.backend));
       std::fprintf(stderr, "gcrt: graphics backend %s could not be started; using %s instead\n",
                    gcrt_backend_label(requested), gcrt_backend_label(info.backend));
+    } else if (requested == BACKEND_AUTO && (info.backend == BACKEND_D3D11 || info.backend == BACKEND_NULL)) {
+      // Last resort of Aurora's own order: neither Direct3D 12 nor Vulkan could be started. Not a player's choice, and
+      // the picture may be wrong (measured on one of the two supported versions with Direct3D 11).
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                        "graphics backend: neither Direct3D 12 nor Vulkan could be started, Aurora fell back to %s",
+                        gcrt_backend_label(info.backend));
+      std::fprintf(stderr, "gcrt: neither Direct3D 12 nor Vulkan could be started; using %s, the picture may be wrong\n",
+                   gcrt_backend_label(info.backend));
     }
   }
   gcrt_diag_startup_beat();
