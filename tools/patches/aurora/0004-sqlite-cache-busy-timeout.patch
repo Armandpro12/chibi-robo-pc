@@ -1,0 +1,54 @@
+diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
+index 4dc6337..a06bcf5 100644
+--- a/lib/gfx/pipeline_cache.cpp
++++ b/lib/gfx/pipeline_cache.cpp
+@@ -93,6 +93,8 @@ static absl::flat_hash_set<PipelineRef> g_pendingPipelines;
+ static std::atomic_bool g_gpuCachePrunePending = false;
+ 
+ static sqlite3* g_pipelineCacheDb = nullptr;
++// How long a pipeline cache statement waits for a lock held by another process before failing.
++constexpr int PipelineCacheBusyTimeoutMs = 5000;
+ static sqlite3_stmt* g_pipelineCacheLoadStmt = nullptr;
+ static sqlite3_stmt* g_pipelineCacheUpsertStmt = nullptr;
+ static bool g_pipelineCacheBroken = false;
+@@ -727,6 +729,13 @@ static bool prepare_pipeline_cache_db() {
+     return false;
+   }
+ 
++  // Several processes can share one cache folder: wait for a lock held by another connection instead of failing
++  // at once with SQLITE_BUSY ("database is locked"), which would abandon the pipeline cache of this process.
++  ret = sqlite3_busy_timeout(g_pipelineCacheDb, PipelineCacheBusyTimeoutMs);
++  if (ret != SQLITE_OK) {
++    Log.warn("Failed to set pipeline cache busy timeout: {}", sqlite3_errmsg(g_pipelineCacheDb));
++  }
++
+   ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+   if (ret != SQLITE_OK) {
+     Log.error("Failed to set pipeline cache pragmas: {}", sqlite3_errmsg(g_pipelineCacheDb));
+diff --git a/lib/webgpu/gpu_cache.cpp b/lib/webgpu/gpu_cache.cpp
+index 6ef44ea..77028d3 100644
+--- a/lib/webgpu/gpu_cache.cpp
++++ b/lib/webgpu/gpu_cache.cpp
+@@ -34,6 +34,8 @@ static std::vector<uint8_t> compress_buffer;
+ constexpr int CACHE_SCHEMA = 2;
+ // % of rows pruned to trigger a full VACUUM
+ constexpr uint64_t VacuumPrunePercentThreshold = 25;
++// How long a cache statement waits for a lock held by another process before failing.
++constexpr int CacheBusyTimeoutMs = 5000;
+ 
+ static std::filesystem::path cache_path() {
+   return io::fs_path_from_string(g_config.cachePath) / "dawn_cache.db";
+@@ -110,6 +112,13 @@ static bool cache_init_core() {
+     return false;
+   }
+ 
++  // Several processes can share one cache folder: wait for a lock held by another connection instead of failing
++  // at once with SQLITE_BUSY ("database is locked"), which would disable the Dawn cache of this process.
++  ret = sqlite3_busy_timeout(db, CacheBusyTimeoutMs);
++  if (ret != SQLITE_OK) {
++    Log.warn("Failed to set busy timeout: {}", sqlite3_errmsg(db));
++  }
++
+   // WAL mode + NORMAL = no need for disk syncs, consistent but not durable is fine.
+   ret = sqlite::exec(db, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+   if (ret != SQLITE_OK) {
