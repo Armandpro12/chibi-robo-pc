@@ -1,0 +1,161 @@
+# Scenario "staff-credits" (PAL, milestones 6 and 9, issues 1 and 5): the staff-credits THP movie (50 Hz: the 25 fps
+# file), reached without an advanced save. The stage 10 script plays the movie as soon as the stage starts, with no
+# condition, so it is enough to load any save into stage 10: tools/run.py --stage staff-credit replaces the stage
+# stored in the save once, at the restore (game.toml, [stage]). 60/50 Hz prompt (50 Hz) -> title screen -> Load Game
+# -> file 1 -> the movie (about 116 s) -> the game goes back to the player's home stage (next morning).
+# Run it with the user folder left by the "new-game" scenario (save in slot 1, dated at the bench clock):
+#   py -3 tools/run.py chibi-robo --version GGTP01 --stage staff-credit --user-seed <new-game folder>/user \
+#     --scenario games/chibi-robo/scenarios/play/GGTP01/staff-credits.scn
+# Checkpoints: every 10 frames around the start and the end of the movie, every 60 frames in between (the VI
+# field of each checkpoint gives the cadence), 30 consecutive frames in the middle (each frame of the movie is shown).
+# Not run by tools/ab.py (progression scenario). No game data here: buttons, frame numbers and names only.
+# Recorded on GGTP01 (cycle clock, RTC 800000000).
+name staff-credits
+description The new-game save loaded into stage 10 (--stage staff-credit): the staff-credits THP movie, then back to the game (PAL).
+version GGTP01
+after new-game     # preparation: user folder (save) left by "new-game"
+window 0
+input  150 A       # 60/50 Hz prompt: confirm the 50 Hz option
+input 1050 A       # health and safety warning
+input 2600 A       # title screen: Load Game
+input 2850 LEFT    # Load Game file selection: from file 1 to file 3 (the cursor wraps around)
+input 2900 RIGHT   # ... and back to file 1
+input 2950 A       # load file 1
+check 2940 file-1-selected
+check 2960 movie-start-2960
+check 2970 movie-start-2970
+check 2980 movie-start-2980
+check 2990 movie-start-2990
+check 3000 movie-start-3000
+check 3010 movie-start-3010
+check 3020 movie-start-3020
+check 3030 movie-start-3030
+check 3040 movie-start-3040
+check 3050 movie-start-3050
+check 3060 movie-start-3060
+check 3070 movie-start-3070
+check 3080 movie-start-3080
+check 3090 movie-start-3090
+check 3100 movie-start-3100
+check 3110 movie-start-3110
+check 3120 movie-start-3120
+check 3130 movie-start-3130
+check 3140 movie-start-3140
+check 3150 movie-start-3150
+check 3160 movie-start-3160
+check 3170 movie-start-3170
+check 3180 movie-start-3180
+check 3190 movie-start-3190
+check 3200 movie-start-3200
+check 3210 movie-start-3210
+check 3220 movie-start-3220
+check 3230 movie-start-3230
+check 3240 movie-start-3240
+check 3250 movie-start-3250
+check 3300 movie-3300
+check 3360 movie-3360
+check 3420 movie-3420
+check 3480 movie-3480
+check 3540 movie-3540
+check 3600 movie-3600
+check 3660 movie-3660
+check 3720 movie-3720
+check 3780 movie-3780
+check 3840 movie-3840
+check 3900 movie-3900
+check 3960 movie-3960
+check 4080 movie-4080
+check 4140 movie-4140
+check 4200 movie-4200
+check 4260 movie-4260
+check 4320 movie-4320
+check 4380 movie-4380
+check 4440 movie-4440
+check 4500 movie-4500
+check 4560 movie-4560
+check 4620 movie-4620
+check 4680 movie-4680
+check 4740 movie-4740
+check 4800 movie-4800
+check 4860 movie-4860
+check 4920 movie-4920
+check 4980 movie-4980
+check 5040 movie-5040
+check 5100 movie-5100
+check 5160 movie-5160
+check 5220 movie-5220
+check 5280 movie-5280
+check 5340 movie-5340
+check 5400 movie-5400
+check 5460 movie-5460
+check 5520 movie-5520
+check 5580 movie-5580
+check 5640 movie-5640
+check 5700 movie-5700
+check 5760 movie-5760
+check 5820 movie-5820
+check 5880 movie-5880
+check 4001 movie-run-4001
+check 4002 movie-run-4002
+check 4003 movie-run-4003
+check 4004 movie-run-4004
+check 4005 movie-run-4005
+check 4006 movie-run-4006
+check 4007 movie-run-4007
+check 4008 movie-run-4008
+check 4009 movie-run-4009
+check 4010 movie-run-4010
+check 4011 movie-run-4011
+check 4012 movie-run-4012
+check 4013 movie-run-4013
+check 4014 movie-run-4014
+check 4015 movie-run-4015
+check 4016 movie-run-4016
+check 4017 movie-run-4017
+check 4018 movie-run-4018
+check 4019 movie-run-4019
+check 4020 movie-run-4020
+check 4021 movie-run-4021
+check 4022 movie-run-4022
+check 4023 movie-run-4023
+check 4024 movie-run-4024
+check 4025 movie-run-4025
+check 4026 movie-run-4026
+check 4027 movie-run-4027
+check 4028 movie-run-4028
+check 4029 movie-run-4029
+check 4030 movie-run-4030
+check 5890 movie-end-5890
+check 5900 movie-end-5900
+check 5910 movie-end-5910
+check 5920 movie-end-5920
+check 5930 movie-end-5930
+check 5940 movie-end-5940
+check 5950 movie-end-5950
+check 5960 movie-end-5960
+check 5970 movie-end-5970
+check 5980 movie-end-5980
+check 5990 movie-end-5990
+check 6000 movie-end-6000
+check 6010 movie-end-6010
+check 6020 movie-end-6020
+check 6030 movie-end-6030
+check 6040 movie-end-6040
+check 6050 movie-end-6050
+check 6060 movie-end-6060
+check 6070 movie-end-6070
+check 6080 movie-end-6080
+check 6090 movie-end-6090
+check 6100 movie-end-6100
+check 6110 movie-end-6110
+check 6120 movie-end-6120
+check 6130 movie-end-6130
+check 6140 movie-end-6140
+check 6150 movie-end-6150
+check 6160 movie-end-6160
+check 6170 movie-end-6170
+check 6180 movie-end-6180
+check 6190 movie-end-6190
+check 6200 movie-end-6200
+check 6500 chibi-house
+end 6510
