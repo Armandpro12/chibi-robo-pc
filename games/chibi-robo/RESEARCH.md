@@ -26,6 +26,7 @@ Date: 2026-10-13.
 - [Appendix A. SDK functions unnamed in cbr_decomp](#appendix-a-sdk-functions-unnamed-in-cbr_decomp)
 - [Appendix B. Game and HAL library functions](#appendix-b-game-and-hal-library-functions)
 - [Appendix C. GX functions verified on 2026-10-19](#appendix-c-gx-functions-verified-on-2026-10-19)
+- [Appendix D. Audio SDK functions verified on 2026-10-19](#appendix-d-audio-sdk-functions-verified-on-2026-10-19)
 
 ---
 
@@ -587,7 +588,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 
   The unlicensed parts were not used as a source.
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
-- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied). No code copied.
+- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
 - **Ghidra** (Apache 2.0), with Cuyler36's GameCube loader extension.
 - **ExpansionPak/DolRecomp** (GPL-3.0) — the static recompiler used to run and trace the original code.
@@ -1397,3 +1398,120 @@ How each family was checked:
 | `GXTexObj` (`0x20` bytes) | `+0x00` TX_SETMODE0 word, `+0x04` TX_SETMODE1 word, `+0x08` TX_SETIMAGE0 word, `+0x0C` image address >> 5, `+0x14` format, `+0x18` TLUT name (CI formats), `+0x1C` load tile count (u16), `+0x1E` load format (u8), `+0x1F` flags (bit 0 = mipmap, bit 1 = not colour-indexed) |
 | `GXTlutObj` | `+0x00` TLUT format (bits 10-11), `+0x04` BP `0x64` word (table address >> 5), `+0x08` entry count (u16) |
 | `GXLightObj` | `+0x0C` colour, `+0x10` a0-a2, `+0x1C` k0-k2, `+0x28` position, `+0x34` direction (negated) |
+
+## Appendix D. Audio SDK functions verified on 2026-10-19
+
+Fifty-one functions of the AI, DSP and AX libraries that the step-10d inventory had matched by function order, size and call graph, without further proof. They are not in appendix A. Each name is now `[verified: Ghidra]`: we read the PAL disassembly and checked what the function reads and writes, and who calls it.
+- **AI and DSP**: the code was compared with the CC0 reference sources `ai.c`, `dsp.c`, `dsp_task.c` and `dsp_debug.c` in `cbr_decomp/decomp_dtk_main` (hardware registers `0xCC006C00`-`0xCC006C08` and `0xCC005000`-`0xCC005036`, task-list links, call order).
+- **AX** has no reference source (section 7). Each name was checked against the state it shares with functions already verified in appendix A, and against its place in the init and quit sequences. Dolphin's AX HLE (`AX.h` command numbers, `AXStructs.h` parameter-block layout) was read for the meaning of the command list and of the PB fields only.
+
+US addresses: PAL − `0x2874` up to `AIInit`, then PAL − `0x2868` from `__AISHandler` to the end of the DSP library (the US DOL has the extra 12-byte `AIReset` after `AIInit`). Sizes are equal in both versions. For 36 of the 51 functions the masked-code signature (section 7) is unique in both DOLs at these addresses `[verified: signatures]`. Fourteen others have masked code that also occurs elsewhere, and `__AXGetCurrentProfile` had no signature computed. Each of these fifteen lies between two functions with unique signatures, and every function in between has the same size at the same offset in both DOLs.
+
+`games/chibi-robo/symbols/supplement.tsv` now lists these 51 names, plus the 44 audio names of appendix A that it lacked, each with its evidence.
+
+**Correction.** PAL `0x8017725C` / US `0x801749E8` is the `static` function `__AI_set_stream_sample_rate` of `ai.c`, not `AISetStreamSampleRate`. Its body is the reference body of `__AI_set_stream_sample_rate`, with no `rate == 1` test. Its only caller is `AIInit`, with argument 1, and the reference `AIInit` makes exactly that call. The reference's public `AISetStreamSampleRate` is a separate 16-byte function, which this DOL does not contain.
+
+| US | PAL | size | name |
+|---|---|---|---|
+| `0x8017480C` | `0x80177080` | `0xD8` | `AISetStreamPlayState` |
+| `0x801748E4` | `0x80177158` | `0x10` | `AIGetStreamPlayState` |
+| `0x801749D4` | `0x80177248` | `0x14` | `AIGetDSPSampleRate` |
+| `0x801749E8` | `0x8017725C` | `0xD4` | `__AI_set_stream_sample_rate` |
+| `0x80174ABC` | `0x80177330` | `0x10` | `AIGetStreamSampleRate` |
+| `0x80174AE8` | `0x8017735C` | `0x10` | `AIGetStreamVolLeft` |
+| `0x80174B14` | `0x80177388` | `0x10` | `AIGetStreamVolRight` |
+| `0x80174C9C` | `0x80177504` | `0x7C` | `__AISHandler` |
+| `0x80174DC4` | `0x8017762C` | `0x58` | `__AICallbackStackSwitch` |
+| `0x80174E1C` | `0x80177684` | `0x1E4` | `__AI_SRC_INIT` |
+| `0x8017CE90` | `0x8017F6F8` | `0x8` | `DSPCheckInit` |
+| `0x8017CF08` | `0x8017F770` | `0x40` | `DSPCancelTask` |
+| `0x8017D010` | `0x8017F878` | `0x50` | `__DSP_debug_printf` |
+| `0x8017D7B0` | `0x80180018` | `0xA0` | `__DSP_insert_task` |
+| `0x8017D850` | `0x801800B8` | `0x94` | `__DSP_remove_task` |
+| `0x80176FC0` | `0x80179828` | `0x34` | `AXQuit` |
+| `0x80176FF4` | `0x8017985C` | `0x18` | `__AXGetStackHead` |
+| `0x8017700C` | `0x80179874` | `0x74` | `__AXServiceCallbackStack` |
+| `0x80177080` | `0x801798E8` | `0xB4` | `__AXAllocInit` |
+| `0x80177134` | `0x8017999C` | `0xB4` | `__AXAllocQuit` |
+| `0x801771E8` | `0x80179A50` | `0x20` | `__AXPushFreeStack` |
+| `0x80177208` | `0x80179A70` | `0x10` | `__AXPushCallbackStack` |
+| `0x80177218` | `0x80179A80` | `0x1C` | `__AXPopCallbackStack` |
+| `0x80177234` | `0x80179A9C` | `0x94` | `__AXRemoveFromStack` |
+| `0x801772C8` | `0x80179B30` | `0x80` | `AXFreeVoice` |
+| `0x80177348` | `0x80179BB0` | `0x174` | `AXAcquireVoice` |
+| `0x801774BC` | `0x80179D24` | `0xA8` | `AXSetVoicePriority` |
+| `0x80177564` | `0x80179DCC` | `0xE4` | `__AXAuxInit` |
+| `0x80177648` | `0x80179EB0` | `0x10` | `__AXAuxQuit` |
+| `0x801777B0` | `0x8017A018` | `0x23C` | `__AXProcessAux` |
+| `0x801779EC` | `0x8017A254` | `0xC` | `AXRegisterAuxACallback` |
+| `0x801779F8` | `0x8017A260` | `0xC` | `AXRegisterAuxBCallback` |
+| `0x80177A04` | `0x8017A26C` | `0x8` | `__AXGetCommandListCycles` |
+| `0x80177A0C` | `0x8017A274` | `0x3C` | `__AXGetCommandListAddress` |
+| `0x80177A48` | `0x8017A2B0` | `0x6B0` | `__AXNextFrame` |
+| `0x801780F8` | `0x8017A960` | `0x24` | `__AXClInit` |
+| `0x8017811C` | `0x8017A984` | `0x4` | `__AXClQuit` |
+| `0x80178120` | `0x8017A988` | `0x14` | `AXSetMode` |
+| `0x801788A4` | `0x8017B10C` | `0x58` | `__AXOutQuit` |
+| `0x80178940` | `0x8017B1A8` | `0xC` | `__AXGetStudio` |
+| `0x80178D44` | `0x8017B5AC` | `0x2C` | `__AXSPBInit` |
+| `0x80178D70` | `0x8017B5D8` | `0x4` | `__AXSPBQuit` |
+| `0x80178D74` | `0x8017B5DC` | `0x94` | `__AXDepopVoice` |
+| `0x80178E08` | `0x8017B670` | `0x8` | `__AXGetNumVoices` |
+| `0x80178E10` | `0x8017B678` | `0x74C` | `__AXServiceVPB` |
+| `0x8017955C` | `0x8017BDC4` | `0x278` | `__AXSyncPBs` |
+| `0x801797D4` | `0x8017C03C` | `0xC` | `__AXGetPBs` |
+| `0x801797E0` | `0x8017C048` | `0x44` | `__AXSetPBDefault` |
+| `0x80179824` | `0x8017C08C` | `0x204` | `__AXVPBInit` |
+| `0x80179A28` | `0x8017C290` | `0x4` | `__AXVPBQuit` |
+| `0x8017A39C` | `0x8017CC04` | `0x48` | `__AXGetCurrentProfile` |
+
+How each family was checked:
+- **AI** (10):
+  - `AISetStreamPlayState` follows the reference line for line. It returns early if the state does not change. When the stream rate is 32 kHz and play is requested, it mutes both stream volumes, runs `__AI_SRC_INIT` with interrupts disabled, sets AICR bits 5 and 0, then restores the volumes.
+  - The getters read AICR bit 0 (play state), bit 1 (stream rate) and inverted bit 6 (DSP rate), and the two bytes of AIVR (stream volumes).
+  - `AIInit` installs `__AISHandler` for interrupt 8 (AI). This handler acknowledges AICR bit 3 and calls the stream callback with the sample counter `0xCC006C08`.
+  - `__AICallbackStackSwitch` runs the DMA callback on the stack given to `AIInit`. Only `__AIDHandler` calls it.
+  - `__AI_SRC_INIT` busy-waits on sample-counter changes and times them with `OSGetTime`.
+- **DSP** (5):
+  - `DSPCheckInit` returns the flag that `DSPInit` tests and sets.
+  - `DSPCancelTask` sets the cancel flag (`0x2`) of a task with interrupts disabled. `__AXOutQuit` calls it.
+  - `__DSP_debug_printf` is an empty variadic function. `DSPInit` and `__DSP_boot_task` call it.
+  - `__DSP_insert_task` (priority-ordered insertion) and `__DSP_remove_task` (flags 0, state done, unlink) match the reference.
+- **AX voice allocation** (11):
+  - Voices sit on 32 doubly linked stacks, one per priority, plus a singly linked callback stack. Stack 0 is the free list.
+  - `AXAcquireVoice(priority, callback, context)` takes a free voice, or steals one from a lower priority after calling its callback.
+  - `AXFreeVoice` and `AXSetVoicePriority` unlink the voice with `__AXRemoveFromStack` and relink it.
+  - `__AXPushFreeStack`, `__AXPushCallbackStack`, `__AXPopCallbackStack` and `__AXGetStackHead` are the stack primitives.
+  - `__AXServiceCallbackStack` calls the callback of each voice the DSP dropped, then frees it.
+  - `__AXAllocInit` and `__AXAllocQuit` have identical code; their callers tell them apart.
+- **AX init and quit**:
+  - `AXQuit` calls `__AXAllocQuit`, `__AXVPBQuit`, `__AXSPBQuit`, `__AXAuxQuit`, `__AXClQuit` and `__AXOutQuit`. This is the order of the six init calls of `AXInitEx`.
+  - The three empty quit functions each directly follow the init function of the same module.
+  - `__AXOutQuit` cancels the AX DSP task, sleeps until the done callback wakes it, and stops AI DMA.
+- **AUX buses**:
+  - `AXRegisterAuxACallback` and `AXRegisterAuxBCallback` store a callback and a context. The HAL effect setup calls the first for channel 0 and the second for channel 1.
+  - `__AXAuxInit` and `__AXAuxQuit` clear these callbacks.
+  - `__AXProcessAux` invalidates the bus buffer, calls the callback with it, flushes it and advances the buffer index.
+- **Command list**:
+  - `__AXNextFrame` writes the next command list. It starts with command 0 and the address returned by `__AXGetStudio`, followed by the PB and AUX buffer addresses. After each command it adds to a DSP-cycle counter, which `__AXGetCommandListCycles` returns to `__AXSyncPBs`.
+  - `__AXGetCommandListAddress` swaps between two lists of `0x300` bytes. `__AXClInit` resets that state and the mode that `AXSetMode` stores. The only caller of `AXSetMode` is the HAL sound-mode function, which also calls `OSSetSoundMode`.
+- **Voice parameter blocks**:
+  - `__AXSyncPBs` walks the voices from priority 31 down within the cycle budget. For each voice it calls `__AXServiceVPB`, which copies the fields whose sync bits are set, or `__AXDepopVoice`, or it moves the voice to the callback stack.
+  - `__AXDepopVoice` adds the nine depop values of a PB (`+0x52`) to nine accumulators. `__AXSPBInit` clears those accumulators.
+  - `__AXGetNumVoices` returns the count kept by `__AXServiceVPB`.
+  - `__AXVPBInit` builds the PB array that `__AXGetPBs` returns.
+  - `__AXSetPBDefault` stops the PB and marks it for a full rewrite.
+  - `__AXGetCurrentProfile` returns the next entry of an optional profiling ring. Its caller is `__AXOutNewFrame`.
+
+**AX voice layout used by this SDK revision** `[verified: Ghidra]`, for native code that reads the game's voices (`AXVPB`). The offsets and sizes are read from the disassembly; the field names (for example `running`, `ITD`) are taken from Dolphin's `AXStructs.h`, read only for their meaning:
+
+| offset | field |
+|---|---|
+| `+0x00`, `+0x04` | next and previous voice in its priority stack |
+| `+0x08` | next voice in the callback stack |
+| `+0x0C` | priority (0 = free) |
+| `+0x10`, `+0x14` | callback and its context (from `AXAcquireVoice`) |
+| `+0x1C` | sync bits (fields to copy to the DSP PB) |
+| `+0x138` | the voice's copy of the PB: `running` at `+0x146` (PB `+0x0E`), ITD at `+0x16E` (PB `+0x36`) |
+
+Still unverified, kept out of this appendix: `__AXGetAuxAInput` (PAL `0x80179EC0`). Its code is known, but we have no source that fixes which of the two AUX buffer roles the SDK calls "input". The same holds for the nine AUX buffer getters that follow it, the studio depop function at PAL `0x8017B1B4`, and the AXFX effect functions except `AXFXSetHooks`.
