@@ -1895,6 +1895,7 @@ void __cdecl on_invalid_parameter(const wchar_t*, const wchar_t*, const wchar_t*
 
 // --- Hang watchdog ------------------------------------------------------------------------------------------------
 unsigned g_watchdog_seconds = 0;
+unsigned g_startup_watchdog_seconds = 0; // before the game loop: GCRT_WATCHDOG_STARTUP, else max(GCRT_WATCHDOG, 60)
 constexpr int kMaxHangReports = 3;
 
 DWORD WINAPI watchdog_main(LPVOID) {
@@ -1926,7 +1927,7 @@ DWORD WINAPI watchdog_main(LPVOID) {
       continue;
     }
     still++;
-    if (still == g_watchdog_seconds && !reported) {
+    if (still == (startup ? g_startup_watchdog_seconds : g_watchdog_seconds) && !reported) {
       reported = true;
       if (IsDebuggerPresent()) {
         continue; // a breakpoint is not a hang
@@ -2031,6 +2032,13 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   g_watchdog_seconds = 60;
   if (env_set(L"GCRT_WATCHDOG", buf, 32)) {
     g_watchdog_seconds = static_cast<unsigned>(wcstoul(buf, nullptr, 10));
+  }
+  // Start-up (window creation, setup menu): at least 60 s, so that the short GCRT_WATCHDOG of the tests of the game
+  // loop hang (a few seconds) does not also report a slow window creation on a busy computer; GCRT_WATCHDOG_STARTUP
+  // sets it apart (test of this watch). Off with GCRT_WATCHDOG=0.
+  g_startup_watchdog_seconds = g_watchdog_seconds > 60 ? g_watchdog_seconds : 60;
+  if (env_set(L"GCRT_WATCHDOG_STARTUP", buf, 32)) {
+    g_startup_watchdog_seconds = static_cast<unsigned>(wcstoul(buf, nullptr, 10));
   }
   if (g_watchdog_seconds > 0) {
     HANDLE w = CreateThread(nullptr, 64 * 1024, watchdog_main, nullptr, 0, &g_watchdog_tid);

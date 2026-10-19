@@ -129,11 +129,12 @@
  *                      the watchdog). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap: what a report does while the other threads
  *                      are suspended (sleep, or a 1 MiB allocation on the process heap): test of the suspension guard
  *                      (GCRT_CRASH_SUSPEND_LIMIT, platform/gcrt_crash.h)
- *   GCRT_WATCHDOG      seconds without progress of the game loop (one heartbeat per emulated frame; before it
- *                      starts, of the start-up: window creation, one beat per setup menu pass) before a hang
+ *   GCRT_WATCHDOG      seconds without progress of the game loop (one heartbeat per emulated frame) before a hang
  *                      report (hang-*.txt/.dmp in the crash folder, threads and their stacks); default 60, 0 = off;
  *                      at most 3 per session, never kills the game, skipped under a debugger (platform/gcrt_crash.h)
- *   GCRT_DIAG_EVENTS   size of the ring of recent native events kept for crash reports (frames, copies, disc reads,
+ *   GCRT_WATCHDOG_STARTUP  the same before the game loop starts: seconds without progress of the start-up (window
+ *                      creation, one beat per setup menu pass); default GCRT_WATCHDOG, at least 60; 0 = off
+ *   GCRT_DIAG_EVENTS  size of the ring of recent native events kept for crash reports (frames, copies, disc reads,
  *                      save files, window events, settings, DSP tasks; platform/gcrt_diag.h): rounded up to a power of
  *                      two, default 4096, 0 = off
  *   GCRT_GUEST_HISTORY last guest blocks kept for crash reports (cpu/gcrt_cpu.h): power of two from 64 to 1048576,
