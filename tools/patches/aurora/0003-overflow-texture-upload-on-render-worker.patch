@@ -1,0 +1,110 @@
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+index 2337784..bc3314e 100644
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -343,6 +343,23 @@ constexpr uint64_t TextureUploadStagingOffset = StorageStagingOffset + StorageBu
+ 
+ constexpr uint32_t align_down_copy_offset(uint32_t value) noexcept { return value & ~3u; }
+ 
++// Creates the buffer of an upload that did not fit in the staging buffer (see queue_texture_upload_data), on the
++// render worker. The buffer is kept by the upload until the frame packet is reset, as before.
++void create_overflow_upload_buffer(const TextureUpload& item) {
++  const wgpu::BufferDescriptor descriptor{
++      .label = "Overflow Texture Upload Buffer",
++      .usage = wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc,
++      .size = item.overflowData.size(),
++      .mappedAtCreation = true,
++  };
++  item.buffer = g_device.CreateBuffer(&descriptor);
++  if (auto* dst = item.buffer.GetMappedRange(0, descriptor.size)) {
++    memcpy(dst, item.overflowData.data(), descriptor.size);
++  }
++  item.buffer.Unmap();
++  item.overflowData = {};
++}
++
+ void copy_staging_buffer_range(wgpu::CommandEncoder& cmd, const FramePacket& frame, uint32_t& copied,
+                                uint32_t highWater, uint64_t stagingOffset, const wgpu::Buffer& dst) {
+   if (highWater <= copied) {
+@@ -384,6 +401,9 @@ void copy_staging_to_high_water(wgpu::CommandEncoder& cmd, FramePacket& frame, c
+   if constexpr (UseTextureBuffer) {
+     for (size_t i = frame.copied.textureUploadCount; i < op.textureUploads.size(); ++i) {
+       const auto& item = *op.textureUploads[i];
++      if (!item.buffer && !item.overflowData.empty()) {
++        create_overflow_upload_buffer(item);
++      }
+       const wgpu::TexelCopyBufferInfo buf{
+           .layout =
+               wgpu::TexelCopyBufferLayout{
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 1390345..332dd5a 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -681,28 +681,24 @@ void queue_texture_upload_data(const uint8_t* data, uint32_t bytesPerRow, uint32
+     return;
+   }
+ 
++  // Too large for what is left of the staging buffer. This runs on the recording thread while the render worker
++  // uses the device, and Dawn does not lock the device here (ImplicitDeviceSynchronization is not requested): keep a
++  // CPU copy and let the render worker create, fill and unmap the buffer (encoding.cpp, copy_staging_to_high_water).
+   const uint64_t uploadSize = copyBytesPerRow * rowsPerImage;
+-  const wgpu::BufferDescriptor descriptor{
+-      .label = "Overflow Texture Upload Buffer",
+-      .usage = wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc,
+-      .size = uploadSize,
+-      .mappedAtCreation = true,
+-  };
+-  auto buffer = webgpu::g_device.CreateBuffer(&descriptor);
+-  auto* dst = static_cast<uint8_t*>(buffer.GetMappedRange(0, uploadSize));
++  std::vector<uint8_t> overflowData(uploadSize);
++  auto* dst = overflowData.data();
+   for (uint32_t row = 0; row < rowsPerImage; ++row) {
+     memcpy(dst, data, bytesPerRow);
+     data += bytesPerRow;
+     dst += copyBytesPerRow;
+   }
+-  buffer.Unmap();
+ 
+   const wgpu::TexelCopyBufferLayout layout{
+       .offset = 0,
+       .bytesPerRow = bytesPerRow,
+       .rowsPerImage = rowsPerImage,
+   };
+-  queue_texture_upload(TextureUpload{layout, std::move(tex), size, std::move(buffer)});
++  queue_texture_upload(TextureUpload{layout, std::move(tex), size, std::move(overflowData)});
+ }
+ 
+ void queue_texture_copy(wgpu::TexelCopyTextureInfo src, wgpu::TexelCopyTextureInfo dst, wgpu::Extent3D size) {
+diff --git a/lib/gfx/texture.hpp b/lib/gfx/texture.hpp
+index 600a430..c80baf5 100644
+--- a/lib/gfx/texture.hpp
++++ b/lib/gfx/texture.hpp
+@@ -2,6 +2,7 @@
+ #include <dolphin/gx.h>
+ 
+ #include <utility>
++#include <vector>
+ 
+ #include "types.hpp"
+ 
+@@ -10,13 +11,17 @@ struct TextureUpload {
+   wgpu::TexelCopyBufferLayout layout;
+   wgpu::TexelCopyTextureInfo tex;
+   wgpu::Extent3D size;
+-  wgpu::Buffer buffer;
++  // Upload that did not fit in the frame's staging buffer: its rows, already padded to the copy row alignment. The
++  // recording thread only copies them here; the render worker creates `buffer` from them when it encodes the upload,
++  // so that no Dawn call is made outside the render worker. Both are only touched by the render worker afterwards.
++  mutable std::vector<uint8_t> overflowData;
++  mutable wgpu::Buffer buffer;
+ 
+   TextureUpload(wgpu::TexelCopyBufferLayout layout, wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size) noexcept
+   : layout(layout), tex(std::move(tex)), size(size) {}
+   TextureUpload(wgpu::TexelCopyBufferLayout layout, wgpu::TexelCopyTextureInfo tex, wgpu::Extent3D size,
+-                wgpu::Buffer buffer) noexcept
+-  : layout(layout), tex(std::move(tex)), size(size), buffer(std::move(buffer)) {}
++                std::vector<uint8_t> overflowData) noexcept
++  : layout(layout), tex(std::move(tex)), size(size), overflowData(std::move(overflowData)) {}
+ };
+ void queue_texture_upload(TextureUpload upload);
+ void queue_texture_upload_data(const uint8_t* data, uint32_t bytesPerRow, uint32_t rowsPerImage,
