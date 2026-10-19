@@ -25,6 +25,12 @@ extern "C" {
 /* fopen() of a UTF-8 path (_wfopen on Windows). NULL if the path is not valid UTF-8 or cannot be opened. */
 FILE* gcrt_fopen_utf8(const char* path, const char* mode);
 
+#if defined(_WIN32)
+/* UTF-8 -> UTF-16 copy (MultiByteToWideChar, CP_UTF8), to be released with free(). NULL if `s` is NULL or not valid
+ * UTF-8. For the Windows calls that take text rather than a path (e.g. MessageBoxW, platform/gcrt_fatal.h). */
+wchar_t* gcrt_utf8_to_wide(const char* s);
+#endif
+
 /* Environment variable as UTF-8 (_wgetenv on Windows). False if it is unset, empty, or does not fit in `size`. */
 bool gcrt_getenv_utf8(const char* name, char* out, size_t size);
 
@@ -34,6 +40,10 @@ void gcrt_utf8_args(int* argc, char*** argv);
 
 /* Folder of the running executable in UTF-8, without a trailing separator. False if unknown. */
 bool gcrt_exe_dir_utf8(char* out, size_t size);
+
+/* `path` as shown to a player: on Windows the full path with ".." resolved and backslashes (GetFullPathNameW; the
+ * file need not exist); elsewhere, or if that fails, a copy. Always writes a NUL-terminated string (truncated). */
+void gcrt_path_display(const char* path, char* out, size_t size);
 
 /* True if `path` is absolute ("C:\...", "\\server\...", "/..."). */
 bool gcrt_path_is_absolute(const char* path);

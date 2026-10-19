@@ -39,6 +39,8 @@ static wchar_t* widen(const char* s) {
     return w;
 }
 
+wchar_t* gcrt_utf8_to_wide(const char* s) { return widen(s); }
+
 /* UTF-16 -> UTF-8 into a caller buffer; false if it does not fit. */
 static bool narrow_into(const wchar_t* w, char* out, size_t size) {
     if (!size)
@@ -142,7 +144,29 @@ bool gcrt_dir_writable(const char* dir) {
     return true;
 }
 
+void gcrt_path_display(const char* path, char* out, size_t size) {
+    if (!size)
+        return;
+    snprintf(out, size, "%s", path ? path : "");
+    wchar_t* w = widen(path);
+    if (!w)
+        return;
+    static wchar_t full[32768];
+    DWORD n = GetFullPathNameW(w, (DWORD)(sizeof(full) / sizeof(full[0])), full, NULL);
+    free(w);
+    if (n == 0 || n >= sizeof(full) / sizeof(full[0]))
+        return;
+    char tmp[4096];
+    if (narrow_into(full, tmp, sizeof(tmp)))
+        snprintf(out, size, "%s", tmp);
+}
+
 #else /* not Windows: paths are bytes, plain C functions */
+
+void gcrt_path_display(const char* path, char* out, size_t size) {
+    if (size)
+        snprintf(out, size, "%s", path ? path : "");
+}
 
 FILE* gcrt_fopen_utf8(const char* path, const char* mode) { return fopen(path, mode); }
 

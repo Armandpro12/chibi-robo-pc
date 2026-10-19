@@ -29,6 +29,7 @@
 extern "C" {
 #include "../hle/gcrt_native.h"
 #include "gcrt_console.h"
+#include "gcrt_fatal.h"
 #include "gcrt_focus.h"
 #include "gcrt_crash.h"
 #include "gcrt_diag.h"
@@ -1017,13 +1018,8 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     // ("auto") it is off as soon as a launcher sets one of these variables (tools/run.py, test benches): nobody would
     // be there to click "Start game".
     const std::string menu = env("GCRT_SETUP_MENU", "auto");
-    static const char* const kLauncherVars[] = {"GCRT_WINDOW",       "GCRT_USER_DIR", "GCRT_INPUT",
-                                                "GCRT_INPUT_FRAMES", "GCRT_STOP_AT",  "GCRT_STOP_FRAME",
-                                                "GCRT_CAPTURE_DIR",  "GCRT_RTC"};
-    bool launched = false;
-    for (const char* var : kLauncherVars) {
-      launched |= std::getenv(var) != nullptr;
-    }
+    // The list of those variables is shared with the start-up error dialog (gcrt_fatal.h).
+    const bool launched = gcrt_launched_by_tool();
     host.setupMenu = menu == "1" || (menu != "0" && host.windowMode == 0 && !launched);
   }
   std::error_code ec;

@@ -130,6 +130,13 @@ image already installed is offered and not copied again). What happens when an i
   same folder, which puts back or finishes an interrupted replacement of the image files and repairs the
   installation (a first installation interrupted that way has no uninstaller yet).
 
+If the game cannot start because the installation is damaged, it shows a message box and exits instead of opening
+a black window: the disc image or `manifest.json` is missing or unreadable, the game files (`disc/sys/main.dol`,
+`boot.bin`) are missing, or the disc image or the game files are those of another version than the executable
+("This executable is for GGTE01 but the disc image is GGTP01"). The message names the file the game looked for; run
+the installer again over the same folder to repair it. Automated runs never get the box: the message goes to stderr
+(and the trace) and the exit code is 1 (`GCRT_FATAL_DIALOG`, see `runtime/core/platform/gcrt_fatal.h`).
+
 Silent install: `setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>` (exit
 code 0 on success, 1 if the image or the folder is refused, 7 if the image could not be extracted or the folder is
 refused at the last check, 9 if its copy could not be checked or put in place, 5 if the installation was cancelled or
