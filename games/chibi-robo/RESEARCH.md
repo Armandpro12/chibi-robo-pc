@@ -588,7 +588,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 
   The unlicensed parts were not used as a source.
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
-- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied). No code copied.
+- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
 - **Ghidra** (Apache 2.0), with Cuyler36's GameCube loader extension.
 - **ExpansionPak/DolRecomp** (GPL-3.0) — the static recompiler used to run and trace the original code.
@@ -1503,7 +1503,7 @@ How each family was checked:
   - `__AXSetPBDefault` stops the PB and marks it for a full rewrite.
   - `__AXGetCurrentProfile` returns the next entry of an optional profiling ring. Its caller is `__AXOutNewFrame`.
 
-**AX voice layout used by this SDK revision** `[verified: Ghidra]`, for native code that reads the game's voices (`AXVPB`):
+**AX voice layout used by this SDK revision** `[verified: Ghidra]`, for native code that reads the game's voices (`AXVPB`). The offsets and sizes are read from the disassembly; the field names (for example `running`, `ITD`) are taken from Dolphin's `AXStructs.h`, read only for their meaning:
 
 | offset | field |
 |---|---|
