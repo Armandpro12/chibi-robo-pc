@@ -4,7 +4,9 @@
  * audio output, the screenshots and the run log.
  *
  * Generic GameCube. Settings through environment variables (tools/run.py fills them in):
- *   GCRT_DATA_DIR      Aurora data folder (default: <executable folder>/gcrt-data)
+ *   GCRT_DATA_DIR      Aurora data folder: pipeline and shader caches, imgui.ini (default: <executable
+ *                      folder>/gcrt-data if a file can be created there, otherwise <user folder>/gcrt-data, e.g. for
+ *                      a copy installed in a read-only folder; notes/decisions.md, 2026-10-19)
  *   GCRT_USER_DIR      user folder of the tests and automated runs, instead of the SDL one: controls.ini
  *                      inside, saves in <folder>/saves/ (platform/gcrt_user_dir.h)
  *   GCRT_INPUT_KEYS    simulated physical keys, before translation by controls.ini (input_host.hpp)

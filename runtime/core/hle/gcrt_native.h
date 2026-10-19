@@ -217,8 +217,9 @@ void gcrt_native_gx_stats(GcrtGxStats* out);
  * GCRT_CARD_MBIT overrides it (tests). The files are in gcrt_save_dir() (platform/gcrt_user_dir.h). */
 void gcrt_native_card_set_size(unsigned size_mbit);
 
-/* Disc image: path given by GCRT_DISC_IMAGE, otherwise the "image" field of <disc_root>/../manifest.json.
- * Returns false if no path is found. */
+/* Disc image (UTF-8 path): GCRT_DISC_IMAGE, otherwise the "image" field of <disc_root>/../manifest.json; a relative
+ * "image" is relative to the manifest's folder, and an absolute one that no longer exists is looked for under the same
+ * file name next to the manifest (installed copy moved or renamed). Returns false if no path is found. */
 bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size);
 
 #ifdef __cplusplus

@@ -20,6 +20,7 @@
 #include "hle/gcrt_hle.h"
 
 #include "boot/gcrt_boot.h"
+#include "platform/gcrt_path.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -312,7 +313,7 @@ int gcrt_hle_rel_selftest(GcrtCpu* g, const char* path) {
     CPUState* cpu = &g->state;
     char what[256], error[128];
     int failures = 0;
-    FILE* f = fopen(path, "rb");
+    FILE* f = gcrt_fopen_utf8(path, "rb"); /* UTF-8 path from the command line */
     if (!f) {
         fprintf(stderr, "gcrt: REL test: file not found %s\n", path);
         return 1;

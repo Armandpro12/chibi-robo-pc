@@ -9,6 +9,8 @@
 #endif
 #include "hle/gcrt_native.h"
 #include "hle/gcrt_native_modules.h"
+#include "platform/gcrt_path.h"
+#include "platform/gcrt_save_file.h"
 #include "platform/trace.h"
 
 #include <stdlib.h>
@@ -73,37 +75,144 @@ void gcrt_native_report(FILE* out) {
  * Disc image
  * ------------------------------------------------------------------------------------------- */
 
-bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
-    const char* env = getenv("GCRT_DISC_IMAGE");
-    if (env && env[0]) {
-        snprintf(out, size, "%s", env);
-        return true;
+/* Appends the UTF-8 encoding of code point `c` to out[*used]; false if it does not fit. */
+static bool put_utf8(char* out, size_t size, size_t* used, unsigned long c) {
+    char b[4];
+    size_t n;
+    if (c < 0x80) {
+        b[0] = (char)c, n = 1;
+    } else if (c < 0x800) {
+        b[0] = (char)(0xC0 | (c >> 6)), b[1] = (char)(0x80 | (c & 0x3F)), n = 2;
+    } else if (c < 0x10000) {
+        b[0] = (char)(0xE0 | (c >> 12)), b[1] = (char)(0x80 | ((c >> 6) & 0x3F)), b[2] = (char)(0x80 | (c & 0x3F));
+        n = 3;
+    } else {
+        b[0] = (char)(0xF0 | (c >> 18)), b[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+        b[2] = (char)(0x80 | ((c >> 6) & 0x3F)), b[3] = (char)(0x80 | (c & 0x3F));
+        n = 4;
     }
-    if (!disc_root)
+    if (*used + n + 1 > size)
         return false;
-    /* <disc_root>/../manifest.json, "image" field (written by tools/extract.py; parsed without a library). */
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/../manifest.json", disc_root);
-    FILE* f = fopen(path, "rb");
-    if (!f)
+    memcpy(out + *used, b, n);
+    *used += n;
+    return true;
+}
+
+static int hex4(const char* p, unsigned long* v) {
+    *v = 0;
+    for (int i = 0; i < 4; i++) {
+        char c = p[i];
+        int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (d < 0)
+            return 0;
+        *v = (*v << 4) | (unsigned long)d;
+    }
+    return 1;
+}
+
+/* Value of the JSON string field `key` of `text` (UTF-8, escapes \" \\ \/ \b \f \n \r \t \uXXXX decoded); parsed
+ * without a library: the manifest is small and written by our tools (tools/extract.py, tools/gcextract). */
+static bool json_string_field(const char* text, const char* key, char* out, size_t size) {
+    char quoted[64];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", key);
+    const char* k = strstr(text, quoted);
+    if (!k)
         return false;
-    char text[16384];
-    size_t n = fread(text, 1, sizeof(text) - 1, f);
-    fclose(f);
-    text[n] = '\0';
-    const char* key = strstr(text, "\"image\"");
-    if (!key)
-        return false;
-    const char* colon = strchr(key + 7, ':');
+    const char* colon = strchr(k + strlen(quoted), ':');
     const char* quote = colon ? strchr(colon, '"') : NULL;
     if (!quote)
         return false;
     size_t used = 0;
-    for (const char* p = quote + 1; *p && *p != '"' && used + 1 < size; p++) {
-        if (*p == '\\' && p[1])
+    for (const char* p = quote + 1; *p && *p != '"'; p++) {
+        unsigned long c = (unsigned char)*p;
+        if (*p == '\\' && p[1]) {
             p++;
-        out[used++] = *p;
+            switch (*p) {
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case 'u': {
+                unsigned long lo;
+                if (!hex4(p + 1, &c))
+                    return false;
+                p += 4;
+                if (c >= 0xD800 && c < 0xDC00 && p[1] == '\\' && p[2] == 'u' && hex4(p + 3, &lo) && lo >= 0xDC00 &&
+                    lo < 0xE000) {
+                    c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+                    p += 6;
+                }
+                if (!put_utf8(out, size, &used, c))
+                    return false;
+                continue;
+            }
+            default: c = (unsigned char)*p; break; /* \" \ \/ */
+            }
+        }
+        if (used + 2 > size)
+            return false;
+        out[used++] = (char)c;
     }
     out[used] = '\0';
     return used > 0;
+}
+
+/* Last component of a path ("a/b\\c.iso" -> "c.iso"). */
+static const char* file_name_of(const char* path) {
+    const char* name = path;
+    for (const char* p = path; *p; p++)
+        if (*p == '/' || *p == '\\')
+            name = p + 1;
+    return name;
+}
+
+bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
+    if (size)
+        out[0] = '\0';
+    if (gcrt_getenv_utf8("GCRT_DISC_IMAGE", out, size)) {
+        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s (GCRT_DISC_IMAGE)", out);
+        return true;
+    }
+    if (!disc_root)
+        return false;
+    /* <disc_root>/../manifest.json, "image" field (written by tools/extract.py or tools/gcextract --manifest). */
+    char folder[1100], path[1200];
+    snprintf(folder, sizeof(folder), "%s/..", disc_root);
+    snprintf(path, sizeof(path), "%s/manifest.json", folder);
+    FILE* f = gcrt_fopen_utf8(path, "rb");
+    if (!f) {
+        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: no manifest %s", path);
+        return false;
+    }
+    char text[16384];
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = '\0';
+    char image[1024];
+    if (!json_string_field(text, "image", image, sizeof(image))) {
+        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: no \"image\" field in %s", path);
+        return false;
+    }
+    /* A relative "image" is relative to the manifest's folder: an installed copy can be moved or renamed. */
+    if (!gcrt_path_is_absolute(image)) {
+        snprintf(out, size, "%s/%s", folder, image);
+        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s (manifest %s, relative)", out, path);
+        return true;
+    }
+    snprintf(out, size, "%s", image);
+    if (!gcrt_sf_is_file(image)) {
+        /* Absolute path that no longer exists (folder moved with its image): the same file name next to the
+         * manifest, if it is there. */
+        char beside[1200];
+        snprintf(beside, sizeof(beside), "%s/%s", folder, file_name_of(image));
+        if (gcrt_sf_is_file(beside)) {
+            gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s missing, %s used (next to the manifest)", image,
+                              beside);
+            snprintf(out, size, "%s", beside);
+            return true;
+        }
+    }
+    gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s (manifest %s)", out, path);
+    return true;
 }
