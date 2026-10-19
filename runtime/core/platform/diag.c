@@ -16,6 +16,7 @@
 #endif
 
 volatile uint64_t g_gcrt_heartbeat = 0;
+volatile uint64_t g_gcrt_startup_beat = 0;
 
 static GcrtDiagSlot* s_slots = NULL;
 static uint32_t s_mask = 0;

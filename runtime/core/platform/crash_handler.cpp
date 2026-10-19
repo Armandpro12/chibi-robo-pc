@@ -1366,6 +1366,7 @@ struct CrashInput {
   wchar_t stem[MAX_PATH * 2];
 };
 CrashInput g_in;
+bool g_hang_in_startup = false; // set by the watchdog before a hang report: the start-up stopped, not the game loop
 HANDLE g_request = nullptr; // auto-reset: a report is requested
 HANDLE g_done = nullptr;    // auto-reset: the report is finished
 DWORD g_reporter_tid = 0;
@@ -1543,7 +1544,8 @@ void do_report() {
               : "");
     }
   } else {
-    out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game keeps running\n",
+    out("no exception: the %s made no progress for %u s (GCRT_WATCHDOG); the game keeps running\n",
+        g_hang_in_startup ? "start-up (window creation, setup menu, before the game loop)" : "game loop",
         g_in.hang_seconds);
   }
   const bool game_faulted = !hang && g_in.thread == g_game_thread;
@@ -1896,22 +1898,29 @@ unsigned g_watchdog_seconds = 0;
 constexpr int kMaxHangReports = 3;
 
 DWORD WINAPI watchdog_main(LPVOID) {
-  uint64_t last = g_gcrt_heartbeat;
+  uint64_t last = 0;
+  bool lastStartup = true;
   unsigned still = 0;
   bool reported = false;
   int reports = 0;
   for (;;) {
     // Counting sleeps, not clock time: after a system sleep or hibernation only one more tick has passed.
     Sleep(1000);
-    const uint64_t beat = g_gcrt_heartbeat;
+    // Before the game loop beats: the start-up beat (window creation, setup menu passes, gcrt_diag.h), armed when
+    // the platform opens the window; before that (boot), nothing is watched.
+    const uint64_t loop = g_gcrt_heartbeat;
+    const bool startup = loop == 0;
+    const uint64_t beat = startup ? g_gcrt_startup_beat : loop;
     if (beat == 0) {
-      continue; // the game loop has not started (setup menu, boot)
+      continue;
     }
-    if (beat != last) {
+    if (beat != last || startup != lastStartup) {
       if (reported) {
-        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: the game loop progresses again after %u s", still);
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: the %s progresses again after %u s",
+                          lastStartup ? "start-up" : "game loop", still);
       }
       last = beat;
+      lastStartup = startup;
       still = 0;
       reported = false;
       continue;
@@ -1922,11 +1931,13 @@ DWORD WINAPI watchdog_main(LPVOID) {
       if (IsDebuggerPresent()) {
         continue; // a breakpoint is not a hang
       }
-      gcrt_diag_event(GCRT_EV_WATCHDOG, still, 0);
-      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the game loop for %u s%s", still,
+      gcrt_diag_event(GCRT_EV_WATCHDOG, still, startup ? 1u : 0u);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the %s for %u s%s",
+                        startup ? "start-up (window creation, setup menu)" : "game loop", still,
                         reports < kMaxHangReports ? ", writing a hang report (the game keeps running)" : "");
       if (reports < kMaxHangReports) {
         reports++;
+        g_hang_in_startup = startup;
         run_report(nullptr, Cause::Hang, g_game_thread, still);
       }
     }

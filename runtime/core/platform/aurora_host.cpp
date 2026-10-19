@@ -133,7 +133,15 @@ const char* host_keyboard_help() {
          "right after the window opens";
 }
 
+// Host seconds since `start` (start-up times in the trace: its timestamps are emulated time, 0 before the game).
+static double seconds_since(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
 bool host_init(const HostConfig& config) {
+  // Start-up progress, watched by the hang watchdog until the game loop beats (gcrt_diag.h).
+  gcrt_diag_startup_beat();
+  const auto start = std::chrono::steady_clock::now();
   g_title = config.title;
   g_dataDir = config.dataDir;
   AuroraConfig ac{};
@@ -160,6 +168,8 @@ bool host_init(const HostConfig& config) {
   }
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
+  gcrt_diag_startup_beat();
+  const double windowSeconds = seconds_since(start);
   if (noFocus) {
     SDL_RemoveEventWatch(keep_behind_on_shown, nullptr);
     if (!g_keptBehind && info.window != nullptr) {
@@ -172,9 +182,10 @@ bool host_init(const HostConfig& config) {
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
   gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_OPENED,
                   (static_cast<uint64_t>(info.windowSize.fb_width) << 32) | info.windowSize.fb_height);
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d, %ux%u, %s", static_cast<int>(info.backend),
-                    info.windowSize.fb_width, info.windowSize.fb_height,
-                    kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0]);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d, %ux%u, %s, in %.2f s (host)",
+                    static_cast<int>(info.backend), info.windowSize.fb_width, info.windowSize.fb_height,
+                    kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0],
+                    windowSeconds);
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
   // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
   float renderScale = config.renderScale;
@@ -204,10 +215,19 @@ bool host_init(const HostConfig& config) {
     AuroraSetViewportPolicy(config.viewportFit ? AURORA_VIEWPORT_FIT : AURORA_VIEWPORT_STRETCH);
     VISetFrameBufferScale(renderScale);
   }
+  const double menuEnd = seconds_since(start);
+  gcrt_diag_startup_beat();
   // Aurora's PAD: opening of SDL gamepads, port assignment, rumble. The mappings
   // (keyboard, buttons, axes, dead zones) come from controls.ini (input_host.cpp), not from Aurora.
   PADInit();
   input_init();
+  gcrt_diag_startup_beat();
+  // Host time of each start-up step: a slow start (busy computer) is told apart from a stop (hang report).
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                    "start-up: window and input ready in %.2f s (host): window %.2f s, setup menu %s%.2f s, input "
+                    "%.2f s",
+                    seconds_since(start), windowSeconds, config.setupMenu ? "" : "none, ", menuEnd - windowSeconds,
+                    seconds_since(start) - menuEnd);
   g_initialized = true;
   return true;
 }

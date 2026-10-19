@@ -8,6 +8,8 @@
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_timer.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -16,6 +18,7 @@
 #include <system_error>
 
 #include "gcrt_console.h"
+#include "gcrt_diag.h"
 #include "gcrt_focus.h"
 #include "gcrt_user_dir.h"
 #include "trace.h"
@@ -211,8 +214,38 @@ bool gcrt_game_config_run_menu(const char* title) {
   const bool consoleAtOpen = g_cfg.console;
   bool start = false;
   bool backdropTraced = false;
+  // Host time of the menu (trace timestamps are emulated time, still 0 here): the first aurora_update also opens the
+  // gamepads (Aurora's gamepad::initialize, SDL joystick subsystems), and each pass presents a frame. On a busy
+  // computer both can take ten times longer or more: the times below tell a slow start from a stop (issue 31). With
+  // GCRT_SETUP_MENU_AUTO, a progress line every 10 s while the menu is open.
+  using Clock = std::chrono::steady_clock;
+  const auto menuStart = Clock::now();
+  auto passStart = menuStart;
+  auto nextProgress = menuStart + std::chrono::seconds(10);
+  double firstUpdate = -1.0;
+  double slowest = 0.0;
+  int total = 0;
+  const auto elapsed = [](Clock::time_point from) {
+    return std::chrono::duration<double>(Clock::now() - from).count();
+  };
   while (!start) {
+    gcrt_diag_startup_beat(); // one per pass: watched by the hang watchdog (gcrt_diag.h)
+    const auto now = Clock::now();
+    if (total > 1) { // the first pass (gamepads opened) is timed apart
+      slowest = (std::max)(slowest, std::chrono::duration<double>(now - passStart).count());
+    }
+    passStart = now;
+    ++total;
+    if (autoAct.action != MenuAuto::None && now >= nextProgress) {
+      nextProgress = now + std::chrono::seconds(10);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                        "setup menu: open for %.1f s (host), %d passes, slowest pass after the first %.0f ms",
+                        elapsed(menuStart), total - 1, slowest * 1000.0);
+    }
     const AuroraEvent* ev = aurora_update();
+    if (firstUpdate < 0.0) {
+      firstUpdate = elapsed(menuStart);
+    }
     while (ev != nullptr && ev->type != AURORA_NONE) {
       if (ev->type == AURORA_EXIT) {
         gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: window closed");
@@ -221,8 +254,8 @@ bool gcrt_game_config_run_menu(const char* title) {
       ++ev;
     }
     if (autoAct.action != MenuAuto::None && passes++ >= autoAct.passes) {
-      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: GCRT_SETUP_MENU_AUTO %s after %d passes",
-                        autoAct.action == MenuAuto::Start ? "start" : "close", autoAct.passes);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: GCRT_SETUP_MENU_AUTO %s after %d passes, %.1f s (host)",
+                        autoAct.action == MenuAuto::Start ? "start" : "close", autoAct.passes, elapsed(menuStart));
       if (autoAct.action == MenuAuto::Close) {
         return false;
       }
@@ -235,7 +268,10 @@ bool gcrt_game_config_run_menu(const char* title) {
     draw_menu_backdrop();
     if (!backdropTraced) {
       const ImVec2 size = ImGui::GetMainViewport()->Size;
-      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: first frame, %.0fx%.0f, backdrop drawn", size.x, size.y);
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                        "setup menu: first frame, %.0fx%.0f, backdrop drawn, %.2f s (host) after the menu opened "
+                        "(first event poll, which opens the gamepads: %.2f s)",
+                        size.x, size.y, elapsed(menuStart), firstUpdate);
       backdropTraced = true;
     }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -277,7 +313,9 @@ bool gcrt_game_config_run_menu(const char* title) {
   }
   sanitize();
   save(gcrt_user_dir());
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: start (console box %s)", g_cfg.console ? "checked" : "unchecked");
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: start (console box %s) after %.1f s (host), %d passes, slowest "
+                    "pass after the first %.0f ms",
+                    g_cfg.console ? "checked" : "unchecked", elapsed(menuStart), total, slowest * 1000.0);
   return true;
 }
 

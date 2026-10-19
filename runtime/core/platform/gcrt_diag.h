@@ -87,6 +87,12 @@ const GcrtDiagSlot* gcrt_diag_slots(uint32_t* capacity, uint64_t* recorded);
 extern volatile uint64_t g_gcrt_heartbeat;
 static inline void gcrt_diag_heartbeat(void) { g_gcrt_heartbeat = g_gcrt_heartbeat + 1; }
 
+/* Progress of the start-up that comes before the game loop: window creation, setup menu (one beat per pass), input
+   set-up. 0 = not armed (boot before the window). The hang watchdog (gcrt_crash.h) watches it while the game loop
+   has not beaten yet, so that a start-up that stops also gets a hang report with the stacks of every thread. */
+extern volatile uint64_t g_gcrt_startup_beat;
+static inline void gcrt_diag_startup_beat(void) { g_gcrt_startup_beat = g_gcrt_startup_beat + 1; }
+
 #ifdef __cplusplus
 }
 #endif
