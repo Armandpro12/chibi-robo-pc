@@ -588,7 +588,7 @@ What the disc contains `[verified: file]`. For the formats themselves, see `unpl
 
   The unlicensed parts were not used as a source.
 - **adierking/unplug** (MIT) — https://github.com/adierking/unplug. The *Chibi-Robo!* modding toolkit, and the reference for the disc, U8, HSD, HPS, SSM, SEM and stage formats.
-- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied). No code copied.
+- **Dolphin** (GPL-2.0-or-later) — https://github.com/dolphin-emu/dolphin, commit `e6f3ae17`. Behavioural reference, read only: the microcode hash function, the GCI format, the microphone's EXI ID, the `GameSettings` 60 FPS patch, and the meaning of the bits of the GX BP and CP registers (`BPMemory.h`, `CPMemory.h`; used only to read which register field a function writes, nothing copied), and the AX HLE command numbers and parameter-block field names (`AX.h`, `AXStructs.h`; read only for their meaning, nothing copied), the memory-card command numbers (`EXI_DeviceMemoryCard.h`; read only for their meaning, nothing copied), and the signature database `Data/Sys/totaldb.dsy` (function names with a size and an opcode checksum; read only to cross-check names whose code we had read, appendix E; nothing copied). No code copied.
 - **EverydaySimpleDev/ChibiRobo-GBA-Link** (MIT) — its US hook on the `VIWaitForRetrace` call in `main` (US `0x800156C8`) agrees with our analysis.
 - **Ghidra** (Apache 2.0), with Cuyler36's GameCube loader extension.
 - **ExpansionPak/DolRecomp** (GPL-3.0) — the static recompiler used to run and trace the original code.
@@ -1515,3 +1515,34 @@ How each family was checked:
 | `+0x138` | the voice's copy of the PB: `running` at `+0x146` (PB `+0x0E`), ITD at `+0x16E` (PB `+0x36`) |
 
 Still unverified, kept out of this appendix: `__AXGetAuxAInput` (PAL `0x80179EC0`). Its code is known, but we have no source that fixes which of the two AUX buffer roles the SDK calls "input". The same holds for the nine AUX buffer getters that follow it, the studio depop function at PAL `0x8017B1B4`, and the AXFX effect functions except `AXFXSetHooks`.
+
+## Appendix E. OS, VI and CARD functions verified on 2026-10-19
+
+Eleven functions of the OS, VI and CARD libraries that the step-10a, step-10b and milestone-7 inventories had named from their position, size and calls only. They are not in appendix A. Each name is now `[verified: Ghidra + ref]`: we read the PAL disassembly and compared it with the CC0 reference sources and headers of `cbr_decomp/decomp_dtk_main` (`vi.c`, `CARDBios.c`, `CARDRdwr.c`, `CARDMount.c`, `OSRtc.c`, `os.h`).
+- **Same body as the reference, newer SDK revision.** `__CARDStart`, `__CARDWritePage`, `__CARDEraseSector`, `__CARDWrite`, `Retry@CARDBios`, `BlockWriteCallback@CARDRdwr` and `DoMount@CARDMount` keep the reference's calls, commands and control flow. Their sizes differ because the card page size is read from the control block (`+0x0A`) instead of the constant 128. `__CARDEraseSector` returns at once for pages larger than `0x80`. `DoMount` makes two extra calls after `IsCard`: it reads the card's ID into control block `+0x12`, then queries a fast-mode flag. It picks `0x200`-byte pages when that flag is set and the ID's high byte is `0xEC`, and `0x80`-byte pages otherwise. The memory-card command numbers `0xF1` (sector erase) and `0xF2` (page program) agree with Dolphin's memory-card emulation (`EXI_DeviceMemoryCard.h`, read only).
+- **`VIGetNextField`** has the reference body of `vi.c` line for line: the field from the current half line, xored with bit 0 of `HorVer.adjDispPosY`.
+- **`OSGetLanguage`** returns byte `+0x12` (`language`) of the SRAM block under the SRAM lock. **`OSGetEuRgb60Mode`** (PAL only) returns bit 6 of byte `+0x11` (`ntd`), the bit that the reference `OSSetEuRgb60Mode` writes. Both prototypes are in `os.h`.
+- **`__CARDFreeBlock`** walks a FAT chain up to `0xFFFF`, frees each block, returns `-6` (broken) for a block outside `5`..block count, then calls `__CARDUpdateFatBlock`. Its only caller is `DeleteCallback@CARDDelete`.
+- **Cross-check with Dolphin's signature database.** `Data/Sys/totaldb.dsy` holds a name, a size and a 32-bit checksum for each function. For the checksum, each instruction contributes its primary opcode, plus its extended-opcode bits for some opcodes or its two register fields for loads, stores and immediate arithmetic, rotated into an accumulator; immediates and branch offsets are left out. We recomputed it over our functions. It gives the database checksum for 256 of the 279 symbol-map functions that the database lists under the same name and size; most of the 23 others are hand-written assembly. `OSGetLanguage`, `__CARDFreeBlock` and `DeleteCallback@CARDDelete` have the same checksum, size and name in PAL and US. This was used only to confirm names whose code we had read. Tiny functions of the same shape collide in the database, so a match alone proves nothing.
+
+The five `OSStopwatch` functions of appendix A had a stale "hypothesis" status in `supplement.tsv`. They are now `verified` there: the header `OSStopwatch.h` gives their prototypes, and each body matches its prototype (`OSInitStopwatch` stores the name and clears the counters, `OSStartStopwatch` stores the start time, `OSStopStopwatch` adds the interval and updates the minimum and maximum, `OSCheckStopwatch` returns the 64-bit total, `OSResetStopwatch` clears without the name).
+
+US addresses: PAL − `0x28B0` for the EXI, SI, OS, DVD and VI functions of `supplement.tsv`, up to `VIGetTvFormat`. Inside `OSRtc.c` the US DOL has `OSGetProgressiveMode` and `OSSetProgressiveMode` (`0x114` bytes) before `OSGetLanguage`, so `OSGetLanguage` is at PAL − `0x279C`. In the same place, PAL has `OSGetEuRgb60Mode` and `OSSetEuRgb60Mode`. From `__VIDisplayPositionToXY` the offset is PAL − `0x2874`, and it is PAL − `0x2868` from `__AISHandler` through the CARD library. Every address in this appendix has a masked-code signature (section 7) that is unique in both DOLs at these addresses, with equal sizes `[verified: signatures]`.
+
+`games/chibi-robo/symbols/supplement.tsv` now lists these names, plus 113 OS, EXI, SI, PAD, DVD, VI and CARD names of appendix A that it lacked, each with its evidence. Static functions are written without `@file`. The static names `OnReset`, `WriteCallback` and `EraseCallback` are left out of that file because several SDK files define them, so they would not be unique in a symbol map.
+
+| US | PAL | size | name |
+|---|---|---|---|
+| `0x8016991C` | `0x8016C0B8` | `0x6C` | `OSGetLanguage` |
+| — | `0x8016C124` | `0x70` | `OSGetEuRgb60Mode` |
+| `0x80172958` | `0x80175208` | `0x9C` | `VIGetNextField` |
+| `0x8017E028` | `0x80180890` | `0x2A0` | `Retry@CARDBios` |
+| `0x8017E3D8` | `0x80180C40` | `0x224` | `__CARDStart` |
+| `0x8017E730` | `0x80180F98` | `0x13C` | `__CARDWritePage` |
+| `0x8017E86C` | `0x801810D4` | `0x110` | `__CARDEraseSector` |
+| `0x80180230` | `0x80182A98` | `0xE8` | `BlockWriteCallback@CARDRdwr` |
+| `0x80180318` | `0x80182B80` | `0x68` | `__CARDWrite` |
+| `0x8018063C` | `0x80182EA4` | `0x9C` | `__CARDFreeBlock` |
+| `0x80181B98` | `0x80184400` | `0x454` | `DoMount@CARDMount` |
+
+Still unverified, kept out of this appendix: the `static` functions of `OSLink.c` and two empty functions next to them, as well as the card-ID reader and the fast-mode setter and getter that `DoMount` uses. Their code and roles are known, but no licensed source names them for this code.
