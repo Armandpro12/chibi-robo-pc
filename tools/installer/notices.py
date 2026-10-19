@@ -4,7 +4,8 @@ Usage: py -3 tools/installer/notices.py --build build/<game>-<ID>-Release [--isc
                                         [--external DIR]
 
 The texts come from the real licence files: the dependency sources fetched by the game build (<build>/_deps), the
-Aurora checkout (external/aurora), the Inno Setup installation, and, for the components shipped as prebuilt DLLs
+Aurora checkout (external/aurora, including the licence comment of its vendored magic_enum.hpp), the DolRecomp
+checkout (external/DolRecomp), the Inno Setup installation, and, for the components shipped as prebuilt DLLs
 without their licence (Dawn, DirectX Shader Compiler, the Khronos headers and SPIRV-Tools compiled into Dawn), the
 official repositories at the revisions listed below, fetched with --fetch into external/licenses-src/ (licence
 files only: partial, blob-less git fetch).
@@ -42,15 +43,41 @@ FETCHED = {
                        "acbb9391c0a597272800cd3f4363661c00a27c77", ["LICENSE.md", "LICENSES/MIT.txt"]),
 }
 
-# (title, version, shipped in, licence, origin, licence files: (base, relative path) with base in
-# root | build | aurora | fetched:<name> | iscc; or None for a statement-only entry)
+# (title, version, shipped in, licence, origin, licence files) with licence files a list of (base, relative path) or
+# (base, relative path, mode), base in root | build | aurora | dolrecomp | fetched:<name> | iscc, or None for a
+# statement-only entry. Modes: "header" = only the first block of "//" comment lines of a source file (a vendored
+# header whose licence is in its own comment); "same:<base>:<path>" = the file must have the same text as that other
+# file (white space aside), which is already in the notices: it is checked, not repeated.
 COMPONENTS = [
-    ("This project (native runtime, game executable, gcextract, installer script)", "see BUILD-INFO.txt",
-     "the game executable, gcextract.exe", "GNU General Public License v3.0",
+    ("This project (native runtime, gcextract, installer script, build scripts)", "see BUILD-INFO.txt",
+     "the game executable (its native runtime part, not the recompiled game code: see the next entry), "
+     "gcextract.exe, the installer script", "GNU General Public License v3.0",
      "https://github.com/Armandpro12/chibi-robo-pc (source code of the exact build: commit in BUILD-INFO.txt)",
      [("root", "LICENSE")]),
+    ("Recompiled game code (not licensed by this project)", "the version of the disc image the player chose",
+     "the game executable",
+     "None granted by this project. The game executable also contains the original game's program code, translated "
+     "into C by DolRecomp and compiled for the PC. That code is derived from the original game, belongs to the game's "
+     "rights holders, and is NOT covered by the GNU GPL v3.0 or by any other licence of this project. This package "
+     "contains no game data (no disc image, and none of the game's files, textures, sounds or models): the player "
+     "provides their own disc image.",
+     "the original game, translated when the executable is built", None),
+    ("DolRecomp (CPU runtime)", "commit c876e2b9e022 of github.com/ExpansionPak/DolRecomp: src/cpu/cpu.c, "
+     "src/cpu/cpu.h and src/common/types.h, unmodified", "the game executable",
+     "GNU General Public License v3.0 or later (SPDX header of src/cpu/cpu.c: GPL-3.0-or-later, "
+     "Copyright (C) 2026 ExpansionPak)", "https://github.com/ExpansionPak/DolRecomp",
+     [("dolrecomp", "LICENSE", "same:root:LICENSE")]),
+    ("Dolphin (adapted code)", "commit e6f3ae17627e of github.com/dolphin-emu/dolphin", "the game executable",
+     "GNU General Public License v2.0 or later, used here under the GNU GPL v3.0 (text: first entry). Copyright 2008 "
+     "Dolphin Emulator Project (DSP sample accelerator, AX microcode HLE, microcode base and hashes, AX structures, "
+     "and the free DSP coefficient table of Dolphin's Data/Sys/GC/dsp_coef.bin: files of runtime/core/audio/ of this "
+     "project's repository); Copyright 2010 and 2017 Dolphin Emulator Project (display copy filter coefficients and "
+     "computation: runtime/core/gx/xfb_filter.cpp). Each adapted file names the Dolphin files it comes from.",
+     "https://github.com/dolphin-emu/dolphin", None),
     ("Aurora", "commit 50e5be30ec12 with the project's patches (tools/patches/aurora/ of this project's repository)",
      "the game executable", "MIT License", "https://github.com/encounter/aurora", [("aurora", "LICENSE")]),
+    ("magic_enum", "0.7.2 (include/magic_enum.hpp of the Aurora checkout)", "the game executable", "MIT License",
+     "https://github.com/Neargye/magic_enum", [("aurora", "include/magic_enum.hpp", "header")]),
     ("SDL", "3.4.10", "SDL3.dll", "zlib License", "https://github.com/libsdl-org/SDL",
      [("build", "_deps/sdl3_prebuilt-src/licenses/SDL3/LICENSE.txt")]),
     ("Dawn (including Tint)", "prebuilt v20260807.225922 of github.com/encounter/dawn, google/dawn 1155e0ed5311",
@@ -133,6 +160,8 @@ def resolve(base: str, rel: str, build: Path, iscc_dir: Path | None, allow_fetch
         return build / rel
     if base == "aurora":
         return external / "aurora" / rel
+    if base == "dolrecomp":
+        return external / "DolRecomp" / rel
     if base == "iscc":
         if iscc_dir is None:
             raise SystemExit("notices: the Inno Setup folder is needed (--iscc-dir)")
@@ -146,14 +175,39 @@ def resolve(base: str, rel: str, build: Path, iscc_dir: Path | None, allow_fetch
     raise ValueError(base)
 
 
+def read_licence(base: str, rel: str, build: Path, iscc_dir: Path | None, allow_fetch: bool, external: Path) -> str:
+    path = resolve(base, rel, build, iscc_dir, allow_fetch, external)
+    if not path.is_file():
+        raise SystemExit(f"notices: licence file missing: {path} (fetch with --fetch, or build the game "
+                         "so that <build>/_deps exists)")
+    return path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").rstrip()
+
+
+def comment_header(text: str, rel: str) -> str:
+    """First block of "//" comment lines of a source file, without the comment markers."""
+    lines = []
+    for line in text.split("\n"):
+        if not line.startswith("//"):
+            if lines:
+                break
+            continue
+        lines.append(line[3:] if line.startswith("// ") else line[2:])
+    body = "\n".join(lines).rstrip()
+    if "Permission is hereby" not in body:
+        raise SystemExit(f"notices: no licence text in the first comment block of {rel}")
+    return body
+
+
 def assemble(build: Path, iscc_dir: Path | None, allow_fetch: bool = False, external: Path = EXTERNAL) -> str:
     sep = "=" * 100
     out = [
         "THIRD-PARTY SOFTWARE NOTICES AND LICENCES",
         "",
-        "This package contains the native PC executable of a recompiled GameCube game, built from the source code",
-        "of this project, and the third-party components listed below with their licences. It contains no game",
-        "data: the player provides their own disc image.",
+        "This package contains the native PC executable of a recompiled GameCube game and the components listed",
+        "below with their licences. The executable is made of this project's native runtime, the third-party code",
+        "listed below, and the original game's program code translated by DolRecomp: that recompiled game code is",
+        "derived from the original game and is not licensed by this project (see \"Recompiled game code\"). The",
+        "package contains no game data: the player provides their own disc image.",
         "",
         "Contents:",
     ]
@@ -162,12 +216,20 @@ def assemble(build: Path, iscc_dir: Path | None, allow_fetch: bool = False, exte
     for title, version, shipped, licence, origin, files in COMPONENTS:
         out += [sep, title, sep, f"Version: {version}", f"Shipped in: {shipped}", f"Licence: {licence}",
                 f"Origin: {origin}", ""]
-        for base, rel in files or []:
-            path = resolve(base, rel, build, iscc_dir, allow_fetch, external)
-            if not path.is_file():
-                raise SystemExit(f"notices: licence file missing: {path} (fetch with --fetch, or build the game "
-                                 "so that <build>/_deps exists)")
-            text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").rstrip()
+        for base, rel, *mode in files or []:
+            text = read_licence(base, rel, build, iscc_dir, allow_fetch, external)
+            mode = mode[0] if mode else ""
+            if mode == "header":
+                text = comment_header(text, rel)
+            elif mode.startswith("same:"):
+                _, other_base, other_rel = mode.split(":", 2)
+                other = read_licence(other_base, other_rel, build, iscc_dir, allow_fetch, external)
+                if text.split() != other.split():
+                    raise SystemExit(f"notices: {rel} of {title} differs from {other_rel}: ship its text")
+                text = (f"Same text (white space aside) as the {other_rel} file reproduced earlier in this document, "
+                        "not repeated.")
+            elif mode:
+                raise ValueError(mode)
             out += [f"----- {rel} -----", text, ""]
     return "\n".join(out).rstrip() + "\n"
 
