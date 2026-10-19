@@ -33,6 +33,7 @@ extern "C" {
 #include "gcrt_crash.h"
 #include "gcrt_diag.h"
 #include "gcrt_game_config.h"
+#include "gcrt_path.h"
 #include "gcrt_user_dir.h"
 #include "trace.h"
 }
@@ -253,15 +254,47 @@ uint16_t parse_buttons(const std::string& spec) {
   return bits;
 }
 
+// UTF-8 path <-> std::filesystem::path (on Windows, std::string paths would be read in the ANSI code page).
+fs::path path_from_utf8(const std::string& s) {
+  return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+}
+std::string path_to_utf8(const fs::path& p) {
+  const std::u8string u = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+}
+
 fs::path executable_dir() {
-#if defined(_WIN32)
-  wchar_t buf[MAX_PATH];
-  const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-  if (n > 0 && n < MAX_PATH) {
-    return fs::path(buf).parent_path();
+  char buf[4096];
+  if (gcrt_exe_dir_utf8(buf, sizeof(buf))) { // no MAX_PATH limit (install folders with long names)
+    return path_from_utf8(buf);
   }
-#endif
   return fs::current_path();
+}
+
+// Aurora data folder (pipeline and shader caches, imgui.ini), UTF-8 as Aurora expects (aurora::io::fs_path_from_string):
+// GCRT_DATA_DIR; otherwise <executable folder>/gcrt-data when a file can be created there (development, portable or
+// per-user installed copy); otherwise <user folder>/gcrt-data (copy installed in a read-only folder such as Program
+// Files). Automated runs always set GCRT_DATA_DIR (tools/run.py): unchanged for them. notes/decisions.md, 2026-10-19.
+std::string aurora_data_dir() {
+  char buf[4096];
+  if (gcrt_getenv_utf8("GCRT_DATA_DIR", buf, sizeof(buf))) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s (GCRT_DATA_DIR)", buf);
+    return buf;
+  }
+  const std::string beside = path_to_utf8(executable_dir() / "gcrt-data");
+  if (gcrt_dir_writable(beside.c_str())) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s (next to the executable)", beside.c_str());
+    return beside;
+  }
+  const char* user = gcrt_user_dir();
+  if (user != nullptr && user[0] != '\0') {
+    const std::string dir = std::string(user) + "gcrt-data";
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s (the executable's folder is not writable)", dir.c_str());
+    return dir;
+  }
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "WARNING: Aurora data: %s is not writable and there is no user folder: the "
+                                         "pipeline caches may not be kept", beside.c_str());
+  return beside;
 }
 
 bool PlatformInput::read_pad(int port, PadState& out) {
@@ -969,7 +1002,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   // Window, rendering, gamepads.
   gcrt::platform::HostConfig host;
   host.title = std::string(title != nullptr ? title : "gcrt") + (game_id != nullptr ? std::string(" (") + game_id + ")" : "");
-  host.dataDir = env("GCRT_DATA_DIR", (executable_dir() / "gcrt-data").string().c_str());
+  host.dataDir = aurora_data_dir();
   host.renderScale = static_cast<float>(std::strtod(env("GCRT_RENDER_SCALE", "1").c_str(), nullptr));
   {
     const std::string window = env("GCRT_WINDOW", "normal");
@@ -994,8 +1027,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     host.setupMenu = menu == "1" || (menu != "0" && host.windowMode == 0 && !launched);
   }
   std::error_code ec;
-  fs::create_directories(host.dataDir, ec);
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora data: %s", host.dataDir.c_str());
+  fs::create_directories(path_from_utf8(host.dataDir), ec);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "%s", gcrt::platform::host_keyboard_help());
   if (!p->captureTimes.empty() || !p->captureFrames.empty() || !p->captureFields.empty()) {
     fs::create_directories(p->captureDir, ec);

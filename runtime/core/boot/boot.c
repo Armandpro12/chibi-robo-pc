@@ -14,7 +14,9 @@
 #include "hle/gcrt_native.h"
 #include "platform/gcrt_console.h"
 #include "platform/gcrt_crash.h"
+#include "platform/gcrt_path.h"
 #include "platform/gcrt_platform.h"
+#include "platform/trace.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -50,8 +52,9 @@ enum {
 
 #define GC_EPOCH 0x386D4380u /* 2000-01-01 00:00:00 (Dolphin, HW/EXI/EXI_DeviceIPL.h) */
 
+/* `path` in UTF-8 (platform/gcrt_path.h: wide-character open on Windows). */
 static u8* read_file(const char* path, size_t* size_out) {
-    FILE* f = fopen(path, "rb");
+    FILE* f = gcrt_fopen_utf8(path, "rb");
     if (!f)
         return NULL;
     u8* data = NULL;
@@ -204,7 +207,8 @@ bool gcrt_boot_hle(GcrtCpu* g, const char* disc_root, const GcrtDolInfo* dol) {
 
 static void usage(const char* exe) {
     printf("Usage: %s [options]\n"
-           "  --disc DIR          root of the extracted disc (default: the one used for the build)\n"
+           "  --disc DIR          root of the extracted disc (default: the folder disc next to the executable if it\n"
+           "                      holds sys/main.dol, otherwise the one used for the build)\n"
            "  --dol FILE          DOL to load (default: DIR/sys/main.dol)\n"
            "  --max-blocks N      stop after N executed blocks\n"
            "  --max-seconds S     stop after S seconds\n"
@@ -237,8 +241,12 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
     /* Before anything is printed: the console window opens (or not) only when the game starts, and the output written
      * until then is kept for it (platform/gcrt_console.h). */
     gcrt_console_early_init();
+    /* Every path of the command line in UTF-8 (on Windows, main's argv is in the ANSI code page): a folder or an
+     * image with characters outside that code page can then be opened (platform/gcrt_path.h). */
+    gcrt_utf8_args(&argc, &argv);
+    gcrt_trace_init();
     const GcrtBuildInfo* info = &gcrt_build_info;
-    const char* disc = info->disc_root;
+    const char* disc = NULL;
     const char* dol_path = NULL;
     const char* trace_path = NULL;
     GcrtRunLimits limits = {0, 0.0};
@@ -250,7 +258,9 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
     double profile_period = 0.0, profile_from = 0.0;
     bool host_profile = false;
     const char* guest_log_path = NULL;
-    const char* hw_count_path = getenv("GCRT_HW_COUNT_FILE");
+    char hw_count_env[1024];
+    const char* hw_count_path =
+        gcrt_getenv_utf8("GCRT_HW_COUNT_FILE", hw_count_env, sizeof(hw_count_env)) ? hw_count_env : NULL;
     const char* rel_test_path = NULL;
     u64 rel_test_warmup = 30000u;
     u32 dump_address[8], dump_length[8];
@@ -331,6 +341,17 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         }
     }
 
+    /* Disc root: --disc, otherwise "<executable folder>/disc" when it holds sys/main.dol (installed copy), otherwise
+     * the extracted disc of the build machine (development). */
+    char default_disc[2048];
+    if (disc) {
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "disc root: %s (--disc)", disc);
+    } else {
+        const char* why = gcrt_default_disc_root(info->disc_root, default_disc, sizeof(default_disc));
+        disc = default_disc;
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "disc root: %s (%s)", disc, why);
+    }
+
     printf("%s (%s): %u recompiled modules, host RAM %u MiB\n", game && game->title ? game->title : info->game,
            info->version, gcrt_recompiled_modules.count, info->ram_size >> 20);
 
@@ -383,13 +404,13 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
     g->io_log_limit = io_log;
     g->trace_limit = trace_limit;
     if (trace_path) {
-        g->trace = fopen(trace_path, "w");
+        g->trace = gcrt_fopen_utf8(trace_path, "w");
         if (!g->trace)
             fprintf(stderr, "gcrt: cannot write the trace %s\n", trace_path);
     }
     /* HLE: SDK functions recognized by signature in the DOL code sections, replacements from the core,
      * then the game's own (install). */
-    FILE* guest_log = guest_log_path ? fopen(guest_log_path, "w") : NULL;
+    FILE* guest_log = guest_log_path ? gcrt_fopen_utf8(guest_log_path, "w") : NULL;
     if (guest_log_path && !guest_log)
         fprintf(stderr, "gcrt: cannot write %s\n", guest_log_path);
     gcrt_hle_set_guest_log(guest_log);
@@ -437,7 +458,7 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
     gcrt_hw_count_json(g, stdout);
     printf("\n");
     if (hw_count_path && hw_count_path[0]) {
-        FILE* f = fopen(hw_count_path, "w");
+        FILE* f = gcrt_fopen_utf8(hw_count_path, "w");
         if (f) {
             gcrt_hw_count_json(g, f);
             fputc('\n', f);

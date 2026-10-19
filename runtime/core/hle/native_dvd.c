@@ -30,6 +30,7 @@
 #include "hle/gcrt_native_modules.h"
 #include "platform/trace.h"
 #include "platform/gcrt_diag.h"
+#include "platform/gcrt_path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,8 +120,9 @@ static u32 arg(GcrtCpu* g, int i) { return g->state.gpr[3 + i]; }
  * Disc image
  * ------------------------------------------------------------------------------------------- */
 
+/* `path` in UTF-8 (wide-character open on Windows: install folders and image names outside the ANSI code page). */
 static bool image_open(const char* path) {
-    s_dvd.image = fopen(path, "rb");
+    s_dvd.image = gcrt_fopen_utf8(path, "rb");
     if (!s_dvd.image)
         return false;
     snprintf(s_dvd.image_path, sizeof(s_dvd.image_path), "%s", path);
@@ -846,10 +848,14 @@ static const Replacement k_replacements[] = {
 };
 
 void gcrt_native_dvd_install(GcrtCpu* g, const char* disc_root) {
-    char path[1024];
-    if (!gcrt_disc_image_path(disc_root, path, sizeof(path)) || !image_open(path))
+    char path[1024] = "";
+    if (!gcrt_disc_image_path(disc_root, path, sizeof(path)) || !image_open(path)) {
         gcrt_trace_printf(GCRT_TRACE_NATIVE, "native DVD: disc image not found (\"%s\"): reads return zeros "
                                              "(GCRT_DISC_IMAGE to point to it)", path);
+        /* Also on stderr: without the image the game cannot run, whatever traces are enabled. */
+        fprintf(stderr, "gcrt: disc image not found (\"%s\"): set GCRT_DISC_IMAGE, or the \"image\" field of "
+                        "manifest.json next to the disc folder\n", path);
+    }
     const char* rate = getenv("GCRT_DVD_RATE");
     if (rate && rate[0])
         s_dvd.rate = (u32)strtoul(rate, NULL, 0);
