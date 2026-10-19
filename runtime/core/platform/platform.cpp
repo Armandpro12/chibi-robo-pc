@@ -730,10 +730,10 @@ void crash_context(void* user, GcrtCrashAppend append, void* sink) {
   const GcrtGameConfig* gc = gcrt_game_config();
   std::snprintf(line, sizeof(line),
                 "settings: window %dx%d, fullscreen %d, render scale %.2f, EFB lines %u, pacing %s, pipelines %s, "
-                "XFB filter %d, copy filter %d; heartbeat %llu\n",
+                "XFB filter %d, copy filter %d, graphics backend %s; heartbeat %llu\n",
                 gc->windowWidth, gc->windowHeight, gc->fullscreen ? 1 : 0, static_cast<double>(gc->renderScale),
                 p->efbLines, kPacing[static_cast<int>(p->pacing)], kPipelines[static_cast<int>(p->pipelineMode)],
-                p->xfbFilter ? 1 : 0, static_cast<int>(p->copyFilterMode),
+                p->xfbFilter ? 1 : 0, static_cast<int>(p->copyFilterMode), gcrt_backend_name(gcrt_backend_active()),
                 static_cast<unsigned long long>(g_gcrt_heartbeat));
   append(sink, line);
 }

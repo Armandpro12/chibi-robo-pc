@@ -9,7 +9,9 @@
 #include <SDL3/SDL_timer.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -41,8 +43,45 @@ const struct {
     {"1920x1080 (16:9)", 1920, 1080},
 };
 // Console checked by default: the console window that testers had before (notes/decisions.md, 2026-10-17).
-GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false, true};
+GcrtGameConfig g_cfg = {1280, 960, false, 1.0f, false, true, BACKEND_AUTO};
 bool g_savedConsole = true; // value of the file: what is written back unless the player toggles the box
+
+// Graphics backends (gcrt_game_config.h). Only the "offered" ones can be chosen; the others are named for the trace
+// (Aurora can fall back to them by itself): Metal, OpenGL and WebGPU are not built on Windows here, null draws
+// nothing, and Direct3D 11 gives a different picture (see the header).
+const struct {
+  AuroraBackend value;
+  const char* name;  // in game_config.ini, --backend, GCRT_BACKEND
+  const char* label; // in the menu
+  bool offered;
+} kBackends[] = {
+    {BACKEND_AUTO, "auto", "Auto", true},
+    {BACKEND_D3D12, "d3d12", "Direct3D 12", true},
+    {BACKEND_VULKAN, "vulkan", "Vulkan", true},
+    {BACKEND_D3D11, "d3d11", "Direct3D 11", false},
+    {BACKEND_METAL, "metal", "Metal", false},
+    {BACKEND_OPENGL, "opengl", "OpenGL", false},
+    {BACKEND_OPENGLES, "opengles", "OpenGL ES", false},
+    {BACKEND_WEBGPU, "webgpu", "WebGPU", false},
+    {BACKEND_NULL, "null", "null (no picture)", false},
+};
+std::string g_backendRequest;  // --backend, for this launch
+bool g_haveBackendRequest = false;
+int g_activeBackend = BACKEND_AUTO;
+
+// Value of the file: unknown or not built in -> auto, said in the trace and on stderr (a hand-edited file).
+void sanitize_backend(const std::string& raw) {
+  const int b = gcrt_backend_from_name(raw.c_str());
+  if (b >= 0 && gcrt_backend_available(b)) {
+    g_cfg.backend = b;
+    return;
+  }
+  g_cfg.backend = BACKEND_AUTO;
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: game_config.ini has backend=%s, %s: auto used",
+                    raw.c_str(), b < 0 ? "unknown name (auto|d3d12|vulkan)" : "not available in this build");
+  std::fprintf(stderr, "gcrt: game_config.ini: graphics backend \"%s\" %s, using auto\n", raw.c_str(),
+               b < 0 ? "is unknown (auto, d3d12, vulkan)" : "is not available in this build");
+}
 
 // game_config.ini in the user folder (UTF-8, ending with a separator: gcrt_user_dir.h). The path is built from UTF-8
 // explicitly: a std::string path would be read in the ANSI code page on Windows (user names with accents).
@@ -79,7 +118,8 @@ void save(const char* dir) {
     std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
     f << "width=" << g_cfg.windowWidth << "\nheight=" << g_cfg.windowHeight
       << "\nfullscreen=" << (g_cfg.fullscreen ? 1 : 0) << "\nrenderScale=" << g_cfg.renderScale
-      << "\nskipMenu=" << (g_cfg.skipMenu ? 1 : 0) << "\nconsole=" << (g_savedConsole ? 1 : 0) << "\n";
+      << "\nskipMenu=" << (g_cfg.skipMenu ? 1 : 0) << "\nconsole=" << (g_savedConsole ? 1 : 0)
+      << "\nbackend=" << gcrt_backend_name(g_cfg.backend) << "\n";
     f.close();
     if (!f) {
       fs::remove(tmp, ec);
@@ -156,6 +196,72 @@ extern "C" {
 
 const GcrtGameConfig* gcrt_game_config(void) { return &g_cfg; }
 
+int gcrt_backend_from_name(const char* name) {
+  if (name == nullptr) {
+    return -1;
+  }
+  std::string lower(name);
+  for (char& c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  for (const auto& b : kBackends) {
+    if (b.offered && lower == b.name) {
+      return b.value;
+    }
+  }
+  return -1;
+}
+
+const char* gcrt_backend_name(int backend) {
+  for (const auto& b : kBackends) {
+    if (b.value == backend) {
+      return b.name;
+    }
+  }
+  return "?";
+}
+
+const char* gcrt_backend_label(int backend) {
+  for (const auto& b : kBackends) {
+    if (b.value == backend) {
+      return b.label;
+    }
+  }
+  return "?";
+}
+
+bool gcrt_backend_available(int backend) {
+  if (backend == BACKEND_AUTO) {
+    return true;
+  }
+  bool offered = false;
+  for (const auto& b : kBackends) {
+    offered |= b.offered && b.value == backend;
+  }
+  if (!offered) {
+    return false; // null, Direct3D 11...: never offered
+  }
+  size_t count = 0;
+  const AuroraBackend* list = aurora_get_available_backends(&count);
+  for (size_t i = 0; list != nullptr && i < count; ++i) {
+    if (list[i] == backend) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void gcrt_backend_set_request(const char* name) {
+  g_haveBackendRequest = name != nullptr;
+  g_backendRequest = name != nullptr ? name : "";
+}
+
+const char* gcrt_backend_request(void) { return g_haveBackendRequest ? g_backendRequest.c_str() : nullptr; }
+
+void gcrt_backend_set_active(int backend) { g_activeBackend = backend; }
+
+int gcrt_backend_active(void) { return g_activeBackend; }
+
 void gcrt_game_config_load(void) {
   const char* dir = gcrt_user_dir();
   std::ifstream f;
@@ -185,6 +291,8 @@ void gcrt_game_config_load(void) {
       g_cfg.skipMenu = v == "1";
     } else if (k == "console") {
       g_savedConsole = v != "0"; // anything but 0 keeps the default (checked)
+    } else if (k == "backend") {
+      sanitize_backend(v);
     }
   }
   sanitize();
@@ -289,6 +397,21 @@ bool gcrt_game_config_run_menu(const char* title) {
     }
     ImGui::Checkbox("Fullscreen", &g_cfg.fullscreen);
     ImGui::SliderFloat("Render scale", &g_cfg.renderScale, 0.5f, 4.0f, "%.2fx");
+    // Only the backends this build can try (gcrt_backend_available). The window is already open with the backend in
+    // use, so a change applies the next time the game starts.
+    if (ImGui::BeginCombo("Graphics backend", gcrt_backend_label(g_cfg.backend))) {
+      for (const auto& b : kBackends) {
+        if (gcrt_backend_available(b.value) && ImGui::Selectable(b.label, g_cfg.backend == b.value)) {
+          g_cfg.backend = b.value;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("In use: %s. A change applies the next time the game starts. Auto picks the best available; "
+                       "all of them give the same image.",
+                       gcrt_backend_label(g_activeBackend));
+    ImGui::PopStyleColor();
 #if defined(_WIN32)
     // Applied when the game starts (gcrt_console.h): nothing opens or closes while the menu is up.
     ImGui::Checkbox("Show console", &g_cfg.console);
@@ -313,9 +436,10 @@ bool gcrt_game_config_run_menu(const char* title) {
   }
   sanitize();
   save(gcrt_user_dir());
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: start (console box %s) after %.1f s (host), %d passes, slowest "
-                    "pass after the first %.0f ms",
-                    g_cfg.console ? "checked" : "unchecked", elapsed(menuStart), total, slowest * 1000.0);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "setup menu: start (console box %s, graphics backend saved: %s) after %.1f s "
+                    "(host), %d passes, slowest pass after the first %.0f ms",
+                    g_cfg.console ? "checked" : "unchecked", gcrt_backend_name(g_cfg.backend), elapsed(menuStart),
+                    total, slowest * 1000.0);
   return true;
 }
 

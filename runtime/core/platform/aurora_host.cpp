@@ -166,8 +166,58 @@ bool host_init(const HostConfig& config) {
     g_keepFocusable = config.windowMode == 2;
     SDL_AddEventWatch(keep_behind_on_shown, nullptr);
   }
+  // Graphics backend (gcrt_game_config.h): --backend, else GCRT_BACKEND, else the settings file on a player's launch
+  // (read now, before the window opens: the setup menu itself runs on Aurora's window), else auto. An unknown name or
+  // a backend this build cannot try gives auto, said in the trace and on stderr. If the backend asked for fails to
+  // start, Aurora itself goes on with its preferred order (lib/aurora.cpp, aurora::initialize): reported below.
+  if (config.setupMenu) {
+    gcrt_game_config_load();
+  }
+  std::string requestedName = "auto";
+  const char* requestSource = "default";
+  if (const char* cli = gcrt_backend_request()) {
+    requestedName = cli;
+    requestSource = "--backend";
+  } else if (const char* env = std::getenv("GCRT_BACKEND"); env != nullptr && env[0] != '\0') {
+    requestedName = env;
+    requestSource = "GCRT_BACKEND";
+  } else if (config.setupMenu) {
+    requestedName = gcrt_backend_name(gcrt_game_config()->backend);
+    requestSource = "game_config.ini";
+  }
+  int requested = gcrt_backend_from_name(requestedName.c_str());
+  if (requested < 0 || !gcrt_backend_available(requested)) {
+    const char* why = requested < 0 ? "unknown name (auto|d3d12|vulkan)" : "not available in this build";
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s \"%s\" ignored, %s: auto used", requestSource,
+                      requestedName.c_str(), why);
+    std::fprintf(stderr, "gcrt: graphics backend \"%s\" (%s) ignored, %s; using auto\n", requestedName.c_str(),
+                 requestSource, why);
+    requested = BACKEND_AUTO;
+  }
+  ac.desiredBackend = static_cast<AuroraBackend>(requested);
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
+  gcrt_backend_set_active(info.backend);
+  {
+    std::string offered;
+    size_t count = 0;
+    const AuroraBackend* list = aurora_get_available_backends(&count);
+    for (size_t i = 0; list != nullptr && i < count; ++i) {
+      if (gcrt_backend_available(list[i])) {
+        offered += offered.empty() ? "" : ", ";
+        offered += gcrt_backend_name(list[i]);
+      }
+    }
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s in use (Aurora %d), requested %s (%s); this build: %s",
+                      gcrt_backend_label(info.backend), static_cast<int>(info.backend), gcrt_backend_name(requested),
+                      requestSource, offered.c_str());
+    if (requested != BACKEND_AUTO && info.backend != requested) {
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "graphics backend: %s could not be started, Aurora fell back to %s",
+                        gcrt_backend_label(requested), gcrt_backend_label(info.backend));
+      std::fprintf(stderr, "gcrt: graphics backend %s could not be started; using %s instead\n",
+                   gcrt_backend_label(requested), gcrt_backend_label(info.backend));
+    }
+  }
   gcrt_diag_startup_beat();
   const double windowSeconds = seconds_since(start);
   if (noFocus) {
@@ -182,16 +232,17 @@ bool host_init(const HostConfig& config) {
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
   gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_OPENED,
                   (static_cast<uint64_t>(info.windowSize.fb_width) << 32) | info.windowSize.fb_height);
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d, %ux%u, %s, in %.2f s (host)",
-                    static_cast<int>(info.backend), info.windowSize.fb_width, info.windowSize.fb_height,
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "Aurora window opened: backend %d (%s), %ux%u, %s, in %.2f s (host)",
+                    static_cast<int>(info.backend), gcrt_backend_name(info.backend), info.windowSize.fb_width,
+                    info.windowSize.fb_height,
                     kWindowModes[config.windowMode >= 0 && config.windowMode <= 2 ? config.windowMode : 0],
                     windowSeconds);
   // Rendering at the EFB resolution (exact logical height, width stretched to the window's 4:3, like
   // a console's picture on a TV set): AURORA_VIEWPORT_STRETCH + scale 1.
   float renderScale = config.renderScale;
   if (config.setupMenu) { // a player's direct launch only: automated runs keep their settings
-    // Setup menu (gcrt_game_config.h): window size, fullscreen and render scale, saved in the user folder.
-    gcrt_game_config_load();
+    // Setup menu (gcrt_game_config.h): window size, fullscreen, render scale, console and graphics backend, saved in
+    // the user folder (file already loaded above, before the window opened).
     if (!gcrt_game_config_run_menu(g_title.c_str())) {
       aurora_shutdown(); // window closed from the menu: abort the boot
       return false;

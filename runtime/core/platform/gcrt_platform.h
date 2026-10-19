@@ -59,6 +59,9 @@
  *                      window is minimized), acts as if "Start game" were pressed (with the current box values: the
  *                      saved file, or --console / --no-console) or as if the window were closed. No effect when the
  *                      menu is not shown
+ *   GCRT_BACKEND       graphics backend: auto | d3d12 | vulkan (like --backend, which wins; both win over the
+ *                      setup menu's saved choice, which only player launches read). Unknown or unavailable: auto,
+ *                      with a message (trace and stderr). Trace line "graphics backend: ... in use, requested ..."
  *   GCRT_STOP_AT       stop requested when the emulated time reaches this value (seconds)
  *   GCRT_RENDER_SCALE  rendering resolution in multiples of the EFB (default 1 = console; 0 = window)
  *   GCRT_VIEWPORT      stretch (default: 4:3 width of the window) | fit (diagnostic: EFB rendered

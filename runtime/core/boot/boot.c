@@ -14,6 +14,7 @@
 #include "hle/gcrt_native.h"
 #include "platform/gcrt_console.h"
 #include "platform/gcrt_crash.h"
+#include "platform/gcrt_game_config.h"
 #include "platform/gcrt_path.h"
 #include "platform/gcrt_platform.h"
 #include "platform/trace.h"
@@ -231,7 +232,10 @@ static void usage(const char* exe) {
            "  --hw-count FILE     write the hardware access counter as JSON (also GCRT_HW_COUNT_FILE)\n"
            "  --console           open a console window (game output) when the game starts, for this launch;\n"
            "                      the setup menu's \"Show console\" box starts checked (Windows)\n"
-           "  --no-console        no console window for this launch; the box starts unchecked (Windows)\n",
+           "  --no-console        no console window for this launch; the box starts unchecked (Windows)\n"
+           "  --backend NAME      graphics backend for this launch: auto, d3d12 or vulkan (also GCRT_BACKEND;\n"
+           "                      default: the setup menu's choice, saved in game_config.ini, else auto). An unknown or\n"
+           "                      unavailable name gives auto; a backend that fails to start falls back to auto\n",
            exe);
 }
 
@@ -300,6 +304,8 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
             gcrt_console_set_request(1);
         } else if (!strcmp(a, "--no-console")) {
             gcrt_console_set_request(0);
+        } else if (v && !strcmp(a, "--backend")) {
+            gcrt_backend_set_request(v), i++; /* checked when the window opens (unknown: auto, with a message) */
         } else if (!strcmp(a, "--hle-trace")) {
             hle_trace = true;
         } else if (v && !strcmp(a, "--hw-count")) {
