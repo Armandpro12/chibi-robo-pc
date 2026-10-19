@@ -40,10 +40,10 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 3 | Recompilation | ✅ | Whole game recompiled to C, builds without errors. |
 | 4 | Minimal runtime | ✅ | Window, main loop, keyboard and gamepads. |
 | 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: only the health and safety warning has been compared with Dolphin. |
-| 6 | Audio | 🟡 | Music and effects match Dolphin sample for sample on the title screen, the party and the living room (PAL and US), and the music loops with the same period; the differences that remain are listed under "Known differences with Dolphin". Still to do: the video cutscenes and a listening test. |
+| 6 | Audio | 🟡 | Music and effects match Dolphin sample for sample on the title screen, the party and the living room (PAL and US), and the music loops with the same period; the differences that remain are listed under "Known differences with Dolphin". The credits video plays in both versions with the same sound as Dolphin (99.8 to 99.9 % of the 5 ms blocks are bit-identical, same duration). Still to do: the other video cutscenes and a listening test. |
 | 7 | Saves | ✅ | Native PC saves: card always inserted, crash-safe writes (temporary file, then rename). |
 | 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; open issues from player reports are listed under "Known issues". |
-| 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The video cutscenes are not compared yet. |
+| 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The credits video is compared (PAL: SSIM 0.937 to 0.95 because Dolphin dumps it at another height); the other video cutscenes are not compared yet. |
 | 10 | No emulated hardware | ✅ | See below. |
 | 11 | Installer (private) | ⬜ | Disc check, extraction, install and uninstall, tested on a clean Windows. It stays private until the C++ version exists. |
 
@@ -164,7 +164,11 @@ simulated disc.
   Dolphin; text and frames are identical. The cause is probably an animation tied to the time since start-up.
 - **Stretched viewport.** In the default `stretch` window mode the 3D image scores about 0.015 lower in SSIM than
   with `fit`, because the port and Dolphin resample the picture differently.
-- **Not measured yet:** the video cutscenes.
+- **Video (credits).** Compared in both versions: same duration, and the sound is bit-identical in 99.8 to 99.9 % of
+  the 5 ms blocks; both sides insert a few very short runs of zero samples (at most 1.2 ms) at different moments.
+  In PAL the picture scores 0.937 to 0.95 in SSIM because Dolphin dumps it at 640x468 instead of 640x528.
+- **Not measured yet:** the other video cutscenes (a robot cutscene in the basement, whose conditions are known only from
+  the stage script).
 ## Known issues
 
 - Player reports with late saves (US version):
