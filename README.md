@@ -304,16 +304,22 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Six small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
   the third moves the buffer of very large texture uploads (more than 24 MiB in one frame) from the game thread to
-  Aurora's render worker, so that creating and unmapping it no longer races with the worker on the Dawn device.
-  Patch 0006 turns off Dawn's `use_dxc` toggle: the Direct3D 12 backend compiles its shaders with FXC
-  (`d3dcompiler_47.dll`, found in the Windows system folder on the development machine; its presence on every
-  Windows, and in Windows Sandbox, is not established) instead of DXC, so `dxcompiler.dll` and `dxil.dll` are neither
-  needed nor copied next to the executable.
+  Aurora's render worker, so that creating and unmapping it no longer races with the worker on the Dawn device;
+  the fourth sets a busy timeout on the SQLite connections of Aurora's pipeline and Dawn caches, so that two game
+  processes sharing one cache folder mostly wait for each other's locks instead of failing with "database is
+  locked" (hardening only: it is not a fix for the intermittent crash of issue 11); the fifth creates Aurora's
+  cached bind groups on the render worker instead of the GX command thread, which removes one identified race on
+  Dawn's unsynchronized D3D12 sampler descriptor cache (other Dawn calls, such as sampler and texture creation,
+  still happen on the GX thread, and the crash of issue 11 is not shown to be fixed); the sixth turns off Dawn's
+  `use_dxc` toggle: the Direct3D 12 backend compiles its shaders with FXC (`d3dcompiler_47.dll`, found in the
+  Windows system folder on the development machine; its presence on every Windows, and in Windows Sandbox, is not
+  established) instead of DXC, so `dxcompiler.dll` and `dxil.dll` are neither needed nor copied next to the
+  executable.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.

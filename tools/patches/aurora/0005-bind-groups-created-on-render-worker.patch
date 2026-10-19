@@ -1,0 +1,114 @@
+diff --git a/lib/gfx/resource_cache.cpp b/lib/gfx/resource_cache.cpp
+index 8c131ab..8b753da 100644
+--- a/lib/gfx/resource_cache.cpp
++++ b/lib/gfx/resource_cache.cpp
+@@ -7,6 +7,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <mutex>
++#include <string>
++#include <vector>
+ 
+ #include <absl/container/flat_hash_map.h>
+ #include <tracy/Tracy.hpp>
+@@ -34,11 +36,69 @@ namespace {
+ 
+ constexpr Module Log{"aurora::gfx"};
+ 
++// Dawn's device is not thread-safe without ImplicitDeviceSynchronization (not requested by Aurora), and its D3D12
++// sampler heap cache (an unsynchronized hash set that every bind group with samplers looks up, inserts into, or erases
++// from when it dies) is also used by the bind groups that the render worker creates and drops while it encodes (copy
++// and palette conversions, present). bind_group_ref therefore runs no Dawn call: it keeps a copy of the descriptor
++// (with references to its objects), and find_bind_group, called by the render worker at encode time, creates the bind
++// group. A descriptor with extension structs is still created at once (its chains cannot be copied here).
+ struct CachedBindGroup {
+   wgpu::BindGroup bindGroup;
+   uint32_t lastUsedFrame = 0;
++  // Pending descriptor, released once the bind group exists.
++  std::string label;
++  wgpu::BindGroupLayout layout;
++  std::vector<wgpu::BindGroupEntry> entries;
+ };
+ 
++bool can_defer(const WGPUBindGroupDescriptor& descriptor) {
++  if (descriptor.nextInChain != nullptr) {
++    return false;
++  }
++  for (size_t i = 0; i < descriptor.entryCount; ++i) {
++    if (descriptor.entries[i].nextInChain != nullptr) {
++      return false;
++    }
++  }
++  return true;
++}
++
++CachedBindGroup deferred_bind_group(const WGPUBindGroupDescriptor& descriptor, uint32_t frame) {
++  CachedBindGroup cached{.lastUsedFrame = frame, .layout = wgpu::BindGroupLayout{descriptor.layout}};
++  if (descriptor.label.data != nullptr) {
++    cached.label = descriptor.label.length == WGPU_STRLEN ? std::string{descriptor.label.data}
++                                                          : std::string{descriptor.label.data, descriptor.label.length};
++  }
++  cached.entries.reserve(descriptor.entryCount);
++  for (size_t i = 0; i < descriptor.entryCount; ++i) {
++    const auto& entry = descriptor.entries[i];
++    cached.entries.push_back(wgpu::BindGroupEntry{
++        .binding = entry.binding,
++        .buffer = wgpu::Buffer{entry.buffer},
++        .offset = entry.offset,
++        .size = entry.size,
++        .sampler = wgpu::Sampler{entry.sampler},
++        .textureView = wgpu::TextureView{entry.textureView},
++    });
++  }
++  return cached;
++}
++
++void create_deferred_bind_group(CachedBindGroup& cached) {
++  static_assert(sizeof(wgpu::BindGroupEntry) == sizeof(WGPUBindGroupEntry));
++  const WGPUBindGroupDescriptor descriptor{
++      .nextInChain = nullptr,
++      .label = {cached.label.data(), cached.label.size()},
++      .layout = cached.layout.Get(),
++      .entryCount = cached.entries.size(),
++      .entries = reinterpret_cast<const WGPUBindGroupEntry*>(cached.entries.data()),
++  };
++  cached.bindGroup = wgpu::BindGroup::Acquire(wgpuDeviceCreateBindGroup(webgpu::g_device.Get(), &descriptor));
++  cached.entries = {};
++  cached.layout = {};
++  cached.label = {};
++}
++
+ constexpr uint32_t BindGroupCacheRetainFrames = 32;
+ constexpr uint32_t BindGroupCacheSweepPeriod = 16;
+ 
+@@ -86,11 +146,15 @@ BindGroupRef bind_group_ref(const WGPUBindGroupDescriptor& descriptor) {
+   std::lock_guard lock{g_bindGroupCacheMutex};
+   const auto it = g_cachedBindGroups.find(id);
+   if (it == g_cachedBindGroups.end()) {
+-    auto bindGroup = wgpu::BindGroup::Acquire(wgpuDeviceCreateBindGroup(webgpu::g_device.Get(), &descriptor));
+-    g_cachedBindGroups.emplace(id, CachedBindGroup{
+-                                       .bindGroup = std::move(bindGroup),
+-                                       .lastUsedFrame = current_frame(),
+-                                   });
++    if (can_defer(descriptor)) {
++      g_cachedBindGroups.emplace(id, deferred_bind_group(descriptor, current_frame()));
++    } else {
++      auto bindGroup = wgpu::BindGroup::Acquire(wgpuDeviceCreateBindGroup(webgpu::g_device.Get(), &descriptor));
++      g_cachedBindGroups.emplace(id, CachedBindGroup{
++                                         .bindGroup = std::move(bindGroup),
++                                         .lastUsedFrame = current_frame(),
++                                     });
++    }
+   } else {
+     it->second.lastUsedFrame = current_frame();
+   }
+@@ -101,6 +165,9 @@ wgpu::BindGroup find_bind_group(BindGroupRef id) {
+   std::lock_guard lock{g_bindGroupCacheMutex};
+   const auto it = g_cachedBindGroups.find(id);
+   CHECK(it != g_cachedBindGroups.end(), "get_bind_group: failed to locate {:x}", id);
++  if (!it->second.bindGroup) {
++    create_deferred_bind_group(it->second);
++  }
+   return it->second.bindGroup;
+ }
+ 
