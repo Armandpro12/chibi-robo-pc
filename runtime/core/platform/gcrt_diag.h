@@ -88,8 +88,10 @@ extern volatile uint64_t g_gcrt_heartbeat;
 static inline void gcrt_diag_heartbeat(void) { g_gcrt_heartbeat = g_gcrt_heartbeat + 1; }
 
 /* Progress of the start-up that comes before the game loop: window creation, setup menu (one beat per pass), input
-   set-up. 0 = not armed (boot before the window). The hang watchdog (gcrt_crash.h) watches it while the game loop
-   has not beaten yet, so that a start-up that stops also gets a hang report with the stacks of every thread. */
+   and console set-up. 0 = not armed (process start, before the window). The hang watchdog (gcrt_crash.h) watches it
+   while the game loop has not beaten yet, so that a start-up that stops also gets a (text only) hang report with the
+   stacks of every thread. The last beat is at the end of the platform attachment: the game's boot up to its first
+   frame counts as start-up too. */
 extern volatile uint64_t g_gcrt_startup_beat;
 static inline void gcrt_diag_startup_beat(void) { g_gcrt_startup_beat = g_gcrt_startup_beat + 1; }
 

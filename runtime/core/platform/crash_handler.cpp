@@ -19,6 +19,8 @@
 //    to stderr, marks the .txt as incomplete and lets the process end as usual;
 //  - the text report is written first, section by section (whatever was composed is on disk if a later step hangs or
 //    faults), then the minidump, then the guest memory; the risky steps of phase 2 are guarded by SEH;
+//  - the in-process minidump suspends every other thread for the whole dump and is not bounded: none in a start-up
+//    hang report, none in a game-loop hang report if the game loop progressed again meanwhile (see do_report);
 //  - if the folder cannot be written, the temporary folder is tried, then the report goes to stderr only; if the
 //    reporting thread does not answer, the faulting thread writes what was composed to stderr itself.
 #include "gcrt_crash.h"
@@ -1366,7 +1368,10 @@ struct CrashInput {
   wchar_t stem[MAX_PATH * 2];
 };
 CrashInput g_in;
-bool g_hang_in_startup = false; // set by the watchdog before a hang report: the start-up stopped, not the game loop
+// Set by the watchdog before a hang report: the start-up stopped, not the game loop; and the beat it saw (to tell,
+// before the minidump, whether the game loop progressed again during the report).
+bool g_hang_in_startup = false;
+uint64_t g_hang_beat = 0;
 HANDLE g_request = nullptr; // auto-reset: a report is requested
 HANDLE g_done = nullptr;    // auto-reset: the report is finished
 DWORD g_reporter_tid = 0;
@@ -1544,9 +1549,16 @@ void do_report() {
               : "");
     }
   } else {
-    out("no exception: the %s made no progress for %u s (GCRT_WATCHDOG); the game keeps running\n",
-        g_hang_in_startup ? "start-up (window creation, setup menu, before the game loop)" : "game loop",
-        g_in.hang_seconds);
+    if (g_hang_in_startup) {
+      out("no exception: the start-up (window creation, setup menu, game boot up to its first frame) made no progress "
+          "for %u s (GCRT_WATCHDOG_STARTUP); the game keeps running: a start-up report is text only (no minidump)\n",
+          g_in.hang_seconds);
+    } else {
+      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is left running, but the "
+          "minidump, written last and only if the game loop is still stopped then, suspends every other thread while "
+          "it is written (see the minidump line)\n",
+          g_in.hang_seconds);
+    }
   }
   const bool game_faulted = !hang && g_in.thread == g_game_thread;
   out("%s thread id %lu%s\n", hang ? "watched" : "faulting", static_cast<unsigned long>(g_in.thread),
@@ -1682,7 +1694,29 @@ void do_report() {
   flush_text();
   close_threads();
 
-  if (g_in.stem[0] != 0) {
+  // An in-process MiniDumpWriteDump suspends every other thread of the process for the whole dump (seen: suspend
+  // count 1, no progress, tests/j8/hang2/mdsusp) and then needs the heap and the loader lock itself (version
+  // resources, module list): a thread it suspended while holding one of those locks blocks it, and the game, for
+  // ever (seen in start-up reports: the main thread suspended inside RtlAllocateHeap or the delay-load resolver).
+  // Microsoft Learn (MiniDumpWriteDump, Remarks) advises against calling it in the target process for that reason.
+  // A crash report keeps it (the process ends anyway, the faulting thread waits at most kReportWaitMs). A hang report
+  // must leave a running game running: none for the start-up (it is alive in almost every case, a slow window
+  // creation or setup menu, and its threads allocate all the time; the raw stacks above are what matters), and none
+  // for the game loop either if it progressed again while the text was written (the game is running again).
+  const char* no_dump = nullptr;
+  if (hang && g_hang_in_startup) {
+    no_dump = "start-up hang report: an in-process minidump suspends every other thread while it is written, and a "
+              "thread suspended while holding the heap or loader lock would block it and the game for ever; the raw "
+              "stacks of every thread are above";
+  } else if (hang && g_gcrt_heartbeat != g_hang_beat) {
+    no_dump = "the game loop progressed again while this report was written: a minidump would suspend a running game";
+  }
+  if (g_in.stem[0] != 0 && no_dump != nullptr) {
+    out("\nminidump: not written (%s)\n", no_dump);
+    flush_text();
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "hang report: no minidump (%s)",
+                      g_hang_in_startup ? "start-up report" : "the game loop progressed again");
+  } else if (g_in.stem[0] != 0) {
     // Comment stream of the minidump: the whole event ring (the .txt holds the last kTextEvents).
     g_events_full_len = 0;
     g_out_buf = g_events_full;
@@ -1751,8 +1785,8 @@ void do_report() {
   }
   char where_files[MAX_PATH * 2];
   WideCharToMultiByte(CP_UTF8, 0, g_in.stem, -1, where_files, sizeof(where_files), nullptr, nullptr);
-  std::fprintf(stderr, "gcrt: %s report written: %s.txt (.dmp%s)\n", hang ? "hang" : "crash", where_files,
-               hang ? "" : ", -guest-ram.bin");
+  std::fprintf(stderr, "gcrt: %s report written: %s.txt (%s)\n", hang ? "hang" : "crash", where_files,
+               no_dump != nullptr ? "text only" : hang ? ".dmp" : ".dmp, -guest-ram.bin");
   std::fflush(stderr);
 }
 
@@ -1907,8 +1941,11 @@ DWORD WINAPI watchdog_main(LPVOID) {
   for (;;) {
     // Counting sleeps, not clock time: after a system sleep or hibernation only one more tick has passed.
     Sleep(1000);
-    // Before the game loop beats: the start-up beat (window creation, setup menu passes, gcrt_diag.h), armed when
-    // the platform opens the window; before that (boot), nothing is watched.
+    // Before the game loop beats: the start-up beat (gcrt_diag.h), armed when the platform starts opening the window,
+    // then window creation, setup menu passes, input and console set-up; its last beat comes at the end of the
+    // platform attachment, so the game's boot up to its first frame is watched as start-up too (with the start-up
+    // threshold, at least 60 s by default: a freeze there gets a report; a slow boot on a busy computer does not).
+    // Before the first beat (process start, disc and executable loading), nothing is watched.
     const uint64_t loop = g_gcrt_heartbeat;
     const bool startup = loop == 0;
     const uint64_t beat = startup ? g_gcrt_startup_beat : loop;
@@ -1934,11 +1971,14 @@ DWORD WINAPI watchdog_main(LPVOID) {
       }
       gcrt_diag_event(GCRT_EV_WATCHDOG, still, startup ? 1u : 0u);
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "watchdog: no progress of the %s for %u s%s",
-                        startup ? "start-up (window creation, setup menu)" : "game loop", still,
-                        reports < kMaxHangReports ? ", writing a hang report (the game keeps running)" : "");
+                        startup ? "start-up (window creation, setup menu, game boot)" : "game loop", still,
+                        reports >= kMaxHangReports ? ""
+                        : startup              ? ", writing a hang report, text only (the game keeps running)"
+                                               : ", writing a hang report (the game is left running)");
       if (reports < kMaxHangReports) {
         reports++;
         g_hang_in_startup = startup;
+        g_hang_beat = beat;
         run_report(nullptr, Cause::Hang, g_game_thread, still);
       }
     }

@@ -37,11 +37,14 @@
  * Variables: GCRT_CRASH_HANDLER=0 disables the handler and the watchdog (to let a debugger or Windows Error Reporting
  * see the exception first); GCRT_WATCHDOG=<seconds> without progress of the game loop before a hang report (default
  * 60, 0 = off; one report per hang, at most 3 per session; never when a debugger is attached); before the game loop
- * starts, the start-up (window creation, setup menu, gcrt_diag.h) is watched the same way, with
- * GCRT_WATCHDOG_STARTUP=<seconds> (default: GCRT_WATCHDOG, at least 60; 0 = off);
+ * starts, the start-up (window creation, setup menu, game boot up to its first frame, gcrt_diag.h) is watched the
+ * same way, with GCRT_WATCHDOG_STARTUP=<seconds> (default: GCRT_WATCHDOG, at least 60; 0 = off; GCRT_WATCHDOG=0 turns
+ * both off);
  * GCRT_CRASH_SUSPEND_LIMIT=<seconds> the other threads may stay suspended while a report copies their state (default
- * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted (a report never freezes
- * the game).
+ * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted.
+ * A start-up hang report is text only: an in-process minidump suspends every other thread for the whole dump and can
+ * block for ever on a lock one of them holds, so it would turn a slow start-up into a freeze. A game-loop hang report
+ * writes a minidump last, only if the game loop is still stopped then; that step is not bounded (same risk).
  * Windows only; elsewhere the functions do nothing.
  */
 #ifndef GCRT_CRASH_H
