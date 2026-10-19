@@ -17,17 +17,14 @@
  *     DSPTaskInfo in guest memory; DSPAddTask starts the first task by giving the HLE microcode the fingerprint of its
  *     IRAM code, like the DSP ROM.
  *
- * Instants: identical to those of the emulated reference (hw/dsp, hw/ai, sched/, removed; the last build that still
- * emulated the hardware, kept outside this repository's public history, and the executable of step 10c), measured
- * with GCRT_TIMELINE. The audio events (DMA block, microcode update every millisecond, deferred DSP interrupt, first
- * DMA interrupt) are timed like those of the former scheduler: deadline = time of the last processing of audio
- * events + delay; a delay is expressed in nominal Gekko cycles (time base ticks × 12) because the constants come
- * from Dolphin in that unit (DSP_YIELD 2,500 cycles after the command list, first DMA interrupt 200 cycles after its
- * activation, block 36 × divisor) and because the order of two deadlines of the same tick must stay that of the
- * reference. It is not a clock in executed cycles: everything is timed on the host ticks (g->ticks), through a native
- * timer. Interrupts #5 and #7 are delivered before the other due external native interrupts, in the order of the
- * SDK priority table among themselves (DSP_DSP then DSP_AI): that is the order of the reference, where they arrived
- * through the external interrupt line of the emulated hardware (gcrt_nirq_post_ex, GCRT_NIRQ_FIRST).
+ * Instants: native timers on the time base ticks (g->ticks, 40.5 MHz; gcrt_ntimer_set), one per pending event. The
+ * two periodic ones (audio DMA block, microcode update every millisecond) are anchored on their own previous
+ * deadline, so their rate is exact whatever the delivery delay; the one-shot ones (deferred DSP interrupt, first DMA
+ * interrupt after the activation) start from the current tick. The constants come from Dolphin in CPU cycles
+ * (486 MHz = 12 cycles per tick): a block of 36 × divisor cycles is exactly 3 × divisor ticks, the update exactly
+ * 40,500 ticks; the 200-cycle start of the DMA interrupt and the delays of the mails (DSP_YIELD 2,500 cycles) are
+ * rounded up to the next tick. Interrupts #5 and #7 go through the common native interrupt queue, which picks
+ * between due interrupts like __OSDispatchInterrupt (SDK priority table).
  *
  * Sources: disassembly of the recognized SDK (AI and DSP 0x2301 libraries); reference decompilation
  * external/cbr_decomp/decomp_dtk_main/src/Dolphin/{ai/ai.c, dsp/dsp.c, dsp/dsp_task.c} (CC0, consulted only);
@@ -38,15 +35,19 @@
 #include "platform/trace.h"
 #include "platform/gcrt_diag.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* --- Constants of the replaced hardware (Dolphin e6f3ae17) --- */
+/* --- Constants of the replaced hardware (Dolphin e6f3ae17), in time base ticks (GCRT_TB_HZ) --- */
 #define AI_DIVISOR_32K 3372u /* AudioInterface.cpp: 108 MHz / 3372 = 32,028.5 Hz */
 #define AI_DIVISOR_48K 2248u /* 108 MHz / 2248 = 48,042.7 Hz */
-#define AI_BLOCK_CYCLES(div) (36ull * (div)) /* SystemTimers.cpp: CPU 486 MHz × 32 B / (4 B × rate) */
-#define AID_START_DELAY_CYCLES 200          /* DSP.cpp: first interrupt 200 cycles after the activation */
-#define DSP_UPDATE_CYCLES (GCRT_CPU_HZ / 1000u) /* update of the HLE microcodes: every millisecond */
+/* SystemTimers.cpp: 36 × divisor CPU cycles per 32-byte block (8 stereo frames at 108 MHz / divisor) = 3 × divisor
+ * ticks, exactly. */
+#define AI_BLOCK_TICKS(div) (3ull * (div))
+#define TICKS_OF_CYCLES(c) (((u64)(c) + GCRT_CYCLES_PER_TB_TICK - 1u) / GCRT_CYCLES_PER_TB_TICK) /* rounded up */
+#define AID_START_DELAY_TICKS TICKS_OF_CYCLES(200u) /* DSP.cpp: first interrupt 200 cycles after the activation */
+#define DSP_UPDATE_TICKS (GCRT_TB_HZ / 1000u)        /* update of the HLE microcodes: every millisecond */
 #define DSP_ROM_READY 0x8071FEEDu
 
 /* AICR (bits kept by the host, like the register: PSTAT, AISFR, AIINTMSK, AIINT, AIINTVLD, AIDFR). */
@@ -99,18 +100,15 @@
 #define DSP_HANDLER_FRAME 0x2E8u
 #define STACK_SWITCH_FRAME 0x18u
 
-/* Events: microcode update (1 ms), audio DMA block, deferred DSP interrupt, first DMA interrupt after the
- * activation. */
-enum { EV_UPDATE = 0, EV_BLOCK, EV_DSP_INT, EV_AID_START, EV_KINDS };
-
-#define MAX_EVENTS 32u
+/* Native timers of the audio: microcode update (1 ms), audio DMA block, first DMA interrupt after the activation,
+ * deferred DSP interrupts (one per announced interrupt still to come; a few at most). */
+#define MAX_DSP_INT_TIMERS 4u
 #define MAIL_QUEUE 64u
 
 typedef struct {
-    int kind;
-    u64 when;  /* nominal cycles (ticks × 12) */
-    u64 order; /* tie-break between equal deadlines: scheduling order */
-} AudioEvent;
+    u32 id;  /* native timer, 0 if none */
+    u64 due; /* ticks */
+} AudioTimer;
 
 typedef struct {
     u32 mail;
@@ -131,14 +129,9 @@ static struct {
     bool have_backend;
     const char* last_ucode; /* name of the microcode when unplugged (final report) */
 
-    /* Events (timed like the former scheduler). */
-    AudioEvent events[MAX_EVENTS];
-    unsigned event_count;
-    u64 now;      /* cycles: time of the last processing of events */
-    u64 order;
-    bool running;
-    u64 deadline; /* ticks: deadline of the native timer, UINT64_MAX if none */
-    u32 timer_id;
+    /* Native timers. */
+    AudioTimer update, block, aid_start;
+    AudioTimer dsp_int[MAX_DSP_INT_TIMERS];
 
     /* AI: variables of ai.c (guest addresses). */
     u32 v_ais_callback, v_aid_callback, v_callback_stack, v_old_stack, v_ai_init_flag, v_aid_active, v_ai_version;
@@ -175,7 +168,7 @@ static struct {
     /* Report. */
     u64 blocks, silent_blocks, dma_cycles, aid_raised, aid_delivered, aid_reentries, aid_no_callback, dma_starts;
     u64 mails_to_dsp, mails_to_cpu, mails_dropped, dsp_raised, dsp_delivered, dsp_empty, tasks_added, boots;
-    u64 task_switches, asserts, cancels, rate_changes, stack_switches;
+    u64 task_switches, asserts, cancels, rate_changes, stack_switches, dsp_int_overflows;
     u64 dsp_by_mail[6];
 } s_au;
 
@@ -185,86 +178,38 @@ static u16 R16(u32 a) { return mem_read16(&s_au.g->state, a); }
 static u32 arg(GcrtCpu* g, unsigned i) { return g->state.gpr[3 + i]; }
 
 /* ---------------------------------------------------------------------------------------------
- * Audio events: same instants as the scheduler of the reference. A single native timer, at the nearest deadline; when
- * it fires, "now" = ticks × 12, then all the due events in order (deadline, scheduling order). Scheduling outside
- * the processing starts from the last "now" (like the former scheduler, which only advanced at its deadlines).
+ * Native timers (gcrt_ntimer_set): each callback finds its timer already removed from the native queue.
  * ------------------------------------------------------------------------------------------- */
 
-static void on_timer(GcrtCpu* g, void* user);
-
-static u64 earliest_event(void) {
-    u64 best = UINT64_MAX;
-    for (unsigned i = 0; i < s_au.event_count; i++)
-        if (s_au.events[i].when < best)
-            best = s_au.events[i].when;
-    return best;
+static void timer_arm(GcrtCpu* g, AudioTimer* t, u64 due, GcrtNativeTimerFn fn, void* user) {
+    t->due = due;
+    t->id = gcrt_ntimer_set(g, due, fn, user);
 }
 
-static void arm_timer(GcrtCpu* g, u64 deadline) {
-    if (s_au.timer_id)
-        gcrt_ntimer_cancel(g, s_au.timer_id);
-    s_au.timer_id = 0;
-    s_au.deadline = deadline;
-    if (deadline != UINT64_MAX)
-        s_au.timer_id = gcrt_ntimer_set(g, deadline, on_timer, NULL);
+static void timer_disarm(GcrtCpu* g, AudioTimer* t) {
+    if (t->id)
+        gcrt_ntimer_cancel(g, t->id);
+    t->id = 0;
 }
 
-static void schedule(GcrtCpu* g, int kind, s64 delay_cycles) {
-    if (s_au.event_count >= MAX_EVENTS) {
-        fprintf(stderr, "gcrt native audio: too many pending events (%u)\n", MAX_EVENTS);
-        return;
-    }
-    const u64 previous = earliest_event();
-    const s64 when = (s64)s_au.now + delay_cycles;
-    AudioEvent* e = &s_au.events[s_au.event_count++];
-    e->kind = kind;
-    e->when = when > 0 ? (u64)when : 0u;
-    e->order = s_au.order++;
-    if (!s_au.running && e->when < previous) {
-        /* New nearest event: the timer is brought forward if needed (never pushed back). */
-        const u64 ticks = (e->when + GCRT_CYCLES_PER_TB_TICK - 1u) / GCRT_CYCLES_PER_TB_TICK;
-        if (ticks < s_au.deadline)
-            arm_timer(g, ticks);
-    }
-}
+static void on_dsp_int_timer(GcrtCpu* g, void* user);
+static void on_aid_start_timer(GcrtCpu* g, void* user);
+static void raise_dsp(GcrtCpu* g);
 
-static void cancel(int kind) {
-    for (unsigned i = 0; i < s_au.event_count;) {
-        if (s_au.events[i].kind == kind)
-            s_au.events[i] = s_au.events[--s_au.event_count];
-        else
-            i++;
-    }
-}
-
-static void run_event(GcrtCpu* g, int kind, s64 late);
-
-static void on_timer(GcrtCpu* g, void* user) {
-    (void)user;
-    s_au.timer_id = 0;
-    const u64 now = g->ticks * GCRT_CYCLES_PER_TB_TICK;
-    if (now > s_au.now)
-        s_au.now = now;
-    s_au.running = true;
-    for (;;) {
-        int best = -1;
-        for (unsigned i = 0; i < s_au.event_count; i++) {
-            const AudioEvent* e = &s_au.events[i];
-            if (e->when > s_au.now)
-                continue;
-            if (best < 0 || e->when < s_au.events[best].when ||
-                (e->when == s_au.events[best].when && e->order < s_au.events[best].order))
-                best = (int)i;
-        }
-        if (best < 0)
+/* Deferred DSP interrupt, `delay` ticks from now. */
+static void schedule_dsp_int(GcrtCpu* g, u64 delay) {
+    for (unsigned i = 0; i < MAX_DSP_INT_TIMERS; i++) {
+        AudioTimer* t = &s_au.dsp_int[i];
+        if (!t->id) {
+            timer_arm(g, t, g->ticks + delay, on_dsp_int_timer, (void*)(uintptr_t)i);
+            if (t->id)
+                return;
             break;
-        const AudioEvent e = s_au.events[best];
-        s_au.events[best] = s_au.events[--s_au.event_count];
-        run_event(g, e.kind, (s64)(s_au.now - e.when));
+        }
     }
-    s_au.running = false;
-    const u64 next = earliest_event();
-    arm_timer(g, next == UINT64_MAX ? UINT64_MAX : (next + GCRT_CYCLES_PER_TB_TICK - 1u) / GCRT_CYCLES_PER_TB_TICK);
+    fprintf(stderr, "gcrt native audio: no native timer free for a DSP interrupt, raised now\n");
+    s_au.dsp_int_overflows++;
+    raise_dsp(g);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -279,7 +224,7 @@ static void raise_aid(GcrtCpu* g) {
     if (s_au.aid_pending)
         return; /* already raised, not acknowledged yet: a single delivery (level) */
     s_au.aid_pending = true;
-    gcrt_nirq_post_ex(g, GCRT_OS_IRQ_DSP_AI, g->ticks, on_aid_interrupt, NULL, GCRT_NIRQ_FIRST);
+    gcrt_nirq_post(g, GCRT_OS_IRQ_DSP_AI, g->ticks, on_aid_interrupt, NULL);
 }
 
 static void raise_dsp(GcrtCpu* g) {
@@ -287,7 +232,7 @@ static void raise_dsp(GcrtCpu* g) {
     if (s_au.dsp_pending)
         return;
     s_au.dsp_pending = true;
-    gcrt_nirq_post_ex(g, GCRT_OS_IRQ_DSP_DSP, g->ticks, on_dsp_interrupt, NULL, GCRT_NIRQ_FIRST);
+    gcrt_nirq_post(g, GCRT_OS_IRQ_DSP_DSP, g->ticks, on_dsp_interrupt, NULL);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -296,9 +241,12 @@ static void raise_dsp(GcrtCpu* g) {
 
 static u32 dma_divisor(void) { return (s_au.aicr & AICR_AIDFR) ? AI_DIVISOR_32K : AI_DIVISOR_48K; }
 
-static void audio_block(GcrtCpu* g, s64 late) {
+static void on_block_timer(GcrtCpu* g, void* user);
+
+/* One 32-byte block of the audio DMA, every 3 × divisor ticks (next deadline from the previous one). */
+static void audio_block(GcrtCpu* g) {
     const u32 divisor = dma_divisor();
-    schedule(g, EV_BLOCK, (s64)AI_BLOCK_CYCLES(divisor) - late);
+    timer_arm(g, &s_au.block, s_au.block.due + AI_BLOCK_TICKS(divisor), on_block_timer, NULL);
     static const u8 silence[32];
     const u32 rate = 108000000u / divisor;
     if (!(s_au.dma_control & 0x8000u)) {
@@ -325,7 +273,7 @@ static void audio_block(GcrtCpu* g, s64 late) {
         s_au.dma_current = s_au.dma_start;
         s_au.dma_remaining = s_au.dma_control & 0x7FFFu;
         s_au.dma_cycles++;
-        GCRT_TIMELINE("ai aid raised schednow=%llu", (unsigned long long)s_au.now);
+        GCRT_TIMELINE("ai aid raised due=%llu", (unsigned long long)s_au.block.due);
         GCRT_TRACE(GCRT_TRACE_AI, "audio DMA: buffer 0x%08X read (%u blocks), DMA interrupt", s_au.dma_start,
                    s_au.dma_control & 0x7FFFu);
         raise_aid(g);
@@ -341,35 +289,41 @@ static void write_dma_control(GcrtCpu* g, u16 value) {
         s_au.dma_current = s_au.dma_start;
         s_au.dma_remaining = value & 0x7FFFu;
         s_au.dma_starts++;
-        cancel(EV_AID_START);
-        schedule(g, EV_AID_START, AID_START_DELAY_CYCLES);
-        GCRT_TIMELINE("ai dma enabled schednow=%llu", (unsigned long long)s_au.now);
+        timer_disarm(g, &s_au.aid_start);
+        timer_arm(g, &s_au.aid_start, g->ticks + AID_START_DELAY_TICKS, on_aid_start_timer, NULL);
+        GCRT_TIMELINE("ai dma enabled aid start due=%llu", (unsigned long long)s_au.aid_start.due);
         GCRT_TRACE(GCRT_TRACE_AI, "audio DMA enabled: 0x%08X, %u blocks", s_au.dma_start, value & 0x7FFFu);
     }
 }
 
-static void run_event(GcrtCpu* g, int kind, s64 late) {
-    switch (kind) {
-    case EV_UPDATE:
-        GCRT_TIMELINE("dsp update schednow=%llu", (unsigned long long)s_au.now);
-        schedule(g, EV_UPDATE, (s64)DSP_UPDATE_CYCLES - late);
-        if (s_au.have_backend && s_au.backend.update)
-            s_au.backend.update(s_au.backend.user);
-        break;
-    case EV_BLOCK:
-        audio_block(g, late);
-        break;
-    case EV_DSP_INT:
-        GCRT_TIMELINE("dsp int raised schednow=%llu", (unsigned long long)s_au.now);
-        raise_dsp(g);
-        break;
-    case EV_AID_START:
-        GCRT_TIMELINE("ai aid start raised schednow=%llu", (unsigned long long)s_au.now);
-        raise_aid(g);
-        break;
-    default:
-        break;
-    }
+static void on_block_timer(GcrtCpu* g, void* user) {
+    (void)user;
+    s_au.block.id = 0;
+    audio_block(g);
+}
+
+/* Update of the HLE microcode every millisecond (next deadline from the previous one). */
+static void on_update_timer(GcrtCpu* g, void* user) {
+    (void)user;
+    s_au.update.id = 0;
+    GCRT_TIMELINE("dsp update due=%llu", (unsigned long long)s_au.update.due);
+    timer_arm(g, &s_au.update, s_au.update.due + DSP_UPDATE_TICKS, on_update_timer, NULL);
+    if (s_au.have_backend && s_au.backend.update)
+        s_au.backend.update(s_au.backend.user);
+}
+
+static void on_aid_start_timer(GcrtCpu* g, void* user) {
+    (void)user;
+    s_au.aid_start.id = 0;
+    GCRT_TIMELINE("ai aid start raised due=%llu", (unsigned long long)s_au.aid_start.due);
+    raise_aid(g);
+}
+
+static void on_dsp_int_timer(GcrtCpu* g, void* user) {
+    AudioTimer* t = &s_au.dsp_int[(uintptr_t)user];
+    t->id = 0;
+    GCRT_TIMELINE("dsp int raised due=%llu", (unsigned long long)t->due);
+    raise_dsp(g);
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -384,7 +338,7 @@ void gcrt_native_dsp_push_mail(u32 mail, bool interrupt, u32 delay_cycles) {
     GcrtCpu* g = s_au.g;
     if (interrupt) {
         if (s_au.mail_count == 0)
-            schedule(g, EV_DSP_INT, (s64)delay_cycles);
+            schedule_dsp_int(g, TICKS_OF_CYCLES(delay_cycles));
         else
             mail_front()->interrupt_after = true;
     }
@@ -396,8 +350,7 @@ void gcrt_native_dsp_push_mail(u32 mail, bool interrupt, u32 delay_cycles) {
     s_au.mails[(s_au.mail_head + s_au.mail_count) % MAIL_QUEUE] = (QueuedMail){mail, false};
     s_au.mail_count++;
     s_au.mails_to_cpu++;
-    GCRT_TIMELINE("dsp mail->cpu %08X int=%d delay=%u schednow=%llu", mail, interrupt ? 1 : 0, delay_cycles,
-                  (unsigned long long)s_au.now);
+    GCRT_TIMELINE("dsp mail->cpu %08X int=%d delay=%u", mail, interrupt ? 1 : 0, delay_cycles);
     GCRT_TRACE(GCRT_TRACE_DSP, "DSP -> CPU mail %08X%s", mail, interrupt ? " (interrupt)" : "");
 }
 
@@ -421,7 +374,7 @@ static u32 mail_read_lo(GcrtCpu* g) {
         s_au.mail_count--;
         s_au.last_mail = m.mail;
         if (m.interrupt_after)
-            schedule(g, EV_DSP_INT, 0);
+            schedule_dsp_int(g, 0);
     }
     const u32 v = s_au.last_mail & 0xFFFFu;
     s_au.last_mail &= 0x7FFFFFFFu;
@@ -441,7 +394,7 @@ static void send_mail_to_dsp(GcrtCpu* g, u32 mail) {
     (void)g;
     s_au.cpu_mailbox = mail;
     s_au.mails_to_dsp++;
-    GCRT_TIMELINE("dsp mail->dsp %08X schednow=%llu", mail, (unsigned long long)s_au.now);
+    GCRT_TIMELINE("dsp mail->dsp %08X", mail);
     GCRT_TRACE(GCRT_TRACE_DSP, "CPU -> DSP mail %08X (%s)", mail,
                s_au.have_backend && s_au.backend.name ? s_au.backend.name(s_au.backend.user) : "no microcode");
     if (s_au.have_backend && s_au.backend.mail)
@@ -1189,13 +1142,20 @@ void gcrt_native_audio_install(GcrtCpu* g) {
     void* sink_user = s_au.sink_user;
     GcrtDspBackend backend = s_au.backend;
     const bool have_backend = s_au.have_backend;
+    if (s_au.g) {
+        /* Installed again: the timers of the previous installation must not fire any more. */
+        timer_disarm(s_au.g, &s_au.update);
+        timer_disarm(s_au.g, &s_au.block);
+        timer_disarm(s_au.g, &s_au.aid_start);
+        for (unsigned i = 0; i < MAX_DSP_INT_TIMERS; i++)
+            timer_disarm(s_au.g, &s_au.dsp_int[i]);
+    }
     memset(&s_au, 0, sizeof(s_au));
     s_au.sink = sink;
     s_au.sink_user = sink_user;
     s_au.backend = backend;
     s_au.have_backend = have_backend;
     s_au.g = g;
-    s_au.deadline = UINT64_MAX;
     if (!gcrt_native_os_active()) {
         fprintf(stderr, "gcrt native audio: native OS absent, audio not replaced\n");
         return;
@@ -1275,10 +1235,9 @@ void gcrt_native_audio_install(GcrtCpu* g) {
      * until DSPInit. */
     s_au.aicr = AICR_AISFR | AICR_AIDFR;
     s_au.halted = true;
-    s_au.now = 0;
-    /* Same scheduling order as the reference: DSP update, then first DMA block. */
-    schedule(g, EV_UPDATE, (s64)DSP_UPDATE_CYCLES);
-    schedule(g, EV_BLOCK, (s64)AI_BLOCK_CYCLES(dma_divisor()));
+    /* Periodic timers from now: DSP update, then first DMA block. */
+    timer_arm(g, &s_au.update, g->ticks + DSP_UPDATE_TICKS, on_update_timer, NULL);
+    timer_arm(g, &s_au.block, g->ticks + AI_BLOCK_TICKS(dma_divisor()), on_block_timer, NULL);
 
     /* AI (ai.c) */
     *n += gcrt_native_replace(g, "AIRegisterDMACallback", "AI", hle_ai_register_dma_callback, NULL, 0, "AIInitDMA", m, ms);
@@ -1390,4 +1349,7 @@ void gcrt_native_audio_report(FILE* out) {
             (unsigned long long)s_au.rate_changes,
             ucode_name(), s_au.replaced,
             s_au.missing[0] ? s_au.missing : "none");
+    if (s_au.dsp_int_overflows)
+        fprintf(out, "native audio: %llu DSP interrupts raised at once (no native timer free)\n",
+                (unsigned long long)s_au.dsp_int_overflows);
 }

@@ -68,14 +68,11 @@ typedef void (*GcrtNativeIrqFn)(GcrtCpu* g, unsigned interrupt, u32 context, voi
 /* Installs the mechanism (called by gcrt_native_install; no effect the second time). */
 void gcrt_nirq_init(GcrtCpu* g);
 /* Posts an interrupt: delivered once, at the first block boundary where ticks >= `due_ticks`, MSR[EE] = 1 and the
- * interrupt is not masked by the OS. Due events are delivered in the order of their deadlines. Returns an
- * identifier (> 0), 0 if the queue is full. */
+ * interrupt is not masked by the OS. When several external interrupts are due at the same boundary, the one chosen
+ * is the one __OSDispatchInterrupt would pick on the console: the SDK priority table (InterruptPrioTable), then the
+ * lowest number within a group; equal numbers by deadline, then order of posting. The decrementer class comes after
+ * the external interrupts. Returns an identifier (> 0), 0 if the queue is full. */
 u32 gcrt_nirq_post(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeIrqFn fn, void* user);
-/* GCRT_NIRQ_FIRST: delivered before the other due external interrupts; among them, order of the SDK priority table
- * (__OSDispatchInterrupt). Used by the DSP and the AI (step 10d) to keep the order of the emulated reference, where
- * these two sources arrived through the external interrupt line, examined before the native interrupts. */
-#define GCRT_NIRQ_FIRST 1u
-u32 gcrt_nirq_post_ex(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeIrqFn fn, void* user, unsigned flags);
 bool gcrt_nirq_cancel(GcrtCpu* g, u32 id);
 /* Is the interrupt masked by the OS (__OSMaskInterrupts)? */
 bool gcrt_nirq_masked(GcrtCpu* g, unsigned interrupt);
