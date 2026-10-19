@@ -42,7 +42,8 @@
  *                      minimized: for automated runs
  *   GCRT_NO_FOCUS      1: "no focus" test mode, for launches on a computer someone is using (platform/gcrt_focus.h;
  *                      tools/run.py sets it unless the caller did): the game window is never activated nor raised
- *                      (shown without activation, "normal" counting as "background"; minimized if GCRT_WINDOW=minimized),
+ *                      (shown without activation behind the other windows and not focusable, "normal" counting as
+ *                      "background"; minimized if GCRT_WINDOW=minimized, then behind the others until minimized),
  *                      the menu's fullscreen setting is not applied, a console opened by the console option is created
  *                      minimized without activation, the foreground is never handed to the game window, and Shift
  *                      held at launch no longer shows a skipped setup menu. Default 0

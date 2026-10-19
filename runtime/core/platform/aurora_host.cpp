@@ -11,8 +11,19 @@
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_hints.h>
+#include <SDL3/SDL_properties.h>
 #include <SDL3/SDL_scancode.h>
 #include <SDL3/SDL_video.h>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -68,6 +79,49 @@ void log_callback(AuroraLogLevel level, const char* module, const char* message,
   }
 }
 
+// "No focus" test mode (gcrt_focus.h). SDL shows the window without activation (hint
+// SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN = "0": SetWindowPos with SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER, SDL 3.4
+// src/video/windows/SDL_windowswindow.c, WIN_ShowWindow), but a new window is at the top of the Z order: it is drawn
+// over the foreground window of the person using the computer, and a click of theirs there activates it (issue 30).
+// Hence, as soon as SDL reports it shown (SDL_EVENT_WINDOW_SHOWN, sent from WM_SHOWWINDOW inside that SetWindowPos,
+// SDL 3.4 src/video/windows/SDL_windowsevents.c; seen by an event watch, called when the event is queued), or else
+// right after aurora_initialize (about 0.35 s later: GPU and ImGui set-up):
+//   - at the bottom of the Z order (SetWindowPos HWND_BOTTOM with SWP_NOACTIVATE, Microsoft Learn "SetWindowPos");
+//   - not focusable (SDL_SetWindowFocusable: WS_EX_NOACTIVATE, Microsoft Learn "Extended Window Styles": does not
+//     become the foreground window when clicked, nor when the foreground window is minimized or closed), unless the
+//     window is to be minimized (GCRT_WINDOW=minimized): that style also removes the taskbar button, and a minimized
+//     window without one is drawn as a small bar above the taskbar (seen at the bottom left of the screen).
+// Trace (GCRT_TRACE_PLATFORM): "no focus: ..." with the moment it was done.
+bool g_keptBehind = false;
+bool g_keepFocusable = false; // GCRT_WINDOW=minimized
+
+void keep_window_behind(SDL_Window* window, const char* when) {
+  g_keptBehind = true;
+  const bool unfocusable = !g_keepFocusable && SDL_SetWindowFocusable(window, false);
+  bool bottom = false;
+#ifdef _WIN32
+  const auto hwnd = static_cast<HWND>(
+      SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+  bottom = hwnd != nullptr &&
+           SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+#endif
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window %s, %s (%s)",
+                    g_keepFocusable ? "kept focusable (to be minimized)"
+                    : unfocusable   ? "not focusable"
+                                    : "focusable (failed)",
+                    bottom ? "moved to the bottom of the Z order" : "Z order unchanged (failed)", when);
+}
+
+// Event watch (SDL_AddEventWatch), only during aurora_initialize: runs on the thread that shows the window.
+bool SDLCALL keep_behind_on_shown(void*, SDL_Event* event) {
+  if (event->type == SDL_EVENT_WINDOW_SHOWN && !g_keptBehind) {
+    if (SDL_Window* window = SDL_GetWindowFromEvent(event)) {
+      keep_window_behind(window, "when shown");
+    }
+  }
+  return true;
+}
+
 // Keyboard and gamepad mappings: controls.ini file in the user folder
 // (input_config.cpp, input_host.cpp). The keyboard table that used to be here is its default value.
 } // namespace
@@ -99,8 +153,19 @@ bool host_init(const HostConfig& config) {
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
     SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
   }
+  const bool noFocus = gcrt_no_focus();
+  if (noFocus) {
+    g_keepFocusable = config.windowMode == 2;
+    SDL_AddEventWatch(keep_behind_on_shown, nullptr);
+  }
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
+  if (noFocus) {
+    SDL_RemoveEventWatch(keep_behind_on_shown, nullptr);
+    if (!g_keptBehind && info.window != nullptr) {
+      keep_window_behind(info.window, "after aurora_initialize");
+    }
+  }
   if (config.windowMode == 2 && info.window != nullptr) {
     SDL_MinimizeWindow(info.window);
   }
