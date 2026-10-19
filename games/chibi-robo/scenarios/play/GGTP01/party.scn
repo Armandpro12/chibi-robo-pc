@@ -1,7 +1,10 @@
 # Scenario "party" (PAL, milestone 8, playable game with replayed inputs): the whole birthday party (stage 14) of a new
 # game, from the title screen to the first change of stage. It replays play/GGTP01/first-task.scn (frames up to 11900)
 # then gives the rose to Jenny (the task Telly gives next), the candles, the end-of-party text on a black screen,
-# and the script's warp to stage 5 (the Chibi-House, first night): ends on Telly's first line there.
+# and the script's warp to stage 5 (the Chibi-House, first night), then the first save of the game: A through
+# Telly's lines, yes to the save offer, file 1, overwrite (the game created file 1 when the new game started; the
+# cursor starts on no, LEFT selects yes), A: ends when the save is complete. The user folder of this run (saves/)
+# is the starting point of the chained progression scenarios ("after party", e.g. house-exit).
 # Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
 # Route from the vase (directions are relative to the camera, which turns as Chibi-Robo walks): stick up-left behind
 # the cake, then left twice to reach the table edge on Mrs. Sanderson's side, then up along the edge until the
@@ -318,6 +321,37 @@ input 14462 A 5
 input 14516 A 5
 input 14570 A 5
 input 14624 A 5
+input 14704 A 5
+input 14758 A 5
+input 14812 A 5
+input 14866 A 5
+input 14920 A 5
+input 14974 A 5
+input 15028 A 5
+input 15082 A 5
+input 15136 A 5
+input 15190 A 5
+input 15244 A 5
+input 15298 A 5
+input 15352 A 5
+input 15406 A 5
+input 15460 A 5
+input 15514 A 5
+input 15568 A 5
+input 15622 A 5
+input 15676 A 5
+input 15730 A 5
+input 15784 A 5
+input 15838 A 5
+input 15892 A 5
+input 15946 A 5
+input 16000 A 5
+input 16054 A 5
+input 16108 A 5
+input 16162 A 5
+input 16260 A 5
+input 16300 LEFT 5
+input 16340 A 5
 check  3600 birthday-dialogue
 check  9400 flower-hint
 check  9640 table-control
@@ -333,4 +367,10 @@ check 13110 happy-points
 check 13830 candles
 check 14490 late-night
 check 14670 chibi-house
-end 14680
+check 16130 save-offer
+check 16240 save-file-select
+check 16290 overwrite-prompt
+check 16315 overwrite-yes
+check 16365 saving
+check 16390 save-complete
+end 16400

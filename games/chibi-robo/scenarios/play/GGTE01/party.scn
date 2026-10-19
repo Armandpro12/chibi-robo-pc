@@ -1,7 +1,10 @@
 # Scenario "party" (US, milestone 8, playable game with replayed inputs): the whole birthday party (stage 14) of a new
 # game, from the title screen to the first change of stage. It replays play/GGTE01/first-task.scn (frames up to 11650)
 # then gives the rose to Jenny (the task Telly gives next), the candles, the end-of-party text on a black screen,
-# and the script's warp to stage 5 (the Chibi-House, first night): ends on Telly's first line there.
+# and the script's warp to stage 5 (the Chibi-House, first night), then the first save of the game: A through
+# Telly's lines, yes to the save offer, file 1, overwrite (the game created file 1 when the new game started; the
+# cursor starts on no, LEFT selects yes), A: ends when the save is complete. The user folder of this run (saves/)
+# is the starting point of the chained progression scenarios ("after party", e.g. house-exit).
 # Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
 # Route from the vase (directions are relative to the camera, which turns as Chibi-Robo walks): stick up-left behind
 # the cake, up, then left twice to reach the table edge on Mrs. Sanderson's side, then up along the edge until the
@@ -359,6 +362,41 @@ input 14310 A 5
 input 14355 A 5
 input 14400 A 5
 input 14445 A 5
+input 14505 A 5
+input 14550 A 5
+input 14595 A 5
+input 14640 A 5
+input 14685 A 5
+input 14730 A 5
+input 14775 A 5
+input 14820 A 5
+input 14865 A 5
+input 14910 A 5
+input 14955 A 5
+input 15000 A 5
+input 15045 A 5
+input 15090 A 5
+input 15135 A 5
+input 15180 A 5
+input 15225 A 5
+input 15270 A 5
+input 15315 A 5
+input 15360 A 5
+input 15405 A 5
+input 15450 A 5
+input 15495 A 5
+input 15540 A 5
+input 15585 A 5
+input 15630 A 5
+input 15675 A 5
+input 15720 A 5
+input 15765 A 5
+input 15810 A 5
+input 15855 A 5
+input 15900 A 5
+input 16000 A 5
+input 16040 LEFT 5
+input 16080 A 5
 check  3000 birthday-dialogue
 check  9000 flower-hint
 check  9190 table-control
@@ -373,4 +411,10 @@ check 12870 happy-points
 check 13530 candles
 check 14250 late-night
 check 14490 chibi-house
-end 14500
+check 15840 save-offer
+check 15990 save-file-select
+check 16030 overwrite-prompt
+check 16070 overwrite-yes
+check 16090 saving
+check 16130 save-complete
+end 16140

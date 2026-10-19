@@ -9,16 +9,24 @@ They live in `play/<ID>/` on purpose: `tools/ab.py` (through `tools/scenario.py`
     py -3 tools/run.py chibi-robo --version GGTE01 --exe <exe> --audio off \
         --scenario games/chibi-robo/scenarios/play/GGTE01/first-task.scn --out <folder>
 
-Add `--trace dvd` to list the files read (stage changes) and `-- --hle-trace` to count the `OSLink` calls (REL modules).
+Add `--trace dvd` to list the files read (stage changes) and `-- --hle-trace` to trace the REL modules: each link
+prints `gcrt hle: OSLink module <id> (<name>): ...` and each unlink `gcrt hle: OSUnlink module <name> -> 1` in
+`stderr.log`; the final call counts are in `stdout.log` (the table in `stderr.log` is printed at startup, before any
+call). A scenario with an `after <name>` line starts from the user folder (saves) of that scenario's run:
+`--user-seed <run of name>/user`.
 Each file of `play/<ID>/` is written for that version only (frame numbers differ between versions); the same name in
 two version folders is the same logical route.
 
 Scenarios (same name in `GGTE01/` and `GGTP01/`):
 
 - `first-task`: new game, birthday cutscene, the first task (the flower on the party table), Chibi-Copter tutorial.
-- `party`: `first-task`, then the rose given to Jenny and the end of the party, up to the first change of stage
-  (stage 14 to stage 5, the Chibi-House). No REL module is loaded during it (stages 14 and 5 have none).
+- `party`: `first-task`, then the rose given to Jenny and the end of the party, the first change of stage
+  (stage 14 to stage 5, the Chibi-House) and the first save (file 1). No REL module is loaded during it (stages
+  14 and 5 have none).
+- `house-exit` (`after party`): Load Game, file 1, out of the Chibi-House to the living room (stage 7: first link
+  of `stage07.rel`), back into the Chibi-House (unlink), out again (second link).
 
 Hints for writing a route: the stick directions are relative to the camera, which turns while Chibi-Robo walks;
 A with the stick pushed jumps; in these runs, A next to a "!" icon did nothing while the Chibi-Copter was equipped and
 talked once B had put it away.
+In the Chibi-House, A next to the charger starts the ranking and save dialogue: no A there once Chibi-Robo is free.

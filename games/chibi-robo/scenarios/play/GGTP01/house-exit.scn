@@ -1,0 +1,53 @@
+# Scenario "house-exit" (PAL, milestone 8, playable game with replayed inputs): RUN IT WITH THE USER FOLDER OF "party"
+# (tools/run.py --user-seed <party run>/user): the save made at the end of the first night. Title screen, Load Game,
+# file 1 (LEFT then RIGHT: there and back, as in load-game.scn), the game resumes in the Chibi-House (stage 5).
+# Chibi-Robo walks out down the stairs (stick down-right): stage 7, the living room, whose code is a REL module, so
+# the game links stage07.rel (first OSLink of a new game); the first-visit cutscene and Telly's lines (A every 54
+# frames), then stick up into the Chibi-House again (stage 5: OSUnlink of stage07), and out again (stick down: a
+# second OSLink of stage07). Checks it with "--trace dvd -- --hle-trace" (play/README.md).
+# Inputs written by hand from screenshots of native runs (cycle clock, RTC 800000000), no game data here.
+# No A once Chibi-Robo is free in the Chibi-House: A next to the charger starts the ranking and save dialogue.
+# Not run by tools/ab.py (progression scenario, see play/README.md). US version: play/GGTE01/house-exit.scn.
+name house-exit
+description With the save of "party": Load Game, leave the Chibi-House for the living room, come back, leave again.
+version GGTP01
+after party   # preparation: user folder (first save) left by "party"
+window 0
+
+input  150 A 10      # 60/50 Hz prompt: confirm the 50 Hz option
+input 1050 A 10      # health and safety warning
+input 2600 A 10      # title screen: Load Game
+input 2850 LEFT 5    # file selection: file 1 -> file 3 (the cursor wraps around)
+input 2900 RIGHT 5   # ... and back to file 1
+input 2950 A 10      # load file 1
+input 3150 SDOWN+SRIGHT 300   # Chibi-House: down the stairs, out to the living room
+input 3580 A 5       # living room: Telly's lines
+input 3634 A 5
+input 3688 A 5
+input 3742 A 5
+input 3796 A 5
+input 3850 A 5
+input 3904 A 5
+input 3958 A 5
+input 4012 A 5
+input 4066 A 5
+input 4300 SUP 200   # up the stairs into the Chibi-House
+input 4550 SDOWN 120 # out again (released during the loading screen)
+
+check 2800 load-file-select
+check 2890 cursor-file-3
+check 2940 file-1-selected
+check 3100 chibi-house
+check 3180 exit-stairs
+check 3260 living-room-loading
+check 3360 living-room-cutscene
+check 3650 telly-dialogue
+check 4025 night-hint
+check 4300 house-stairs
+check 4375 chibi-house-loading
+check 4500 back-in-chibi-house
+check 4575 exit-again
+check 4650 living-room-loading-again
+check 4750 living-room-again
+
+end 4800
