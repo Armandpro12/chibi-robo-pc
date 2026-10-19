@@ -39,8 +39,8 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 2 | Loading | ✅ | DOL and the 16 REL modules extracted, loaded into DolRecomp and Ghidra. |
 | 3 | Recompilation | ✅ | Whole game recompiled to C, builds without errors. |
 | 4 | Minimal runtime | ✅ | Window, main loop, keyboard and gamepads. |
-| 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: only the health and safety warning has been compared with Dolphin. |
-| 6 | Audio | 🟡 | Music and effects match Dolphin sample for sample on the title screen, the party and the living room (PAL and US), and the music loops with the same period; the differences that remain are listed under "Known differences with Dolphin". The credits video plays in both versions with the same sound as Dolphin (99.8 to 99.9 % of the 5 ms blocks are bit-identical, same duration). Still to do: the other video cutscenes and a listening test. |
+| 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: the health and safety warning was compared first; the logos, title screen, file menus, loading screen, party, living room and backyard were compared later (milestone 9). |
+| 6 | Audio | 🟡 | Music and effects work. On the title screen, the party and the living room (PAL and US) the music has the same content as in Dolphin at a constant offset, bit-identical on most 5 ms blocks, and it loops with the same period; the differences that remain are listed under "Known differences with Dolphin". The credits video has the same duration and the same sound in 99.8 to 99.9 % of the 5 ms blocks. Still to do: the other video cutscenes and a listening test. |
 | 7 | Saves | ✅ | Native PC saves: card always inserted, crash-safe writes (temporary file, then rename). |
 | 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; open issues from player reports are listed under "Known issues". |
 | 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The credits video is compared (PAL: SSIM 0.937 to 0.95 because Dolphin dumps it at another height); the other video cutscenes are not compared yet. |
@@ -150,25 +150,31 @@ and assets are read from the player's files.
 ## Known differences with Dolphin
 
 Measured on the native build against Dolphin 5.0 (same inputs, scenes aligned by content). None of them is a
-rendering or sound defect of the port; most come from the game's own random numbers or from the timing of the
-simulated disc.
+rendering or sound defect of the port that we know of; most come from the game's own random numbers or from the
+timing of the simulated disc.
 
-- **Disc timing.** The native disc model has no seek time, so loading is 2 to 3.6 times faster than in Dolphin,
-  and the silence the game leaves at the loop point of the title music is 60 to 85 ms shorter. The real console
-  has not been measured, so which model is closer to it is unknown. A seek-time model could be added as an option.
-- **Random sounds and animations.** Ambient sounds in the backyard and the living room, the background of the
-  title screen, and small idle animations depend on the game's random generator, whose state depends on what
-  happened before the scene (including loading time). With the same generator state on both sides the backyard
-  plays the same sounds at the same instants (one periodic sound stays 5 ms off, one audio frame).
+- **Disc timing.** The native disc model has no seek time. Verified: the silence the game leaves at the loop point of
+  the title music follows the simulated disc speed, and it is 60 to 85 ms shorter than in Dolphin, which simulates a
+  seek. Loading is also 2 to 3.6 times faster in the port, probably for the same reason. Which model is closer to the
+  real console is unknown; a seek-time model could be added as an option.
+- **Random sounds and animations.** Verified: the background of the title screen depends on the game's random
+  generator (with the same seed on both sides the title scores 0.990 to 0.996 in SSIM), and so do the backyard
+  ambient sounds, which depend on what happened before the scene. With the same generator state on both sides the US
+  backyard plays the same sounds at the same instants (72 of 118 anchors identical to the sample, one periodic sound
+  5 ms off); in PAL the gap is strongly reduced but only partly analysed. The ambient sounds of the living room and the
+  first seconds of the party still differ in small ways whose cause is not established (probably the same family).
 - **Menus.** The scrolling background and the bouncing letters of the file menus are not in the same phase as in
-  Dolphin; text and frames are identical. The cause is probably an animation tied to the time since start-up.
+  Dolphin; text and frames are identical. The cause is not established (probably an animation tied to the time since
+  start-up).
 - **Stretched viewport.** In the default `stretch` window mode the 3D image scores about 0.015 lower in SSIM than
-  with `fit`, because the port and Dolphin resample the picture differently.
+  with `fit`; probably resampling, since Dolphin's frames are resized to compare them.
 - **Video (credits).** Compared in both versions: same duration, and the sound is bit-identical in 99.8 to 99.9 % of
   the 5 ms blocks; both sides insert a few very short runs of zero samples (at most 1.2 ms) at different moments.
-  In PAL the picture scores 0.937 to 0.95 in SSIM because Dolphin dumps it at 640x468 instead of 640x528.
-- **Not measured yet:** the other video cutscenes (a robot cutscene in the basement, whose conditions are known only from
-  the stage script).
+  In PAL the picture scores 0.937 to 0.95 in SSIM with the same picture and geometry; the gap is probably resampling
+  (Dolphin dumps it at 640x468 instead of 640x528).
+- **Not measured yet:** the other video cutscenes (a robot cutscene in the basement, whose conditions are known only
+  from the stage script).
+
 ## Known issues
 
 - Player reports with late saves (US version):
