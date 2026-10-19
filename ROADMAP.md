@@ -161,8 +161,11 @@ timing of the simulated disc.
   generator (with the same seed on both sides the title scores 0.990 to 0.996 in SSIM), and so do the backyard
   ambient sounds, which depend on what happened before the scene. With the same generator state on both sides the US
   backyard plays the same sounds at the same instants (72 of 118 anchors identical to the sample, one periodic sound
-  5 ms off); in PAL the gap is strongly reduced but only partly analysed. The ambient sounds of the living room and the
-  first seconds of the party still differ in small ways whose cause is not established (probably the same family).
+  5 ms off); in PAL the gap is strongly reduced but only partly analysed. The ambient sounds of the living room still
+  differ in small ways whose cause is not established. For the first seconds of the party, the random generator state
+  was forced to the same value on both sides when the party module is loaded (US and PAL): the captured images and
+  the audio did not change, so the random generator is not the cause there. The cause is not established; the
+  remaining candidates are the game clock and the moment the loading ends.
 - **Menus.** The scrolling background and the bouncing letters of the file menus are not in the same phase as in
   Dolphin; text and frames are identical. The cause is not established (probably an animation tied to the time since
   start-up).
