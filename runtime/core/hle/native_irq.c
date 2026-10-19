@@ -17,10 +17,11 @@
  * reloading the context are done by the host, without `rfi`; a thread switch is allowed there. The OS alarms
  * (native_os_alarm.c) go through the same queue, in a "decrementer" class: not maskable by the OS, delivered after
  * the external interrupts, and their callback manages the scheduler itself (like DecrementerExceptionCallback).
- * Step 10d: all sources are native (no more interrupt line from emulated hardware); the DSP and AI interrupts are
- * posted with GCRT_NIRQ_FIRST to keep the order of the reference, where they arrived through that line, examined
- * before the others. Floating-point registers are not saved, as on the console (lazy FPU switching of the OS: the
- * handler runs with MSR[FP] = 0). Generic: only the SDK conventions are used. */
+ * Step 10d: all sources are native (no more interrupt line from emulated hardware). Several external interrupts due
+ * at the same block boundary are delivered in the order of __OSDispatchInterrupt: the SDK priority table, then the
+ * lowest number within a group (cntlzw), one per entry, like the console where the exception is taken again as
+ * long as a cause stays pending. Floating-point registers are not saved, as on the console (lazy FPU switching of the
+ * OS: the handler runs with MSR[FP] = 0). Generic: only the SDK conventions are used. */
 #include "hle/gcrt_native.h"
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native_modules.h"
@@ -82,11 +83,12 @@ typedef struct {
     u64 due;
     GcrtNativeIrqFn fn;
     void* user;
-    bool first; /* GCRT_NIRQ_FIRST: before the other due external interrupts */
 } Event;
 
 /* Priority table of the SDK external interrupts (InterruptPrioTable of __OSDispatchInterrupt): groups by
- * decreasing priority; within a group, the lowest number first (cntlzw). Mask = 0x80000000 >> number. */
+ * decreasing priority; within a group, the lowest number first (cntlzw). Mask = 0x80000000 >> number. Read in the
+ * DOL of a game (the 11 words of the table, identical in two regions of the disc) and in its dispatch code, which
+ * scans the groups in order and takes cntlzw of the first non-empty intersection with the pending causes. */
 #define PRIO_M(n) (0x80000000u >> (n))
 static const u32 k_sdk_priority[] = {
     PRIO_M(23),                                                          /* PI_ERROR */
@@ -318,10 +320,6 @@ u64 gcrt_nirq_next_due(GcrtCpu* g) {
 void gcrt_nirq_skip_reschedule(void) { s_skip_reschedule = true; }
 
 u32 gcrt_nirq_post(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeIrqFn fn, void* user) {
-    return gcrt_nirq_post_ex(g, interrupt, due_ticks, fn, user, 0);
-}
-
-u32 gcrt_nirq_post_ex(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeIrqFn fn, void* user, unsigned flags) {
     if (s_event_count >= MAX_EVENTS) {
         fprintf(stderr, "gcrt native: native interrupt queue full (%u)\n", MAX_EVENTS);
         return 0;
@@ -334,7 +332,6 @@ u32 gcrt_nirq_post_ex(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeI
     e->due = due_ticks;
     e->fn = fn;
     e->user = user;
-    e->first = (flags & GCRT_NIRQ_FIRST) != 0 && e->interrupt < GCRT_NIRQ_DECREMENTER;
     update_deadline(g);
     GCRT_TRACE(GCRT_TRACE_NIRQ, "native interrupt %u posted (#%u, deadline %llu, now %llu)", e->interrupt,
                e->id, (unsigned long long)due_ticks, (unsigned long long)g->ticks);
@@ -345,6 +342,8 @@ u32 gcrt_nirq_post_ex(GcrtCpu* g, unsigned interrupt, u64 due_ticks, GcrtNativeI
 bool gcrt_nirq_cancel(GcrtCpu* g, u32 id) {
     for (unsigned i = 0; i < s_event_count; i++) {
         if (s_events[i].id == id) {
+            GCRT_TIMELINE("nirq cancelled %u n%u due %llu", s_events[i].interrupt, s_events[i].id,
+                          (unsigned long long)s_events[i].due);
             s_events[i] = s_events[--s_event_count];
             update_deadline(g);
             return true;
@@ -443,14 +442,14 @@ static bool after_reschedule(GcrtCpu* g, u32 address) {
 }
 
 /* Chassis callback (block boundary, MSR[EE] = 1, ticks >= nearest deadline). First the due and unmasked external
- * interrupts of the GCRT_NIRQ_FIRST class, among themselves in the order of the SDK priority table; then the other
- * due and unmasked external interrupts (by deadline then order of arrival); then the decrementer (alarms). */
+ * interrupts, one per call, chosen like __OSDispatchInterrupt: rank in the SDK priority table (equal numbers: by
+ * deadline, then order of posting); then the decrementer class (alarms), by deadline then order of posting. */
 static void irq_hook(GcrtCpu* g) {
     CPUState* c = &g->state;
     const u32 context = mem_read32(c, LOW_CURRENT_CONTEXT);
     if (!in_ram(c, context, CTX_SIZE))
         return; /* OS not initialized yet: wait */
-    int best = -1, best_dec = -1, best_first = -1;
+    int best = -1, best_dec = -1;
     for (unsigned i = 0; i < s_event_count; i++) {
         const Event* e = &s_events[i];
         if (e->due > g->ticks)
@@ -464,22 +463,15 @@ static void irq_hook(GcrtCpu* g) {
         s_masked_checks++;
         if (gcrt_nirq_masked(g, e->interrupt))
             continue;
-        if (e->first) {
-            if (best_first < 0) {
-                best_first = (int)i;
-            } else {
-                const Event* b = &s_events[best_first];
-                const unsigned re = sdk_rank(e->interrupt), rb = sdk_rank(b->interrupt);
-                if (re < rb || (re == rb && (e->due < b->due || (e->due == b->due && e->id < b->id))))
-                    best_first = (int)i;
-            }
+        if (best < 0) {
+            best = (int)i;
             continue;
         }
-        if (best < 0 || e->due < s_events[best].due || (e->due == s_events[best].due && e->id < s_events[best].id))
+        const Event* b = &s_events[best];
+        const unsigned re = sdk_rank(e->interrupt), rb = sdk_rank(b->interrupt);
+        if (re < rb || (re == rb && (e->due < b->due || (e->due == b->due && e->id < b->id))))
             best = (int)i;
     }
-    if (best_first >= 0)
-        best = best_first;
     if (best < 0)
         best = best_dec;
     if (best < 0)

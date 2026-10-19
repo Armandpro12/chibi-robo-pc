@@ -4,7 +4,7 @@ Usage:
   py -3 tools/ab.py build-commit HEAD --tag cand    builds a commit in a clean worktree (build/wt-cand) when the working
                                                     tree is being modified by others; then
                                                     check --exe build/wt-cand/build/<game>-<ID>-Release-cand/bin/<game>.exe
-  py -3 tools/ab.py record --ref-exe EXE --rev REV [--scenarios a,b] [--repeat 1] [--jitter 0] [--force]
+  py -3 tools/ab.py record --ref-exe EXE --rev REV [--scenarios a,b] [--repeat 1] [--jitter 0] [--force] [--ref-dir DIR]
                                                     records the reference with the executable of a validated commit (built
                                                     by build-commit or tools/build.py) in
                                                     tests/<game>/<ID>/reference-native/<scenario>/, with the fingerprint of
@@ -298,7 +298,8 @@ def cmd_record(args) -> int:
     exe = Path(ref_exe)
     if not exe.exists():
         raise SystemExit(f"Reference executable missing: {exe} (build it first: py -3 tools/ab.py build-commit <rev>)")
-    dest = ref_root(game, version)
+    ref_dir_arg = expand(args.ref_dir, version, args.multi, "--ref-dir")
+    dest = Path(ref_dir_arg) if ref_dir_arg else ref_root(game, version)
     dest.mkdir(parents=True, exist_ok=True)
     meta_path = dest / "reference.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
@@ -618,6 +619,8 @@ def main() -> int:
     r.add_argument("--jitter", type=int, default=0, help="reruns with the host clock (natural real-time difference)")
     r.add_argument("--force", action="store_true", help="redo an already recorded reference (and those that depend on it)")
     r.add_argument("--rev", help="Git revision of the reference executable (recorded in reference.json)")
+    r.add_argument("--ref-dir", help="folder to record into instead of reference-native/ (e.g. new references kept "
+                                     'apart until they replace the current ones; "{version}" replaced by the ID)')
     sub.add_parser("refs", help="lists the recorded references and reports those whose scenario has changed")
     k = sub.add_parser("compact", help="losslessly recompresses the captures of a folder of runs")
     k.add_argument("dir")

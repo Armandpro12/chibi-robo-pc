@@ -71,6 +71,10 @@ Result, checked automatically for both versions:
   removed (2026-10-13), and for a rare one-pixel difference of the US version near a loading screen, which came
   from the rendering race below (fixed). The save scenarios were recorded again at step 10b, because save dates now come
   from the console clock.
+- the last two alignments with the emulated build were removed on 2026-10-19: the audio events are plain native
+  timers in time base ticks, and interrupts due at the same moment are delivered in the order of the SDK priority
+  table, like the console. Images, audio and saves of the five bench scenarios stayed the same, byte for byte, in
+  both versions.
 
 Performance in the heaviest scene measured so far (the birthday party), as frame time:
 
@@ -93,14 +97,10 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
    one-pixel gap, and late reads probably gave it other colors. Since the fix, 30 to 32 runs with three output-path
    lengths gave the same frames byte for byte; the native references, recorded before the fix, hold a different
    color for that pixel (the bench does not compare these neighbouring frames).
-3. **Remove the last compatibility shims of milestone 10.** They exist only to stay bit-identical with the old
-   emulated build: a cycle-dated audio event queue and an interrupt delivery order. Removing them changes the
-   outputs, so the native reference recordings will be made again. The boot-cycle offset is already gone: since
-   2026-10-13 every reference recording of the bench is native.
-4. **Milestone 8**: input scenarios that play through the first level, real REL loading paths.
-5. **Milestone 9**: key-scene comparison with Dolphin.
-6. **Milestone 11**: the private installer.
-7. Phase review, then validation by the project owner.
+3. **Milestone 8**: input scenarios that play through the first level, real REL loading paths.
+4. **Milestone 9**: key-scene comparison with Dolphin.
+5. **Milestone 11**: the private installer.
+6. Phase review, then validation by the project owner.
 
 ## Stage 2 — Full decompilation ⬜
 
