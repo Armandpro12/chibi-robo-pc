@@ -920,6 +920,8 @@ Functions of the Nintendo SDK and the Metrowerks libraries that `cbr_decomp`'s `
 |---|---|---|---|
 | `0x8017CD74` | `0x8017F5DC` | `0xC` | `AXFXSetHooks` |
 
+The other verified AXFX functions (`__AXFXAllocFunction`, `__AXFXFreeFunction`, `do_src1`, `do_src2` and the two `HandleReverb`) are in appendix F.
+
 ### GX (113)
 
 | US | PAL | size | name |
@@ -1514,7 +1516,7 @@ How each family was checked:
 | `+0x1C` | sync bits (fields to copy to the DSP PB) |
 | `+0x138` | the voice's copy of the PB: `running` at `+0x146` (PB `+0x0E`), ITD at `+0x16E` (PB `+0x36`) |
 
-Still unverified, kept out of this appendix: `__AXGetAuxAInput` (PAL `0x80179EC0`). Its code is known, but we have no source that fixes which of the two AUX buffer roles the SDK calls "input". The same holds for the nine AUX buffer getters that follow it, the studio depop function at PAL `0x8017B1B4`, and the AXFX effect functions except `AXFXSetHooks`.
+Still unverified, kept out of this appendix: `__AXGetAuxAInput` (PAL `0x80179EC0`). Its code is known, but we have no source that fixes which of the two AUX buffer roles the SDK calls "input". The same holds for the nine AUX buffer getters that follow it, the studio depop function at PAL `0x8017B1B4`, and the AXFX effect functions except `AXFXSetHooks` and those verified in appendix F.
 
 ## Appendix E. OS, VI and CARD functions verified on 2026-10-19
 
