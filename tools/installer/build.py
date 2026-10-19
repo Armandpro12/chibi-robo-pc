@@ -1,0 +1,285 @@
+"""Builds the player installer of a game (Inno Setup 6): payload assembly, licence notices, ISCC.
+
+Usage: py -3 tools/installer/build.py <game> [--build ID=DIR ...] [--gcextract EXE] [--iscc ISCC.exe]
+                                      [--vc-redist DIR] [--out build/installer] [--no-disc-arg] [--include-dxil]
+
+  <game>        folder in games/ (game.toml: name, slug, [[versions]], [diagnostics] user_org / user_app / exe_name)
+  --build       game build folder of one version (contains bin/ and gcrt_build_info.c); repeatable. Default: every
+                version of game.toml whose build/<slug>-<ID>-Release/bin exists.
+  --gcextract   gcextract.exe (default build/gcextract/gcextract.exe, built with tools/gcextract/build.py if absent)
+  --iscc        Inno Setup compiler (default: ISCC.exe of an Inno Setup 6 installation, per-user or machine-wide)
+  --vc-redist   folder of the Visual C++ runtime DLLs to copy next to the executable (default: the newest
+                <Visual Studio>\\VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC143.CRT)
+  --no-disc-arg the executables find disc\\ next to themselves: shortcuts without --disc
+  --include-dxil also ship dxil.dll (off by default: its redistribution terms are not established, and without it
+                Dawn uses another backend; see notes)
+  --external    external/ folder (Aurora checkout, fetched licence files); default: the one of this checkout
+
+Result: build/installer/<slug>-pc-setup-<commit>.exe, plus build/installer/payload/ (what the installer contains)
+and build/installer/payload/BUILD-INFO.txt (commits, SHA-256 of every file).
+
+One installer holds every version given: files identical across versions go to common\\, the others (the
+executable, and DLLs built per version) to <ID>\\; the image chosen by the player selects which ones are installed.
+The payload never contains game data (checked: no disc image, DOL, REL, PGO profile, no file of generated/ or orig/).
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import tomllib
+import uuid
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+sys.path.insert(0, str(HERE))
+import notices  # noqa: E402
+
+# Size of a full GameCube disc image (mini DVD, 1 459 978 240 bytes): disk space estimate of the image copy.
+GAMECUBE_IMAGE_SIZE = 1_459_978_240
+# Never in the payload (game data, PGO profiles, debug files).
+FORBIDDEN_SUFFIXES = {".iso", ".gcm", ".rvz", ".dol", ".rel", ".profdata", ".profraw", ".pdb", ".ilk"}
+VC_RUNTIME_PATTERN = re.compile(r"^(vcruntime140(_1)?|msvcp140(_\w+)?|concrt140|vccorlib140)\.dll$", re.I)
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def pe_imports(path: Path) -> list[str]:
+    """Names of the DLLs imported by a PE file (import directory only; delay-loaded DLLs are not listed)."""
+    data = path.read_bytes()
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        raise SystemExit(f"{path}: not a PE file")
+    nsec = struct.unpack_from("<H", data, pe + 6)[0]
+    opt_size = struct.unpack_from("<H", data, pe + 20)[0]
+    opt = pe + 24
+    magic = struct.unpack_from("<H", data, opt)[0]
+    dirs = opt + (112 if magic == 0x20B else 96)
+    imp_rva = struct.unpack_from("<I", data, dirs + 8)[0]
+    sections = []
+    for i in range(nsec):
+        s = opt + opt_size + 40 * i
+        vsize, va, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
+        sections.append((va, max(vsize, rsize), raw))
+
+    def off(rva: int) -> int:
+        for va, size, raw in sections:
+            if va <= rva < va + size:
+                return rva - va + raw
+        raise SystemExit(f"{path}: RVA {rva:#x} outside the sections")
+
+    names = []
+    if imp_rva:
+        p = off(imp_rva)
+        while True:
+            name_rva = struct.unpack_from("<I", data, p + 12)[0]
+            if name_rva == 0:
+                break
+            q = off(name_rva)
+            names.append(data[q:data.index(b"\0", q)].decode("ascii"))
+            p += 20
+    return names
+
+
+def find_iscc() -> Path | None:
+    candidates = []
+    for var in ("LOCALAPPDATA", "ProgramFiles(x86)", "ProgramFiles"):
+        base = os.environ.get(var)
+        if base:
+            candidates.append(Path(base) / ("Programs" if var == "LOCALAPPDATA" else "") / "Inno Setup 6" / "ISCC.exe")
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def find_vc_redist() -> Path | None:
+    found = []
+    for var in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(var)
+        if not base:
+            continue
+        for crt in Path(base).glob("Microsoft Visual Studio/*/*/VC/Redist/MSVC/*/x64/Microsoft.VC14*.CRT"):
+            found.append(crt)
+
+    def key(p: Path):
+        return tuple(int(x) if x.isdigit() else 0 for x in p.parent.parent.name.split("."))
+
+    return max(found, key=key) if found else None
+
+
+def build_commit(build: Path) -> str:
+    info = build / "gcrt_build_info.c"
+    m = re.search(r'gcrt_build_commit\[\]\s*=\s*"([^"]*)"', info.read_text(encoding="utf-8")) if info.is_file() else None
+    if not m:
+        raise SystemExit(f"{info}: commit of the build not found")
+    return m.group(1)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Builds the player installer (Inno Setup).")
+    parser.add_argument("game")
+    parser.add_argument("--build", action="append", default=[], metavar="ID=DIR")
+    parser.add_argument("--gcextract")
+    parser.add_argument("--iscc")
+    parser.add_argument("--vc-redist")
+    parser.add_argument("--out", default=str(ROOT / "build" / "installer"))
+    parser.add_argument("--no-disc-arg", action="store_true")
+    parser.add_argument("--include-dxil", action="store_true")
+    parser.add_argument("--external", default=str(ROOT / "external"))
+    args = parser.parse_args()
+
+    game_dir = ROOT / "games" / args.game
+    game_toml = game_dir / "game.toml"
+    cfg = tomllib.loads(game_toml.read_text(encoding="utf-8"))
+    slug = cfg["game"]["slug"]
+    game_name = cfg["game"]["name"]
+    diag = cfg.get("diagnostics", {})
+    exe_name = diag.get("exe_name", f"{slug}.exe")
+    versions = {v["game_id"]: v for v in cfg["versions"]}
+
+    builds: dict[str, Path] = {}
+    for item in args.build:
+        gid, _, folder = item.partition("=")
+        if gid not in versions or not folder:
+            raise SystemExit(f"--build {item}: expected ID=DIR with ID in {', '.join(versions)}")
+        builds[gid] = Path(folder).resolve()
+    if not builds:
+        for gid in versions:
+            folder = ROOT / "build" / f"{slug}-{gid}-Release"
+            if (folder / "bin" / exe_name).is_file():
+                builds[gid] = folder
+    if not builds:
+        raise SystemExit("no game build found (--build ID=DIR)")
+    for gid, folder in builds.items():
+        if not (folder / "bin" / exe_name).is_file():
+            raise SystemExit(f"{folder / 'bin' / exe_name}: missing")
+
+    iscc = Path(args.iscc) if args.iscc else find_iscc()
+    if not iscc or not iscc.is_file():
+        raise SystemExit("ISCC.exe (Inno Setup 6) not found: install it (winget install JRSoftware.InnoSetup) or --iscc")
+    vc_redist = Path(args.vc_redist) if args.vc_redist else find_vc_redist()
+    if not vc_redist or not vc_redist.is_dir():
+        raise SystemExit("Visual C++ runtime folder not found (--vc-redist)")
+    gcextract = Path(args.gcextract) if args.gcextract else ROOT / "build" / "gcextract" / "gcextract.exe"
+    if not gcextract.is_file():
+        subprocess.run([sys.executable, str(ROOT / "tools" / "gcextract" / "build.py"), "--out", str(gcextract.parent)],
+                       check=True)
+
+    out = Path(args.out).resolve()
+    payload = out / "payload"
+    if payload.exists():
+        shutil.rmtree(payload)
+    (payload / "common").mkdir(parents=True)
+
+    # --- 1. Files of each version (bin/: executable and DLLs; nothing else from the build folder).
+    per_version: dict[str, dict[str, Path]] = {}
+    for gid, folder in builds.items():
+        files = {}
+        for f in sorted((folder / "bin").iterdir()):
+            if f.is_file() and (f.name == exe_name or f.suffix.lower() == ".dll"):
+                if f.name.lower() == "dxil.dll" and not args.include_dxil:
+                    continue
+                files[f.name] = f
+        per_version[gid] = files
+    names = sorted({n for files in per_version.values() for n in files})
+    layout: dict[str, list[str]] = {"common": []}
+    for name in names:
+        present = [gid for gid in builds if name in per_version[gid]]
+        digests = {sha256(per_version[gid][name]) for gid in present}
+        if len(present) == len(builds) and len(digests) == 1:
+            shutil.copy2(per_version[present[0]][name], payload / "common" / name)
+            layout["common"].append(name)
+        else:
+            for gid in present:
+                (payload / gid).mkdir(exist_ok=True)
+                shutil.copy2(per_version[gid][name], payload / gid / name)
+                layout.setdefault(gid, []).append(name)
+
+    # --- 2. Visual C++ runtime: the DLLs of the redistributable folder that a shipped binary imports.
+    shipped = [p for p in payload.rglob("*") if p.suffix.lower() in (".dll", ".exe")]
+    imported = {n.lower() for p in shipped for n in pe_imports(p)}
+    vc_files = [f for f in sorted(vc_redist.iterdir()) if f.name.lower() in imported and VC_RUNTIME_PATTERN.match(f.name)]
+    missing_vc = sorted(n for n in imported if VC_RUNTIME_PATTERN.match(n) and n not in {f.name.lower() for f in vc_files})
+    if missing_vc:
+        raise SystemExit(f"Visual C++ runtime DLLs not found in {vc_redist}: {', '.join(missing_vc)}")
+    for f in vc_files:
+        shutil.copy2(f, payload / "common" / f.name.lower())
+        layout["common"].append(f.name.lower())
+
+    # --- 3. Extractor, game description, notices.
+    shutil.copy2(gcextract, payload / "common" / "gcextract.exe")
+    shutil.copy2(game_toml, payload / "common" / "game.toml")
+    first_build = next(iter(builds.values()))
+    text = notices.assemble(first_build, iscc.parent, allow_fetch=True, external=Path(args.external))
+    committed = HERE / "THIRD_PARTY_LICENSES.txt"
+    if committed.read_text(encoding="utf-8").replace("\r\n", "\n") != text:
+        raise SystemExit(f"{committed} is out of date: run tools/installer/notices.py --build {first_build}")
+    (payload / "common" / "THIRD_PARTY_LICENSES.txt").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    layout["common"] += ["gcextract.exe", "game.toml", "THIRD_PARTY_LICENSES.txt"]
+
+    # --- 4. No game data, no profile, no toolchain.
+    for p in payload.rglob("*"):
+        if p.is_file() and p.suffix.lower() in FORBIDDEN_SUFFIXES:
+            raise SystemExit(f"payload: forbidden file {p}")
+        if p.is_file() and p.stat().st_size > 200 << 20:
+            raise SystemExit(f"payload: unexpectedly large file {p}")
+
+    # --- 5. Version, build information, version-specific [Files] entries.
+    commits = {gid: build_commit(folder) for gid, folder in builds.items()}
+    unique = sorted(set(commits.values()))
+    commit_label = unique[0] if len(unique) == 1 else "+".join(unique)
+    exe_commits = ", ".join(f"{gid} {c}" for gid, c in commits.items())
+    date = dt.date.today().strftime("%Y.%m.%d")
+    app_version = f"{date}+{commit_label}"
+    region = {gid: v.get("region", gid) for gid, v in versions.items()}
+    supported = ", ".join(f"{region[gid]} ({gid})" for gid in builds)
+    info = [f"{game_name} PC: installer {app_version}", f"Built: {dt.datetime.now().isoformat(timespec='seconds')}",
+            f"Source code: https://github.com/Armandpro12/chibi-robo-pc (game executable commit: {exe_commits})",
+            f"Supported disc images: {supported}", ""]
+    for p in sorted(payload.rglob("*")):
+        if p.is_file():
+            info.append(f"{sha256(p)}  {p.relative_to(payload).as_posix()}")
+    (payload / "BUILD-INFO.txt").write_text("\r\n".join(info) + "\r\n", encoding="utf-8")
+    lines = ["; Generated by tools/installer/build.py: files of each version, installed when the chosen image is it."]
+    for gid in builds:
+        if gid in layout:
+            lines.append(f'Source: "{{#PayloadDir}}\\{gid}\\*"; DestDir: "{{app}}"; Flags: ignoreversion; '
+                         f"Check: IsGameVersion('{gid}')")
+    (payload / "versions.iss").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # --- 6. Compile.
+    app_name = f"{game_name} PC"
+    user_dir = "{userappdata}\\" + diag.get("user_org", app_name) + "\\" + diag.get("user_app", game_name)
+    output_name = f"{slug}-pc-setup-{commit_label}"
+    defines = {
+        "AppName": app_name, "GameName": game_name, "AppSlug": f"{slug}-pc",
+        "AppId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"gcrt-player-installer/{slug}")).upper(),
+        "AppVersion": app_version, "ExeCommits": exe_commits, "ExeName": exe_name, "PayloadDir": str(payload),
+        "OutputDir": str(out), "OutputName": output_name, "ImageSize": str(GAMECUBE_IMAGE_SIZE),
+        "UserDataDir": user_dir, "SupportedList": supported, "PassDiscArg": "0" if args.no_disc_arg else "1",
+    }
+    cmd = [str(iscc), "/Q"] + [f"/D{k}={v}" for k, v in defines.items()] + [str(HERE / "setup.iss")]
+    t0 = time.time()
+    subprocess.run(cmd, check=True)
+    setup = out / f"{output_name}.exe"
+    print(f"Installer: {setup} ({setup.stat().st_size / 1e6:.1f} MB, compiled in {time.time() - t0:.0f} s)")
+    for key, files in layout.items():
+        print(f"  {key}: {', '.join(files)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

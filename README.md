@@ -88,6 +88,33 @@ Only uncompressed `.iso` / `.gcm` images are read. Exit codes: 2 usage, 3 read e
 not listed in `game.toml`, 6 inconsistent data or unsafe file name in the image, 7 write error or existing output
 (nothing is ever deleted: after a failure, remove the output folder before retrying).
 
+### Installer
+
+`tools/installer/` builds a Windows installer for players (Inno Setup 6, free: `winget install
+JRSoftware.InnoSetup`). It contains the game executable of each version, its DLLs, the Visual C++ runtime DLLs,
+`gcextract.exe`, `game.toml` and `THIRD_PARTY_LICENSES.txt`, and no game data:
+
+```
+py -3 tools/gcextract/build.py
+py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc-setup-<commit>.exe
+```
+
+By default it takes `build/chibi-robo-<ID>-Release` for every version that is built (`--build ID=DIR` to choose).
+One installer holds both versions; the player's image selects which executable is installed. `--no-disc-arg` makes
+the shortcuts start the game without `--disc` (executables that find `disc/` next to themselves). `dxil.dll` is not
+shipped (`--include-dxil` to ship it): without it, Dawn uses its Vulkan backend instead of Direct3D 12.
+`tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
+that the committed copy is up to date).
+
+What the player does: run the installer, choose the installation folder (per user, no administrator rights), choose
+their own `.iso` / `.gcm` dump. The image is checked (SHA-1 against `game.toml`); compressed formats (RVZ, WIA,
+GCZ, CISO, NKit), modified or unknown dumps are refused with an explanation. The image is copied into the
+installation folder as `game.iso`, `sys/` is extracted next to it, and a Start menu shortcut is created
+(desktop shortcut optional). Uninstalling removes the game folder only: saves and settings stay in
+`%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
+image already installed is offered and not copied again). Silent install:
+`setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>`.
+
 The build recompiles the game with DolRecomp, then compiles it with clang-cl. The first build in each build folder
 (`build/<game>-<ID>-<config>`) needs an internet connection: CMake downloads Aurora's dependencies into it (prebuilt
 Dawn and SDL3 packages and ten source libraries); later builds in the same folder reuse them.
@@ -198,9 +225,11 @@ published.
 
 ## Distribution policy
 
-Only the fully decompiled C++ version will ever be published as a ready-to-use installer (roadmap stage 2,
-milestone D3). It will ship a precompiled executable that contains no game data, and players will still provide
-their own disc image. Until then, the game can only be built locally from your own copy, as described above.
+A ready-to-use installer (see "Installer" below) will be published as a GitHub release once it has passed the
+project's review and a test on a clean Windows (decision of the project owner, 2026-10-19; no release exists yet).
+It ships the recompiled executable and its libraries, never any game data: players provide their own disc image.
+The fully decompiled C++ version (roadmap stage 2, milestone D3) will later replace the recompiled executable in it.
+You can always build the game locally from your own copy, as described above.
 
 ## License
 
