@@ -1704,11 +1704,9 @@ void do_report() {
   }
 
   // Phase 2 (may allocate; guarded): symbolized stack, modules, minidump, guest memory, signature history.
+  SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
+  SymInitialize(process, nullptr, TRUE); // may fail if already initialized (host profiler): symbols still usable
   if (ctx != nullptr) {
-    // dbghelp only for the symbolized stack of a faulting thread (a hang report has none): it walks every module of
-    // the process and stays initialized until the exit.
-    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
-    SymInitialize(process, nullptr, TRUE); // may fail if already initialized (host profiler): symbols still usable
     out("\n== Host call stack of the faulting thread (dbghelp, function names when a PDB is present)\n");
     if (!guarded_symbolized_stack(process, ctx, g_in.thread)) {
       out("  (stack walk faulted)\n");
