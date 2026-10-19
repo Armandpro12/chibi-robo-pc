@@ -6,8 +6,9 @@
 # down-left then down to the stacked plates, a running jump (stick + A) onto them, a running jump up-right onto the
 # vase, stick up to climb it: reaching the top starts the cutscene where Chibi-Robo pulls out the flower; A every 30
 # frames again through the Equip screen tutorial (Chibi-Copter). Ends with Chibi-Robo in control on the vase.
+# Not run by tools/ab.py (progression scenario, see play/README.md); run it with tools/run.py --scenario <this file>.
 # Notes: A pressed with the stick at rest does nothing here (no jump); next to Telly it talks to him instead.
-# Recorded on GGTE01 only (frame numbers differ on GGTP01: see notes, not written yet for PAL).
+# Recorded on GGTE01; the PAL version of the same route is play/GGTP01/first-task.scn.
 name first-task
 description New game, birthday cutscene, first task (flower on the party table), Chibi-Copter tutorial (US).
 version GGTE01
