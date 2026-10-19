@@ -103,10 +103,10 @@ py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc
 
 By default it takes `build/chibi-robo-<ID>-Release` for every version that is built (`--build ID=DIR` to choose).
 One installer holds both versions; the player's image selects which executable is installed. `--no-disc-arg` makes
-the shortcuts start the game without `--disc` (executables that find `disc/` next to themselves). `dxil.dll` is not
-shipped (`--include-dxil` to ship it): without it, Dawn uses its Vulkan backend instead of Direct3D 12. This was
-checked on the development machine only (title-screen captures identical with and without it); a PC without a Vulkan
-driver has not been tested.
+the shortcuts start the game without `--disc` (executables that find `disc/` next to themselves). Neither
+`dxcompiler.dll` nor `dxil.dll` is needed or shipped: Direct3D 12 compiles its shaders with FXC (Aurora patch 0006,
+see "Third-party components"). That was checked on the development machine only; a PC where `d3dcompiler_47.dll`
+is missing, or without a GPU, has not been tested.
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
 
@@ -286,8 +286,9 @@ line.
   the third moves the buffer of very large texture uploads (more than 24 MiB in one frame) from the game thread to
   Aurora's render worker, so that creating and unmapping it no longer races with the worker on the Dawn device.
   Patch 0006 turns off Dawn's `use_dxc` toggle: the Direct3D 12 backend compiles its shaders with FXC
-  (`d3dcompiler_47.dll`, loaded from the Windows system folder) instead of DXC, so `dxcompiler.dll` and `dxil.dll`
-  are neither needed nor copied next to the executable.
+  (`d3dcompiler_47.dll`, found in the Windows system folder on the development machine; its presence on every
+  Windows, and in Windows Sandbox, is not established) instead of DXC, so `dxcompiler.dll` and `dxil.dll` are neither
+  needed nor copied next to the executable.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
