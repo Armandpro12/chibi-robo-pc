@@ -110,19 +110,30 @@ is missing, or without a GPU, has not been tested.
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
 
-What the player does: run the installer, choose the installation folder (per user, no administrator rights; a new or
-empty folder, or an earlier installation of this installer: a folder that holds other files is refused, so that
-nothing of the player's is overwritten or later uninstalled), choose their own `.iso` / `.gcm` dump. The image is checked (SHA-1 against `game.toml`); compressed formats (RVZ, WIA,
+What the player does: run the installer, choose the installation folder (per user, no administrator rights; a path
+of ASCII characters only; a new or empty folder, or an earlier installation of this installer: a folder that holds
+other files is refused, so that nothing of the player's is overwritten or later uninstalled), choose their own `.iso` / `.gcm` dump. The image is checked (SHA-1 against `game.toml`); compressed formats (RVZ, WIA,
 GCZ, CISO, NKit), modified or unknown dumps are refused with an explanation. The image is copied into the
 installation folder as `game.iso`, `sys/` is extracted next to it, and a Start menu shortcut is created
 (desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache
 (a folder that still holds other files is kept): saves and settings stay in
 `%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
-image already installed is offered and not copied again); if the new image or extraction fails, the previous
-installation is kept as it was. Silent install:
-`setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>` (exit code 0 on success,
-1 if the image or the folder is refused, 7 if the image could not be extracted, 9 if its copy could not be checked;
-a previous installation is kept in all these cases).
+image already installed is offered and not copied again). What happens when an installation does not complete:
+- the new image is refused, or its extraction or the check of its copy fails: a previous installation keeps its
+  files (its disc image, `disc/` and `manifest.json` are put back if they had already been replaced);
+- Setup is cancelled, or stopped by an error, while it installs the program files: the previous disc image, `disc/`
+  and `manifest.json` are put back, but an executable or DLL that Setup had already replaced is not (Inno Setup's
+  rollback does not restore overwritten files): run the installer again to repair the installation;
+- a first installation into a new folder that does not complete in any of these ways leaves nothing behind: the
+  folder is removed, with no uninstaller and no Programs-list entry;
+- after a power loss or a crash during the installation, nothing is guaranteed: run the installer again over the
+  same folder, which puts back or finishes an interrupted replacement of the image files and repairs the
+  installation (a first installation interrupted that way has no uninstaller yet).
+
+Silent install: `setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>` (exit
+code 0 on success, 1 if the image or the folder is refused, 7 if the image could not be extracted or the folder is
+refused at the last check, 9 if its copy could not be checked or put in place, 5 if the installation was cancelled or
+stopped by a file error).
 
 The build recompiles the game with DolRecomp, then compiles it with clang-cl. The first build in each build folder
 (`build/<game>-<ID>-<config>`) needs an internet connection: CMake downloads Aurora's dependencies into it (prebuilt
