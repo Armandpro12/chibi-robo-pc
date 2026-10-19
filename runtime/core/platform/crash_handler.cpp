@@ -1706,6 +1706,10 @@ void do_report() {
   // Phase 2 (may allocate; guarded): symbolized stack, modules, minidump, guest memory, signature history.
   SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
   SymInitialize(process, nullptr, TRUE); // may fail if already initialized (host profiler): symbols still usable
+  // Kept for hang reports too, though they have no faulting thread to symbolize: it allocates on the process heap,
+  // so a thread holding the heap lock (still running here) is waited for before the minidump suspends it; without
+  // it, the hangheap test froze for ever in MiniDumpWriteDump (it suspends every other thread, the suspension guard
+  // included, then needs the heap). Not a guarantee: the lock can be taken again just before the dump.
   if (ctx != nullptr) {
     out("\n== Host call stack of the faulting thread (dbghelp, function names when a PDB is present)\n");
     if (!guarded_symbolized_stack(process, ctx, g_in.thread)) {
