@@ -96,6 +96,22 @@ static bool handle_return(GcrtCpu* g, u32 address) {
  * Dispatcher (host_call callback of the chassis and of the compiled hooks)
  * ------------------------------------------------------------------------------------------- */
 
+/* Diagnostic (GCRT_HLE_STACK_FILL=BYTE[:SIZE], hexadecimal byte, SIZE in bytes, default 256): on entry into every
+ * replacement, the SIZE bytes of free guest stack just below r1 receive BYTE. The original SDK functions wrote their
+ * stack frames there; the native replacements do not, so game code that later reads uninitialized locals in that
+ * area sees what earlier code left. Two runs with different bytes show whether such reads change the output (stream
+ * and captures). Below r1 is free stack by the PowerPC EABI (no red zone), so the fill never changes a live value. */
+static u32 s_stack_fill_word;
+static u32 s_stack_fill_size;
+
+static void stack_fill(GcrtCpu* g) {
+    const u32 sp = g->state.gpr[1];
+    if (sp < s_stack_fill_size + 0x80000000u)
+        return;
+    for (u32 a = (sp - s_stack_fill_size) & ~3u; a < (sp & ~3u); a += 4)
+        mem_write32(&g->state, a, s_stack_fill_word);
+}
+
 static bool dispatch(CPUState* cpu, u32 address) {
     GcrtCpu* g = gcrt_from_state(cpu);
     if (gcrt_hle_is_return_address(address))
@@ -107,6 +123,8 @@ static bool dispatch(CPUState* cpu, u32 address) {
         return false;
     if (address == s_declined_pc && g->blocks == s_declined_blocks)
         return false;
+    if (s_stack_fill_size)
+        stack_fill(g);
     bool done = r->fn(g, address);
     r->calls++;
     if (!done) {
@@ -121,6 +139,21 @@ void gcrt_hle_init(GcrtCpu* g, bool trace) {
     memset(s_returns, 0, sizeof(s_returns));
     s_repl_count = 0;
     s_trace = trace;
+    s_stack_fill_size = 0;
+    const char* fill = getenv("GCRT_HLE_STACK_FILL");
+    if (fill && fill[0]) {
+        char* end = NULL;
+        const unsigned long byte = strtoul(fill, &end, 16);
+        unsigned long size = 256;
+        if (end && *end == ':')
+            size = strtoul(end + 1, NULL, 0);
+        if (size > 4096)
+            size = 4096;
+        s_stack_fill_word = (u32)(byte & 0xFFu) * 0x01010101u;
+        s_stack_fill_size = (u32)size & ~3u;
+        fprintf(stderr, "gcrt hle: GCRT_HLE_STACK_FILL: %u bytes below r1 set to 0x%02X on entry into each replacement\n",
+                (unsigned)s_stack_fill_size, (unsigned)(byte & 0xFFu));
+    }
     g->host_call = dispatch;       /* chassis */
     g->state.host_call = dispatch; /* compiled hooks (ppc_host_call) */
 }

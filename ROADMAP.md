@@ -68,8 +68,8 @@ Result, checked automatically for both versions:
   game no longer runs the disc's apploader;
 - from step 10c on, every step has produced the same images, audio and saves as the step before, byte for byte,
   except for that one-field audio start, which appeared when the last alignment with the emulated build was
-  removed (2026-10-13), and for the rare one-pixel difference of the US version listed under
-  [Known issues](#known-issues). The save scenarios were recorded again at step 10b, because save dates now come
+  removed (2026-10-13), and for a rare one-pixel difference of the US version near a loading screen, which came
+  from the rendering race below (fixed). The save scenarios were recorded again at step 10b, because save dates now come
   from the console clock.
 
 Performance in the heaviest scene measured so far (the birthday party), as frame time:
@@ -88,7 +88,11 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
    frames (backyard flicker, issue 2). The GX bridge now hands that thread copies taken at issue time, and the
    batched wake-ups are back on (party scene: about 5 to 6 % less host time, about 20 % less CPU time). Checked
    against Dolphin on the backyard (US and PAL): the new frames match it, while the old ones sometimes lost a house-wall
-   shadow that Dolphin always shows.
+   shadow that Dolphin always shows. The same race explains the intermittent one-pixel difference of the US
+   `overwrite-save` scenario (issue 10): that pixel shows a palette-textured plant behind the wall through a
+   one-pixel gap, and late reads probably gave it other colors. Since the fix, 30 to 32 runs with three output-path
+   lengths gave the same frames byte for byte; the native references, recorded before the fix, hold a different
+   color for that pixel (the bench does not compare these neighbouring frames).
 3. **Remove the last compatibility shims of milestone 10.** They exist only to stay bit-identical with the old
    emulated build: a cycle-dated audio event queue and an interrupt delivery order. Removing them changes the
    outputs, so the native reference recordings will be made again. The boot-cycle offset is already gone: since
@@ -168,13 +172,13 @@ and assets are read from the player's files.
     exactly what Dolphin plays.
 - An intermittent crash at the start of 3D rendering was seen early on; it has not been reproduced in more than
   1,200 runs since.
-- A few TEV color registers differ from the reference because the game reads uninitialized stack memory; no
-  visible effect has been measured.
+- A few TEV color registers get other values than in Dolphin, because the game builds them partly from
+  uninitialized stack memory and the native SDK functions do not leave the same bytes on the stack (issue 9). Checked:
+  the values are the same from one run to the next, and frames do not change at all when that stack memory is
+  filled with other bytes (US: menus, loading and 3D scenes; US and PAL: backyard), so these channels are not used
+  there. Left as is.
 - The comparison with Dolphin is partial. PAL: the five boot screens and the title music. US: only the health and
   safety warning screen, and no audio measurement yet.
-- In the US version, one pixel of a frame next to the loading screen of a save scenario sometimes differs from
-  one run to the next. It already happened before the latest changes and depends on the memory layout of the run;
-  its exact cause is not established yet.
 
 ## How changes are validated
 
