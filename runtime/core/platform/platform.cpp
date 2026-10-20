@@ -24,7 +24,7 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_for_exit).
+// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_pass).
 #include <tlhelp32.h>
 #endif
 
@@ -930,7 +930,8 @@ void configure(GcrtPlatform* p) {
 }
 } // namespace
 
-static void raise_threads_for_exit(const char* when); // below, with gcrt_platform_detach
+static void start_exit_boost(const char* when); // below, with gcrt_platform_detach
+static void finish_exit_boost();
 
 extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* game_id,
                                               const char* disc_root) {
@@ -1052,7 +1053,8 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     // The window was closed from the setup menu, before the game started: quit without running it.
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
     gcrt_crash_handler_game_over(); // the exit is not watched (gcrt_crash.h)
-    raise_threads_for_exit("window closed from the setup menu"); // issue 35, as after a game
+    start_exit_boost("window closed from the setup menu"); // issue 35, as after a game
+    finish_exit_boost();
     std::fflush(nullptr);
     std::exit(0);
   }
@@ -1139,56 +1141,94 @@ static double seconds_since_game_end() {
 // threads (stacks taken during slow ends). A thread being joined or ended has to run to finish, and below the
 // normal priority it only gets the processor when nothing else at normal priority is ready ([hypothesis] that this
 // is the whole cause: the Windows scheduler runs the ready thread of highest priority, Microsoft Learn "Scheduling
-// Priorities"; its starvation boost is only occasional). Hence, once the game is over, every thread of the process is
-// raised to THREAD_PRIORITY_HIGHEST (none is lowered), just before the window and the GPU device are shut down and
-// again just before the process ends (threads started meanwhile). GCRT_EXIT_BOOST=0 turns it off (diagnostic).
-// Ending the process at once instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help,
-// the process still waits for the same threads to end (issue 35): the boost alone is kept.
-// Trace: "exit: N threads of the process raised to the highest priority (...)".
-static void raise_threads_for_exit(const char* when) {
+// Priorities"; its starvation boost is only occasional). Hence, once the game is over (start_exit_boost):
+//   - the process goes to HIGH_PRIORITY_CLASS (SetPriorityClass): every thread, including those started later, gets
+//     a base priority above the normal-class work (Microsoft Learn "Scheduling Priorities": base priority = class and
+//     thread level; THREAD_PRIORITY_LOWEST in the high class is 11, the normal class at normal level is 8), except the
+//     THREAD_PRIORITY_IDLE ones (1 whatever the class);
+//   - a short helper thread raises every thread of the process below THREAD_PRIORITY_HIGHEST to it (Toolhelp thread
+//     list), which covers those too. On a helper thread because walking the system-wide thread list takes ~15 ms here,
+//     which the main thread does not wait for; finish_exit_boost waits for it (at most 2 s) before the process ends.
+// The exit itself stays the normal one. GCRT_EXIT_BOOST=0 turns all this off (diagnostic). Ending the process at once
+// instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help, the process still waits for
+// the same threads to end (issue 35): the boost alone is kept.
+// Trace: "exit: priority raised ...", "exit: N threads of the process raised to the highest priority ...".
 #if defined(_WIN32)
-  const char* v = std::getenv("GCRT_EXIT_BOOST");
-  if (v != nullptr && std::strcmp(v, "0") == 0) {
-    return;
-  }
+static HANDLE g_boostThread = nullptr;
+
+static DWORD WINAPI raise_threads_pass(void*) {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  const auto start = std::chrono::steady_clock::now();
   const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (snap == INVALID_HANDLE_VALUE) {
-    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: thread list not available (error %lu): priorities unchanged (%s)",
-                      static_cast<unsigned long>(GetLastError()), when);
-    return;
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: thread list not available (error %lu): thread priorities unchanged",
+                      static_cast<unsigned long>(GetLastError()));
+    return 0;
   }
   const DWORD self = GetCurrentProcessId();
   unsigned raised = 0, seen = 0, failed = 0;
   THREADENTRY32 te{};
   te.dwSize = sizeof(te);
   for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
-    if (te.th32OwnerProcessID != self) {
-      continue;
-    }
-    ++seen;
-    const HANDLE t = OpenThread(THREAD_QUERY_LIMITED_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE,
-                                te.th32ThreadID);
-    if (t == nullptr) {
-      ++failed;
-      continue;
-    }
-    const int prio = GetThreadPriority(t);
-    if (prio != THREAD_PRIORITY_ERROR_RETURN && prio < THREAD_PRIORITY_HIGHEST) {
-      if (SetThreadPriority(t, THREAD_PRIORITY_HIGHEST)) {
-        ++raised;
-      } else {
+    if (te.th32OwnerProcessID == self) {
+      ++seen;
+      const HANDLE t = OpenThread(THREAD_QUERY_LIMITED_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE,
+                                  te.th32ThreadID);
+      if (t == nullptr) {
         ++failed;
+      } else {
+        const int prio = GetThreadPriority(t);
+        if (prio != THREAD_PRIORITY_ERROR_RETURN && prio < THREAD_PRIORITY_HIGHEST) {
+          if (SetThreadPriority(t, THREAD_PRIORITY_HIGHEST)) {
+            ++raised;
+          } else {
+            ++failed;
+          }
+        }
+        CloseHandle(t);
       }
     }
-    CloseHandle(t);
     te.dwSize = sizeof(te);
   }
   CloseHandle(snap);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM,
-                    "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: error) (%s)",
-                    raised, seen, failed, when);
+                    "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: ended or refused), "
+                    "in %.1f ms (helper thread)",
+                    raised, seen, failed,
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  return 0;
+}
+#endif
+
+static bool exit_boost_wanted() {
+  const char* v = std::getenv("GCRT_EXIT_BOOST");
+  return v == nullptr || std::strcmp(v, "0") != 0;
+}
+
+static void start_exit_boost(const char* when) {
+#if defined(_WIN32)
+  if (!exit_boost_wanted() || g_boostThread != nullptr) {
+    return;
+  }
+  const bool classSet = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) != 0;
+  g_boostThread = CreateThread(nullptr, 64 * 1024, raise_threads_pass, nullptr, 0, nullptr);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: priority raised for the end of the process (%s): %s, %s", when,
+                    classSet ? "high priority class" : "priority class unchanged (failed)",
+                    g_boostThread != nullptr ? "helper thread raising each thread" : "no helper thread (failed)");
 #else
   (void)when;
+#endif
+}
+
+static void finish_exit_boost() {
+#if defined(_WIN32)
+  if (g_boostThread != nullptr) {
+    if (WaitForSingleObject(g_boostThread, 2000) != WAIT_OBJECT_0) {
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: the thread priority helper is still running after 2 s");
+    }
+    CloseHandle(g_boostThread);
+    g_boostThread = nullptr;
+  }
 #endif
 }
 
@@ -1298,7 +1338,7 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
   gcrt_audio_dsp_detach();
   gcrt_native_set_gx_sink(nullptr);
   gcrt_cpu_set_bus(p->g, nullptr, nullptr, nullptr);
-  raise_threads_for_exit("before the window and graphics shut down");
+  start_exit_boost("before the window and graphics shut down");
   const double beforeShutdown = seconds_since_game_end();
   gcrt::platform::host_shutdown();
   gcrt_trace_set_clock(nullptr, nullptr);
@@ -1310,8 +1350,8 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
 }
 
 extern "C" int gcrt_platform_before_exit(int code) {
-  // Threads started since gcrt_platform_detach raised them (the CRT exit, ExitProcess and the DLL unloading follow).
-  raise_threads_for_exit("before the end of the process");
+  // The priority helper of gcrt_platform_detach is done (the CRT exit, ExitProcess and the DLL unloading follow).
+  finish_exit_boost();
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: code %d, %.2f s after the end of the game loop", code,
                     seconds_since_game_end());
   return code;
