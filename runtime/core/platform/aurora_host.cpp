@@ -89,11 +89,11 @@ void log_callback(AuroraLogLevel level, const char* module, const char* message,
 //   - at the bottom of the Z order (SetWindowPos HWND_BOTTOM with SWP_NOACTIVATE, Microsoft Learn "SetWindowPos");
 //   - not focusable (SDL_SetWindowFocusable: WS_EX_NOACTIVATE, Microsoft Learn "Extended Window Styles": does not
 //     become the foreground window when clicked, nor when the foreground window is minimized or closed; no taskbar
-//     button, hence not offered by Alt+Tab either), in every window mode. With GCRT_WINDOW=minimized it used to be
+//     button; [hypothesis] not offered by Alt+Tab either), in every window mode. With GCRT_WINDOW=minimized it used to be
 //     kept focusable, for its taskbar button: then a person's Alt+Tab or taskbar click, or the closing of the
 //     foreground window, could activate it (issue 39). A minimized window without a taskbar button is drawn as a
-//     small bar above the taskbar (seen at the bottom left of the screen): minimize_without_activation gives it a
-//     minimized position off the screen instead.
+//     small bar above the taskbar (seen at the bottom left of the screen): minimize_without_activation moves it off
+//     the screen.
 // Trace (GCRT_TRACE_PLATFORM): "no focus: ..." with the moment it was done.
 bool g_keptBehind = false;
 
@@ -114,31 +114,30 @@ void keep_window_behind(SDL_Window* window, const char* when) {
 
 // "No focus" mode with GCRT_WINDOW=minimized: SDL_MinimizeWindow is ShowWindow(SW_MINIMIZE) (SDL 3.4
 // src/video/windows/SDL_windowswindow.c, WIN_MinimizeWindow), which "activates the next top-level window in the Z
-// order" (Microsoft Learn, "ShowWindow"). Instead: SetWindowPlacement with SW_SHOWMINNOACTIVE ("displays the window
-// as a minimized window ... the window is not activated") and WPF_SETMINPOSITION (Microsoft Learn, "WINDOWPLACEMENT")
-// with the minimized position at (-32000, -32000), off the screen, where the minimized window with a taskbar button
-// was measured before (tests of issue 30). SDL sees the minimization from the window messages, as before. Returns
-// false if not done (the caller then uses SDL_MinimizeWindow).
+// order" (Microsoft Learn, "ShowWindow"). Instead: ShowWindow(SW_SHOWMINNOACTIVE) ("displays the window as a minimized
+// window ... the window is not activated"). A minimized window without a taskbar button (WS_EX_NOACTIVATE) is drawn
+// by Windows as a small title bar on the screen (seen at the bottom left, and at (-1, -1) with a minimized position
+// asked off the screen through SetWindowPlacement), so it is then moved to (-32000, -32000), where the minimized
+// window with a taskbar button was measured before (tests of issue 30): SetWindowPos with SWP_NOACTIVATE. SDL sees the
+// minimization from the window messages, as before. Returns false if not done (the caller then uses
+// SDL_MinimizeWindow).
 bool minimize_without_activation(SDL_Window* window) {
 #ifdef _WIN32
   const auto hwnd = static_cast<HWND>(
       SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-  WINDOWPLACEMENT wp{};
-  wp.length = sizeof(wp);
-  if (hwnd == nullptr || !GetWindowPlacement(hwnd, &wp)) {
+  if (hwnd == nullptr) {
     return false;
   }
-  wp.flags = WPF_SETMINPOSITION;
-  wp.showCmd = SW_SHOWMINNOACTIVE;
-  wp.ptMinPosition.x = -32000;
-  wp.ptMinPosition.y = -32000;
-  if (!SetWindowPlacement(hwnd, &wp)) {
+  ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+  if (!IsIconic(hwnd)) {
     return false;
   }
+  const bool moved = SetWindowPos(hwnd, HWND_BOTTOM, -32000, -32000, 0, 0,
+                                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) != 0;
   RECT r{};
   GetWindowRect(hwnd, &r);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window minimized without activation, at (%ld, %ld)%s",
-                    static_cast<long>(r.left), static_cast<long>(r.top), IsIconic(hwnd) ? "" : " (not minimized!)");
+                    static_cast<long>(r.left), static_cast<long>(r.top), moved ? "" : " (move failed)");
   return true;
 #else
   (void)window;
