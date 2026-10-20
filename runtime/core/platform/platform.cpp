@@ -24,7 +24,7 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_pass).
+// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_once).
 #include <tlhelp32.h>
 #endif
 
@@ -1146,24 +1146,28 @@ static double seconds_since_game_end() {
 //     a base priority above the normal-class work (Microsoft Learn "Scheduling Priorities": base priority = class and
 //     thread level; THREAD_PRIORITY_LOWEST in the high class is 11, the normal class at normal level is 8), except the
 //     THREAD_PRIORITY_IDLE ones (1 whatever the class);
-//   - a short helper thread raises every thread of the process below THREAD_PRIORITY_HIGHEST to it (Toolhelp thread
-//     list), which covers those too. On a helper thread because walking the system-wide thread list takes ~15 ms here,
-//     which the main thread does not wait for; finish_exit_boost waits for it (at most 2 s) before the process ends.
+//   - a helper thread raises every thread of the process below THREAD_PRIORITY_HIGHEST to it (Toolhelp thread list),
+//     which covers those too, and does it again every 100 ms for the threads started meanwhile (seen: a driver thread
+//     started during aurora_shutdown, in its DLL initialization, held the loader lock for 76 s while every exiting
+//     thread waited for it). On a helper thread because walking the system-wide thread list takes ~15-25 ms here,
+//     which the main thread does not wait for; finish_exit_boost stops it and waits for it (at most 2 s) before main
+//     returns, so that it is never ended in the middle of a pass by ExitProcess.
 // The exit itself stays the normal one. GCRT_EXIT_BOOST=0 turns all this off (diagnostic). Ending the process at once
 // instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help, the process still waits for
 // the same threads to end (issue 35): the boost alone is kept.
 // Trace: "exit: priority raised ...", "exit: N threads of the process raised to the highest priority ...".
 #if defined(_WIN32)
 static HANDLE g_boostThread = nullptr;
+static HANDLE g_boostStop = nullptr; // manual-reset event: set by finish_exit_boost
 
-static DWORD WINAPI raise_threads_pass(void*) {
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+// One pass over the threads of the process; traced when it raised one (or for the first pass).
+static void raise_threads_once(unsigned pass) {
   const auto start = std::chrono::steady_clock::now();
   const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (snap == INVALID_HANDLE_VALUE) {
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: thread list not available (error %lu): thread priorities unchanged",
                       static_cast<unsigned long>(GetLastError()));
-    return 0;
+    return;
   }
   const DWORD self = GetCurrentProcessId();
   unsigned raised = 0, seen = 0, failed = 0;
@@ -1191,11 +1195,21 @@ static DWORD WINAPI raise_threads_pass(void*) {
     te.dwSize = sizeof(te);
   }
   CloseHandle(snap);
-  gcrt_trace_printf(GCRT_TRACE_PLATFORM,
-                    "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: ended or refused), "
-                    "in %.1f ms (helper thread)",
-                    raised, seen, failed,
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  if (pass == 0 || raised != 0) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                      "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: ended or "
+                      "refused), in %.1f ms (helper thread, pass %u)",
+                      raised, seen, failed,
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), pass);
+  }
+}
+
+static DWORD WINAPI raise_threads_loop(void*) {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  unsigned pass = 0;
+  do {
+    raise_threads_once(pass++);
+  } while (WaitForSingleObject(g_boostStop, 100) == WAIT_TIMEOUT);
   return 0;
 }
 #endif
@@ -1211,7 +1225,9 @@ static void start_exit_boost(const char* when) {
     return;
   }
   const bool classSet = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) != 0;
-  g_boostThread = CreateThread(nullptr, 64 * 1024, raise_threads_pass, nullptr, 0, nullptr);
+  g_boostStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  g_boostThread =
+      g_boostStop != nullptr ? CreateThread(nullptr, 64 * 1024, raise_threads_loop, nullptr, 0, nullptr) : nullptr;
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: priority raised for the end of the process (%s): %s, %s", when,
                     classSet ? "high priority class" : "priority class unchanged (failed)",
                     g_boostThread != nullptr ? "helper thread raising each thread" : "no helper thread (failed)");
@@ -1223,11 +1239,16 @@ static void start_exit_boost(const char* when) {
 static void finish_exit_boost() {
 #if defined(_WIN32)
   if (g_boostThread != nullptr) {
+    SetEvent(g_boostStop);
     if (WaitForSingleObject(g_boostThread, 2000) != WAIT_OBJECT_0) {
       gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: the thread priority helper is still running after 2 s");
     }
     CloseHandle(g_boostThread);
     g_boostThread = nullptr;
+  }
+  if (g_boostStop != nullptr) {
+    CloseHandle(g_boostStop);
+    g_boostStop = nullptr;
   }
 #endif
 }
