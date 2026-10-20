@@ -11,10 +11,27 @@ extract, recompile and build everything locally from that image.
 
 Project status and plans: **[ROADMAP.md](ROADMAP.md)**.
 
+## Download and install (Windows, for players)
+
+Get the installer from the **[latest release](https://github.com/Armandpro12/chibi-robo-pc/releases/latest)**
+(`chibi-robo-pc-setup-<version>.exe`, about 31 MB) and check its SHA-256 against `SHA256SUMS.txt` on the same page.
+Run it and pick **your own disc image** of the game (US or PAL; an uncompressed `.iso` or `.gcm` file: other formats
+must be converted first, for example with Dolphin). The installer checks the image, copies it into the installation
+folder (about 1.5 GB in total), and installs per user, without administrator rights. Uninstalling removes only what
+the installer put there; your saves and settings stay in your user folder.
+
+Needs a 64-bit Windows and a graphics driver with Direct3D 12 or Vulkan. It was developed and tested on one machine
+(Windows 11, NVIDIA graphics). **Not tested yet**: a clean Windows (including Windows Sandbox), Windows 10, other
+graphics hardware, a PC without a GPU (no software-renderer fallback yet), and playing through the whole game. See the
+release notes for the known problems, and please report any crash with its `crash-*.txt` report only, after reading
+it (see "Crash reports" below: the other files of a report hold game memory and must not be shared).
+
 ## Current state (October 2026)
 
-- Runs on Windows from boot through the title screen, a new game, the 3D intro and the first party scene, with
-  music and sound effects, in real time.
+- Runs on Windows, in real time with music and sound effects, from boot through the title screen, a new game, the
+  prologue up to and including the birthday party, the first save, and the first exit from the Chibi-House with the
+  first module load and unload, on both versions. Scripted game sessions run without a crash: 50 game minutes from a
+  late save (US) and 30 minutes from a new game (PAL).
 - Native saves, like a PC game: a memory card is always inserted; save files (`.gci`, Dolphin-compatible) live in
   `%USERPROFILE%\Saved Games\Chibi Robo PC\Chibi Robo\`.
 - Configurable keyboard and gamepads (`controls.ini`, see below).
@@ -22,10 +39,12 @@ Project status and plans: **[ROADMAP.md](ROADMAP.md)**.
   and the US versions. The bench references and the regression tests live in a local `tests/` folder that is not
   published (it holds output of the game), so these checks cannot be rerun as is from this repository;
   `tools/ab.py record` records references from your own build.
-- Compared with Dolphin only in part: in PAL, the five boot screens up to the title screen and the title music;
-  in the US version, only the health and safety warning screen. No audio measurement against Dolphin yet for the
-  US version.
-- Not yet verified: playing through the whole game (milestone 8 of the roadmap).
+- Compared with Dolphin on the key scenes, in both versions: images of the boot screens, title screen, menus,
+  loading screen, birthday party, living room and backyard, and the sound of the title screen, party, living room and
+  backyard (music loops checked). Known differences are listed in the ROADMAP ("Known differences with Dolphin").
+  Only the credits video is compared so far.
+- Not yet verified: playing through the whole game (milestone 8 of the roadmap), the other video cutscenes,
+  listening and playing by a human, and a clean Windows (milestone 11).
 
 ## Supported versions
 
@@ -37,7 +56,7 @@ Project status and plans: **[ROADMAP.md](ROADMAP.md)**.
 Accepted image formats: `.iso` / `.gcm` directly; `.rvz`, `.gcz`, `.wia`, `.ciso` after automatic conversion with
 DolphinTool.
 
-## Requirements (Windows)
+## Requirements to build from source (Windows)
 
 Install yourself: Git, Python 3.11+ (the `py` launcher), CMake 3.25+, and Visual Studio 2022 with the
 "Desktop development with C++" workload (Windows SDK and runtime libraries).
@@ -290,9 +309,9 @@ published.
 
 ## Distribution policy
 
-A ready-to-use installer (see "Installer" above) will be published as a GitHub release once it has passed the
-project's review and a test on a clean Windows (decision of the project owner, 2026-10-19; no release exists yet).
-It ships the recompiled executable and its libraries, never any game data: players provide their own disc image.
+A ready-to-use installer (see "Download and install" above) is published as a GitHub release (decision of the
+project owner, 2026-10-19). The first release, 0.1.0, was published before the test on a clean Windows and before a
+human installation test, which are still pending. The installer ships the recompiled executable and its libraries, never any game data: players provide their own disc image.
 The fully decompiled C++ version (roadmap stage 2, milestone D3) will later replace the recompiled executable in it.
 You can always build the game locally from your own copy, as described above.
 
