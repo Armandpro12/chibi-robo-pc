@@ -326,7 +326,7 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Six small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Seven small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
@@ -341,7 +341,11 @@ line.
   `use_dxc` toggle: the Direct3D 12 backend compiles its shaders with FXC (`d3dcompiler_47.dll`, found in the
   Windows system folder on the development machine; its presence on every Windows, and in Windows Sandbox, is not
   established) instead of DXC, so `dxcompiler.dll` and `dxil.dll` are neither needed nor copied next to the
-  executable.
+  executable; the seventh requests Dawn's `ImplicitDeviceSynchronization` feature when the adapter offers it, so
+  that Dawn serializes the calls made on its device by the game thread, Aurora's GX FIFO processor and its render
+  worker with an internal lock (command encoding excepted; a warning is logged if the adapter does not offer the
+  feature; `AURORA_IMPLICIT_DEVICE_SYNC=0` leaves it off, for comparisons). It was measured to cost nothing visible on
+  the development machine and is not shown to fix issue 11 by itself.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
