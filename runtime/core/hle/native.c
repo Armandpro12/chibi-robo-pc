@@ -167,22 +167,30 @@ static const char* file_name_of(const char* path) {
     return name;
 }
 
-bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
+bool gcrt_disc_image_locate(const char* disc_root, char* out, size_t size, GcrtDiscImageSource* source) {
+    GcrtDiscImageSource dummy;
+    if (!source)
+        source = &dummy;
     if (size)
         out[0] = '\0';
     if (gcrt_getenv_utf8("GCRT_DISC_IMAGE", out, size)) {
         gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s (GCRT_DISC_IMAGE)", out);
+        *source = GCRT_DISC_IMAGE_FROM_ENV;
         return true;
     }
+    *source = GCRT_DISC_IMAGE_NO_MANIFEST;
     if (!disc_root)
         return false;
     /* <disc_root>/../manifest.json, "image" field (written by tools/extract.py or tools/gcextract --manifest). */
     char folder[1100], path[1200];
     snprintf(folder, sizeof(folder), "%s/..", disc_root);
     snprintf(path, sizeof(path), "%s/manifest.json", folder);
+    snprintf(out, size, "%s", path); /* on failure, `out` names the manifest */
     FILE* f = gcrt_fopen_utf8(path, "rb");
     if (!f) {
-        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: no manifest %s", path);
+        const bool exists = gcrt_sf_is_file(path);
+        gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s %s", exists ? "unreadable manifest" : "no manifest", path);
+        *source = exists ? GCRT_DISC_IMAGE_BAD_MANIFEST : GCRT_DISC_IMAGE_NO_MANIFEST;
         return false;
     }
     char text[16384];
@@ -192,8 +200,10 @@ bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
     char image[1024];
     if (!json_string_field(text, "image", image, sizeof(image))) {
         gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: no \"image\" field in %s", path);
+        *source = GCRT_DISC_IMAGE_BAD_MANIFEST;
         return false;
     }
+    *source = GCRT_DISC_IMAGE_FROM_MANIFEST;
     /* A relative "image" is relative to the manifest's folder: an installed copy can be moved or renamed. */
     if (!gcrt_path_is_absolute(image)) {
         snprintf(out, size, "%s/%s", folder, image);
@@ -215,4 +225,12 @@ bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
     }
     gcrt_trace_printf(GCRT_TRACE_NATIVE, "disc image: %s (manifest %s)", out, path);
     return true;
+}
+
+bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size) {
+    if (gcrt_disc_image_locate(disc_root, out, size, NULL))
+        return true;
+    if (size)
+        out[0] = '\0';
+    return false;
 }

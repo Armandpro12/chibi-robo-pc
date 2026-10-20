@@ -144,6 +144,13 @@ until the new copy is in place. What happens when an installation does not compl
 
 A folder that exists but cannot be listed (access denied) is refused like a folder that holds other files.
 
+If the game cannot start because the installation is damaged, it shows a message box and exits instead of opening
+a black window: the disc image or `manifest.json` is missing or unreadable, the game files (`disc/sys/main.dol`,
+`boot.bin`) are missing, or the disc image or the game files are those of another version than the executable
+("This executable is for GGTE01 but the disc image is GGTP01"). The message names the file the game looked for; run
+the installer again over the same folder to repair it. Automated runs never get the box: the message goes to stderr
+(and the trace) and the exit code is 1 (`GCRT_FATAL_DIALOG`, see `runtime/core/platform/gcrt_fatal.h`).
+
 Silent install: `setup.exe /SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=<folder> /IMAGE=<image.iso>` (exit
 code 0 on success, 1 if the image or the folder is refused, 7 if the image could not be extracted, the folder is
 refused at the last check, there is not enough free disk space or a previous file left by an interrupted run could not

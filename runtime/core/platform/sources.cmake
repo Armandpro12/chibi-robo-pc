@@ -29,6 +29,7 @@ target_sources(gcrt PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/user_dir.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/save_file.c"
   "${CMAKE_CURRENT_LIST_DIR}/path.c"
+  "${CMAKE_CURRENT_LIST_DIR}/fatal.c"
   "${CMAKE_CURRENT_LIST_DIR}/crash_handler.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/gcrt_game_config.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/console.cpp"
@@ -47,8 +48,9 @@ target_link_libraries(gcrt PRIVATE aurora::core aurora::gx aurora::vi aurora::pa
 target_compile_features(gcrt PRIVATE cxx_std_20)
 if(WIN32)
   # SHA-1 of the executable (bcrypt), registry reads (advapi32) and process memory (psapi) in crash reports
-  # (crash_handler.cpp); UTF-16 command line (CommandLineToArgvW, shell32) in path.c.
-  target_link_libraries(gcrt PRIVATE bcrypt advapi32 psapi shell32)
+  # (crash_handler.cpp); UTF-16 command line (CommandLineToArgvW, shell32) in path.c; start-up error box (MessageBoxW,
+  # user32) in fatal.c.
+  target_link_libraries(gcrt PRIVATE bcrypt advapi32 psapi shell32 user32)
 endif()
 
 # Build identification printed by crash reports: commit of the source tree (cmake/GcrtBuildInfo.cmake). Written once at

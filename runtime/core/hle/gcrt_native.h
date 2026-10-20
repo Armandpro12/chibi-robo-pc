@@ -222,6 +222,15 @@ void gcrt_native_card_set_size(unsigned size_mbit);
  * file name next to the manifest (installed copy moved or renamed). Returns false if no path is found. */
 bool gcrt_disc_image_path(const char* disc_root, char* out, size_t size);
 
+/* Same search, saying where the path came from; on failure `out` holds the manifest's path (for the message). */
+typedef enum GcrtDiscImageSource {
+    GCRT_DISC_IMAGE_FROM_ENV,      /* GCRT_DISC_IMAGE */
+    GCRT_DISC_IMAGE_FROM_MANIFEST, /* "image" field of the manifest */
+    GCRT_DISC_IMAGE_NO_MANIFEST,   /* failure: no manifest.json next to the disc folder */
+    GCRT_DISC_IMAGE_BAD_MANIFEST,  /* failure: manifest.json cannot be read or names no image */
+} GcrtDiscImageSource;
+bool gcrt_disc_image_locate(const char* disc_root, char* out, size_t size, GcrtDiscImageSource* source);
+
 #ifdef __cplusplus
 }
 #endif

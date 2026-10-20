@@ -10,7 +10,13 @@
  *   GCRT_USER_DIR      user folder of the tests and automated runs, instead of the SDL one: controls.ini
  *                      inside, saves in <folder>/saves/ (platform/gcrt_user_dir.h)
  *   GCRT_INPUT_KEYS    simulated physical keys, before translation by controls.ini (input_host.hpp)
- *   GCRT_DISC_IMAGE    disc image (.iso); default: "image" field of <disc>/../manifest.json
+ *   GCRT_DISC_IMAGE    disc image (.iso); default: "image" field of <disc>/../manifest.json. Checked before the window
+ *                      opens (boot/boot.c): missing, unreadable, too small, or with the disc ID of another version
+ *                      than the executable's: start-up error (exit code 1)
+ *   GCRT_FATAL_DIALOG  start-up errors (platform/gcrt_fatal.h): auto (default: message box on a player's launch only,
+ *                      the rule of GCRT_SETUP_MENU=auto, and never with GCRT_NO_FOCUS or GCRT_SETUP_MENU_AUTO) | log
+ *                      (no window; stderr says what the box would show; for tests) | off | show (always the box: a
+ *                      human, or a test on a hidden desktop). The message always goes to stderr and the trace
  *   GCRT_LANGUAGE      SRAM language: 0 English (default), 1 German, 2 French, 3 Spanish,
  *                      4 Italian, 5 Dutch
  *   GCRT_DVD_RATE      simulated drive throughput in bytes/s (default 3145728; 0 = instantaneous)

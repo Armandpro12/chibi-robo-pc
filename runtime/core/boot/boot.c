@@ -14,11 +14,14 @@
 #include "hle/gcrt_native.h"
 #include "platform/gcrt_console.h"
 #include "platform/gcrt_crash.h"
+#include "platform/gcrt_fatal.h"
 #include "platform/gcrt_game_config.h"
 #include "platform/gcrt_path.h"
 #include "platform/gcrt_platform.h"
+#include "platform/gcrt_save_file.h"
 #include "platform/trace.h"
 
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -241,6 +244,138 @@ static void usage(const char* exe) {
 
 static GcrtCpu g_cpu;
 
+/* ---------------------------------------------------------------------------------------------
+ * Start-up checks: errors a player can fix (bad installation, wrong disc image) get a clear message
+ * (platform/gcrt_fatal.h: dialog on a player's launch, stderr and trace always, exit code 1) instead of a black window.
+ * ------------------------------------------------------------------------------------------- */
+
+enum {
+    DISC_HEADER_SIZE = 0x440,       /* boot.bin: the disc header at the start of a GameCube disc image */
+    DISC_MAGIC_OFFSET = 0x1C,       /* GameCube disc magic word */
+    DISC_MAGIC = 0xC2339F3Du,       /* [verified: bytes 0x1C-0x1F of sys/boot.bin of both supported discs] */
+};
+
+static const char* s_title_name = "The game";
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn, format(printf, 1, 2)))
+#endif
+static void start_error(const char* fmt, ...) {
+    char text[6144];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof(text), fmt, ap);
+    va_end(ap);
+    char title[256];
+    snprintf(title, sizeof(title), "%s cannot start", s_title_name);
+    gcrt_fatal_error(title, text);
+}
+
+/* A disc ID as written in the header: 6 characters, upper-case letters or digits (game code, region, maker). */
+static bool disc_id_valid(const char* id) {
+    if (!id || strlen(id) != 6)
+        return false;
+    for (int i = 0; i < 6; i++)
+        if (!((id[i] >= 'A' && id[i] <= 'Z') || (id[i] >= '0' && id[i] <= '9')))
+            return false;
+    return true;
+}
+
+/* Disc ID (6 characters + NUL, "" if not valid) and magic test of a disc header (at least 0x20 bytes). */
+static void header_id(const u8* header, char id[7], bool* magic) {
+    memcpy(id, header, 6);
+    id[6] = '\0';
+    if (!disc_id_valid(id))
+        id[0] = '\0';
+    *magic = read_be32(header + DISC_MAGIC_OFFSET) == DISC_MAGIC;
+}
+
+static const char k_reinstall[] = "Reinstall the game, or run the installer again and choose your disc image.";
+
+/* The extracted disc header (sys/boot.bin) must exist; its ID must be the executable's when both are known. */
+static void check_disc_header(const char* disc, const char* exe_id) {
+    char path[1100], shown[2048];
+    join(path, sizeof(path), disc, "sys/boot.bin");
+    size_t size = 0;
+    u8* boot = read_file(path, &size);
+    if (!boot || size < DISC_HEADER_SIZE) {
+        free(boot);
+        fprintf(stderr, "gcrt: unreadable disc header: %s\n", path);
+        gcrt_path_display(path, shown, sizeof(shown));
+        start_error("The game files are incomplete: the disc header was not found.\n\nThe game looked for:\n%s\n\n%s",
+                    shown, k_reinstall);
+    }
+    char id[7];
+    bool magic;
+    header_id(boot, id, &magic);
+    free(boot);
+    if (id[0] && disc_id_valid(exe_id) && strcmp(id, exe_id)) {
+        gcrt_path_display(disc, shown, sizeof(shown));
+        start_error("This executable is for %s but the game files are %s.\n\nGame files:\n%s\n\n%s", exe_id, id, shown,
+                    k_reinstall);
+    }
+}
+
+/* The disc image (read by the native disc drive, hle/native_dvd.c) must exist and be readable; its ID must be the
+ * executable's. Blocks only on a definite problem: an image without the GameCube magic word, or without a valid ID,
+ * only gets a warning (development setups). */
+static void check_disc_image(const char* disc, const char* exe_id) {
+    char path[1024], shown[2048];
+    GcrtDiscImageSource source;
+    if (!gcrt_disc_image_locate(disc, path, sizeof(path), &source)) {
+        gcrt_path_display(path, shown, sizeof(shown));
+        fprintf(stderr, "gcrt: disc image not found (%s %s): set GCRT_DISC_IMAGE, or the \"image\" field of "
+                        "manifest.json next to the disc folder\n",
+                source == GCRT_DISC_IMAGE_BAD_MANIFEST ? "unreadable manifest" : "no manifest", shown);
+        if (source == GCRT_DISC_IMAGE_BAD_MANIFEST)
+            start_error("The file that names the disc image (manifest.json) cannot be read, or names no image:\n%s\n\n%s",
+                        shown, k_reinstall);
+        start_error("The disc image was not found: there is no manifest.json next to the game files.\n\nThe game "
+                    "looked for:\n%s\n\n%s", shown, k_reinstall);
+    }
+    gcrt_path_display(path, shown, sizeof(shown));
+    const char* via = source == GCRT_DISC_IMAGE_FROM_ENV ? "\n(set by the GCRT_DISC_IMAGE variable)" : "";
+    FILE* f = gcrt_fopen_utf8(path, "rb");
+    if (!f) {
+        if (!gcrt_sf_is_file(path)) {
+            fprintf(stderr, "gcrt: disc image not found (\"%s\"): set GCRT_DISC_IMAGE, or the \"image\" field of "
+                            "manifest.json next to the disc folder\n", path);
+            start_error("The disc image was not found.\n\nThe game looked for:\n%s%s\n\n%s", shown, via, k_reinstall);
+        }
+        fprintf(stderr, "gcrt: disc image unreadable (\"%s\")\n", path);
+        start_error("The disc image cannot be opened:\n%s%s\n\nCheck that no other program is using it and that you "
+                    "are allowed to read it, or reinstall the game.", shown, via);
+    }
+    u8 header[DISC_HEADER_SIZE];
+    size_t n = fread(header, 1, sizeof(header), f);
+    fclose(f);
+    if (n < sizeof(header)) {
+        fprintf(stderr, "gcrt: disc image too small (\"%s\", %zu bytes)\n", path, n);
+        start_error("The disc image is damaged or incomplete:\n%s%s\n\n%s", shown, via, k_reinstall);
+    }
+    char id[7];
+    bool magic;
+    header_id(header, id, &magic);
+    if (!magic || !id[0]) {
+        fprintf(stderr, "gcrt: warning: %s does not look like a GameCube disc image (%s): the game may not run\n",
+                path, magic ? "no valid disc ID" : "no GameCube disc magic");
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "WARNING: disc image %s: %s, disc ID not checked", path,
+                          magic ? "no valid disc ID" : "no GameCube disc magic");
+        return;
+    }
+    if (!disc_id_valid(exe_id)) {
+        gcrt_trace_printf(GCRT_TRACE_PLATFORM, "disc image %s: %s (the executable's ID is unknown: not checked)", path, id);
+        return;
+    }
+    if (strcmp(id, exe_id)) {
+        fprintf(stderr, "gcrt: disc image %s is %s, this executable is for %s\n", path, id, exe_id);
+        start_error("This executable is for %s but the disc image is %s.\n\nDisc image:\n%s%s\n\nInstall the version of "
+                    "the game that matches this disc image, or reinstall with the disc image of %s.", exe_id, id, shown,
+                    via, exe_id);
+    }
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "disc image %s: %s, matches the executable", path, id);
+}
+
 int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
     /* Before anything is printed: the console window opens (or not) only when the game starts, and the output written
      * until then is kept for it (platform/gcrt_console.h). */
@@ -367,18 +502,39 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         dol_path = default_dol;
     }
     size_t dol_size = 0;
+    s_title_name = game && game->title ? game->title : info->game;
     u8* dol_data = read_file(dol_path, &dol_size);
     if (!dol_data) {
         fprintf(stderr, "gcrt: DOL not found: %s\n", dol_path);
-        return 1;
+        char shown[2048];
+        gcrt_path_display(dol_path, shown, sizeof(shown));
+        start_error("The game files were not found (DOL not found).\n\nThe game looked for:\n%s\n\n%s", shown,
+                    k_reinstall);
     }
     u64 fnv = gcrt_fnv1a64(dol_data, dol_size);
     if (info->dol_fnv64 && fnv != info->dol_fnv64) {
         fprintf(stderr, "gcrt: this DOL (%016llX) is not the one that was recompiled (%016llX)\n",
                 (unsigned long long)fnv, (unsigned long long)info->dol_fnv64);
         free(dol_data);
-        return 1;
+        /* Most likely the game files of another version (region) of the game: say which one if the header tells. */
+        char path[1100], shown[2048], id[7] = "";
+        bool magic = false;
+        size_t size = 0;
+        join(path, sizeof(path), disc, "sys/boot.bin");
+        u8* boot = read_file(path, &size);
+        if (boot && size >= 0x20)
+            header_id(boot, id, &magic);
+        free(boot);
+        gcrt_path_display(dol_path, shown, sizeof(shown));
+        if (id[0] && disc_id_valid(info->version) && strcmp(id, info->version))
+            start_error("This executable is for %s but the game files are %s.\n\nGame files:\n%s\n\n%s", info->version,
+                        id, shown, k_reinstall);
+        start_error("The game files do not match this executable (built for %s).\n\nGame files:\n%s\n\n%s",
+                    info->version, shown, k_reinstall);
     }
+    /* Before anything else is set up (no window, no crash handler yet): the disc header and the disc image. */
+    check_disc_header(disc, info->version);
+    check_disc_image(disc, info->version);
 
     GcrtCpu* g = &g_cpu;
     if (!gcrt_cpu_init(g, info->ram_size, &gcrt_recompiled_modules)) {
