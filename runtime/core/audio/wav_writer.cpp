@@ -6,6 +6,7 @@
 
 #include <cstring>
 
+#include "../platform/gcrt_path.h"
 #include "audio_trace.hpp"
 
 namespace gcrt::audio {
@@ -27,7 +28,7 @@ void put_le16(uint8_t* p, uint16_t v) {
 
 bool WavWriter::open(const std::string& path, uint32_t rate_hz) {
   close();
-  m_file = std::fopen(path.c_str(), "wb");
+  m_file = gcrt_fopen_utf8(path.c_str(), "wb"); // UTF-8 path (host_audio.cpp)
   if (m_file == nullptr) {
     GCRT_AUDIO_TRACE(TraceCat::Warn, "WAV: cannot create %s", path.c_str());
     return false;

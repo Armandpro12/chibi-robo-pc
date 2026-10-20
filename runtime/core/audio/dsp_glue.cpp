@@ -18,6 +18,7 @@
 #include <cstring>
 #include <memory>
 
+#include "../platform/gcrt_path.h"
 #include "audio_hw.h"
 #include "audio_trace.hpp"
 #include "dsp_ucode.h"
@@ -180,7 +181,11 @@ void load_coefficients() {
     return;
   }
   if (const char* path = std::getenv("GCRT_DSP_COEF")) {
-    if (std::FILE* f = std::fopen(path, "rb")) {
+    char utf8[4096]; // the same value in UTF-8 (wide-character environment on Windows), opened as such
+    if (gcrt_getenv_utf8("GCRT_DSP_COEF", utf8, sizeof(utf8))) {
+      path = utf8;
+    }
+    if (std::FILE* f = gcrt_fopen_utf8(path, "rb")) {
       uint8_t raw[0x1000];
       const size_t n = std::fread(raw, 1, sizeof(raw), f);
       std::fclose(f);

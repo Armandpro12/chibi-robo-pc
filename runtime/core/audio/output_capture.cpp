@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "../platform/gcrt_path.h"
 #include "audio_trace.hpp"
 
 namespace gcrt::audio {
@@ -106,21 +107,21 @@ void OutputCapture::close() {
   }
   m_closed = true;
   const std::string feed_path = m_prefix + "-feed.wav";
-  if (std::FILE* f = std::fopen(feed_path.c_str(), "wb")) {
+  if (std::FILE* f = gcrt_fopen_utf8(feed_path.c_str(), "wb")) {
     const uint64_t bytes = uint64_t(m_feed.size()) * 2;
     wav_header(f, 1, 2, m_feed_rate != 0 ? m_feed_rate : 32028, 16, bytes);
     m_feed.for_each_block([&](const int16_t* p, size_t n) { std::fwrite(p, sizeof(int16_t), n, f); });
     std::fclose(f);
   }
   const std::string dev_path = m_prefix + "-device.wav";
-  if (std::FILE* f = std::fopen(dev_path.c_str(), "wb")) {
+  if (std::FILE* f = gcrt_fopen_utf8(dev_path.c_str(), "wb")) {
     const uint64_t bytes = uint64_t(m_device.size()) * 4;
     const int ch = m_dev_channels != 0 ? m_dev_channels : 2;
     wav_header(f, 3, static_cast<uint16_t>(ch), m_dev_freq != 0 ? static_cast<uint32_t>(m_dev_freq) : 48000, 32, bytes);
     m_device.for_each_block([&](const float* p, size_t n) { std::fwrite(p, sizeof(float), n, f); });
     std::fclose(f);
   }
-  if (std::FILE* f = std::fopen((m_prefix + "-device.csv").c_str(), "w")) {
+  if (std::FILE* f = gcrt_fopen_utf8((m_prefix + "-device.csv").c_str(), "w")) {
     std::fprintf(f, "kind,t_us,frames,level\n");
     m_buffers.for_each_block([&](const Tick* p, size_t n) {
       for (size_t i = 0; i < n; ++i) {
@@ -134,7 +135,7 @@ void OutputCapture::close() {
     });
     std::fclose(f);
   }
-  if (std::FILE* f = std::fopen((m_prefix + "-events.csv").c_str(), "w")) {
+  if (std::FILE* f = gcrt_fopen_utf8((m_prefix + "-events.csv").c_str(), "w")) {
     std::fprintf(f, "t_us,event,a,b\n");
     m_events.for_each_block([&](const Ev* p, size_t n) {
       static const char* const kNames[] = {"?", "primed", "underrun", "skip"};
@@ -145,14 +146,14 @@ void OutputCapture::close() {
     });
     std::fclose(f);
   }
-  if (std::FILE* f = std::fopen((m_prefix + "-t0.txt").c_str(), "w")) {
+  if (std::FILE* f = gcrt_fopen_utf8((m_prefix + "-t0.txt").c_str(), "w")) {
     // Origin of the capture timestamps, in steady_clock us (same base as GCRT_TIMING_LOG).
     std::fprintf(f, "%lld\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
                                                        m_t0.time_since_epoch())
                                                        .count()));
     std::fclose(f);
   }
-  if (std::FILE* f = std::fopen((m_prefix + "-push.csv").c_str(), "w")) {
+  if (std::FILE* f = gcrt_fopen_utf8((m_prefix + "-push.csv").c_str(), "w")) {
     std::fprintf(f, "t_us,gap_us,frames\n");
     for (const Burst& b : m_bursts) {
       std::fprintf(f, "%lld,%lld,%u\n", static_cast<long long>(b.t_us), static_cast<long long>(b.gap_us), b.frames);

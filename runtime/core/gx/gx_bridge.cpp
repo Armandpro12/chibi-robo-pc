@@ -20,6 +20,7 @@
 #include <cstring>
 
 extern "C" {
+#include "../platform/gcrt_path.h"
 #include "../platform/trace.h"
 #include "../platform/gcrt_diag.h"
 }
@@ -596,7 +597,7 @@ bool FifoBridge::open_stream_log(const char* path, const char* dumpFrames) {
   if (path == nullptr || path[0] == '\0') {
     return false;
   }
-  m_streamLog = std::fopen(path, "w");
+  m_streamLog = gcrt_fopen_utf8(path, "w"); // UTF-8 path (platform.cpp)
   if (m_streamLog == nullptr) {
     return false;
   }
@@ -673,7 +674,7 @@ bool FifoBridge::open_stream_log(const char* path, const char* dumpFrames) {
   m_streamDraws = 0;
   m_streamFrame = 1;
   if (m_streamDumpFrames.count(m_streamFrame) != 0) {
-    m_streamDump = std::fopen((m_streamPath + "." + std::to_string(m_streamFrame) + ".bin").c_str(), "wb");
+    m_streamDump = gcrt_fopen_utf8((m_streamPath + "." + std::to_string(m_streamFrame) + ".bin").c_str(), "wb");
   }
   return true;
 }
@@ -772,7 +773,7 @@ void FifoBridge::stream_frame_end() {
     m_streamDump = nullptr;
   }
   if (m_streamDumpFrames.count(m_streamFrame) != 0) {
-    m_streamDump = std::fopen((m_streamPath + "." + std::to_string(m_streamFrame) + ".bin").c_str(), "wb");
+    m_streamDump = gcrt_fopen_utf8((m_streamPath + "." + std::to_string(m_streamFrame) + ".bin").c_str(), "wb");
   }
 }
 
