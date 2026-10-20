@@ -240,7 +240,7 @@ def main() -> int:
     # the path separators: "\" only joins components here).
     for n in names:
         for part in n.split("\\"):
-            bad = sorted({c for c in part if c in FORBIDDEN_NAME_CHARS or ord(c) < 32 or ord(c) == 127})
+            bad = sorted({c for c in part if c in FORBIDDEN_NAME_CHARS or ord(c) < 32 or ord(c) >= 127})
             if not part or bad:
                 raise SystemExit(f"payload: file name {n!r} has an empty component or a forbidden character "
                                  f"({', '.join(repr(c) for c in bad)})")

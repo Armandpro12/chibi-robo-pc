@@ -29,7 +29,8 @@ def write(out: Path) -> None:
     payload = out / "payload"
     if not payload.is_dir():
         raise SystemExit(f"{payload}: missing (run tools/installer/build.py first)")
-    setups = sorted(out.glob("*.exe"))
+    # Only the installer of this build: an older installer left in the output folder must not be listed.
+    setups = sorted(out.glob("*.exe"), key=lambda p: p.stat().st_mtime)[-1:]
     if not setups:
         raise SystemExit(f"{out}: no installer (*.exe)")
     files = sorted((p for p in payload.rglob("*") if p.is_file() and p.suffix.lower() != ".iss"),

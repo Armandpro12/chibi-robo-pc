@@ -93,6 +93,8 @@
 
 [Setup]
 AppId={{{#AppId}}
+; Two Setup instances on the same folder could mix up the progress file and the .old files.
+SetupMutex=ChibiRoboPCSetupMutex
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
