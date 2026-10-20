@@ -48,7 +48,7 @@ bool g_savedConsole = true; // value of the file: what is written back unless th
 
 // Graphics backends (gcrt_game_config.h). Only the "offered" ones can be chosen; the others are named for the trace
 // (Aurora can fall back to them by itself): Metal, OpenGL and WebGPU are not built on Windows here, null draws
-// nothing, and Direct3D 11 gives a different picture (see the header).
+// nothing, and Direct3D 11 is less tested (see the header).
 const struct {
   AuroraBackend value;
   const char* name;  // in game_config.ini, --backend, GCRT_BACKEND
