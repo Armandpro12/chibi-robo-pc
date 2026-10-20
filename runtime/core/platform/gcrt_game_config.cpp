@@ -65,6 +65,16 @@ const struct {
     {BACKEND_WEBGPU, "webgpu", "WebGPU", false},
     {BACKEND_NULL, "null", "null (no picture)", false},
 };
+// Test switch (OFF by default, never set for players): GCRT_TEST_ALL_BACKENDS=1 lets --backend and GCRT_BACKEND name
+// the backends that are not offered (d3d11, null...), so that tests can compare them with the offered ones. The menu
+// and game_config.ini keep the offered list only.
+bool test_all_backends() {
+  static const bool on = [] {
+    const char* v = std::getenv("GCRT_TEST_ALL_BACKENDS");
+    return v != nullptr && v[0] == '1';
+  }();
+  return on;
+}
 std::string g_backendRequest;  // --backend, for this launch
 bool g_haveBackendRequest = false;
 int g_activeBackend = BACKEND_AUTO;
@@ -212,6 +222,23 @@ int gcrt_backend_from_name(const char* name) {
   return -1;
 }
 
+int gcrt_backend_from_test_name(const char* name) {
+  const int offered = gcrt_backend_from_name(name);
+  if (offered >= 0 || name == nullptr || !test_all_backends()) {
+    return offered;
+  }
+  std::string lower(name);
+  for (char& c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  for (const auto& b : kBackends) {
+    if (lower == b.name) {
+      return b.value;
+    }
+  }
+  return -1;
+}
+
 const char* gcrt_backend_name(int backend) {
   for (const auto& b : kBackends) {
     if (b.value == backend) {
@@ -236,7 +263,7 @@ bool gcrt_backend_available(int backend) {
   }
   bool offered = false;
   for (const auto& b : kBackends) {
-    offered |= b.offered && b.value == backend;
+    offered |= (b.offered || test_all_backends()) && b.value == backend;
   }
   if (!offered) {
     return false; // null, Direct3D 11...: never offered
@@ -401,7 +428,7 @@ bool gcrt_game_config_run_menu(const char* title) {
     // use, so a change applies the next time the game starts.
     if (ImGui::BeginCombo("Graphics backend", gcrt_backend_label(g_cfg.backend))) {
       for (const auto& b : kBackends) {
-        if (gcrt_backend_available(b.value) && ImGui::Selectable(b.label, g_cfg.backend == b.value)) {
+        if (b.offered && gcrt_backend_available(b.value) && ImGui::Selectable(b.label, g_cfg.backend == b.value)) {
           g_cfg.backend = b.value;
         }
       }

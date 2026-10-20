@@ -155,6 +155,9 @@ bool host_init(const HostConfig& config) {
   ac.vsync = false; // pacing comes from the emulated VI (real time), not from vertical sync
   ac.mem1Size = 0;  // guest memory belongs to the runtime
   ac.mem2Size = 0;
+  // No usable GPU: Aurora tries the CPU (software) adapters after every hardware one, before its null backend
+  // (Aurora patch 0009; allowCpuAdapter stays false so that a CPU adapter never comes before a GPU).
+  ac.cpuAdapterFallback = true;
   if (config.windowMode != 0) {
     // Automatic launches: the window does not steal the foreground (SDL 3.2+ hints, to be set
     // before Aurora shows the window in aurora_initialize).
@@ -185,7 +188,7 @@ bool host_init(const HostConfig& config) {
     requestedName = gcrt_backend_name(gcrt_game_config()->backend);
     requestSource = "game_config.ini";
   }
-  int requested = gcrt_backend_from_name(requestedName.c_str());
+  int requested = gcrt_backend_from_test_name(requestedName.c_str());
   // What the trace line below says was asked for: the name as given when it was refused.
   std::string requestDesc;
   if (requested < 0 || !gcrt_backend_available(requested)) {
@@ -203,6 +206,13 @@ bool host_init(const HostConfig& config) {
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
   gcrt_backend_set_active(info.backend);
+  if (info.cpuAdapter) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                      "graphics backend: no usable GPU, %s on a CPU (software) adapter: the game will be slow",
+                      gcrt_backend_label(info.backend));
+    std::fprintf(stderr, "gcrt: no usable GPU: using the software renderer (%s), the game will be slow\n",
+                 gcrt_backend_label(info.backend));
+  }
   {
     std::string offered;
     size_t count = 0;
