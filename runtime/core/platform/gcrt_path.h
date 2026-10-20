@@ -4,9 +4,10 @@
  * Why: on Windows, fopen(), getenv() and main()'s argv use the ANSI code page. A folder or a disc image whose name
  * has characters outside that code page (e.g. a Japanese name on a French Windows) cannot be opened that way. The
  * runtime keeps the paths of the command line, the disc, the manifest and the data folders in UTF-8 and opens them
- * with the wide-character functions (_wfopen, _wgetenv, GetCommandLineW, GetModuleFileNameW). Some developer and
- * test variables (e.g. the trace file path) still use the ANSI functions. Elsewhere (not compiled to date) the plain
- * C functions are used: paths are already bytes there.
+ * with the wide-character functions (_wfopen, _wgetenv, GetCommandLineW, GetModuleFileNameW). The output files of the
+ * developer and test variables (trace file, screenshot folder, WAV recording, audio capture, timing log, timeline, GX
+ * stream log) go through these helpers too. Elsewhere (not compiled to date) the plain C functions are used: paths are
+ * already bytes there.
  *
  * Also: the installed-copy conventions (default disc root next to the executable) and the writable-folder test used
  * to place the renderer caches (notes/decisions.md, 2026-10-19, installer mission 2a).

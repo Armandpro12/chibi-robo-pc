@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "../platform/gcrt_path.h"
 #include "audio_hw.h"
 #include "audio_trace.hpp"
 #include "ucode.hpp"
@@ -18,7 +19,12 @@ HostAudio::Config HostAudio::config_from_env() {
   if (const char* v = std::getenv("GCRT_AUDIO")) {
     c.speakers = !(std::strcmp(v, "off") == 0 || std::strcmp(v, "0") == 0 || std::strcmp(v, "null") == 0);
   }
-  if (const char* v = std::getenv("GCRT_AUDIO_WAV")) {
+  // Paths: UTF-8 (wide-character environment on Windows, gcrt_path.h), so that an output folder outside the ANSI
+  // code page works; the narrow value is the fallback (e.g. a value set in the process by _putenv_s).
+  char path[4096];
+  if (gcrt_getenv_utf8("GCRT_AUDIO_WAV", path, sizeof(path))) {
+    c.wav_path = path;
+  } else if (const char* v = std::getenv("GCRT_AUDIO_WAV")) {
     c.wav_path = v;
   }
   if (const char* v = std::getenv("GCRT_AUDIO_LATENCY_MS")) {
@@ -33,7 +39,9 @@ HostAudio::Config HostAudio::config_from_env() {
   if (const char* v = std::getenv("GCRT_AUDIO_DRIFT")) {
     c.sdl.drift_control = std::strcmp(v, "0") != 0;
   }
-  if (const char* v = std::getenv("GCRT_AUDIO_CAPTURE")) {
+  if (gcrt_getenv_utf8("GCRT_AUDIO_CAPTURE", path, sizeof(path))) {
+    c.sdl.capture_prefix = path;
+  } else if (const char* v = std::getenv("GCRT_AUDIO_CAPTURE")) {
     c.sdl.capture_prefix = v;
   }
   if (const char* v = std::getenv("GCRT_AUDIO_MUTE")) {

@@ -35,6 +35,7 @@ extern "C" {
 #include "gcrt_diag.h"
 #include "gcrt_game_config.h"
 #include "gcrt_path.h"
+#include "gcrt_save_file.h"
 #include "gcrt_user_dir.h"
 #include "trace.h"
 }
@@ -187,6 +188,13 @@ void set_process_env(const char* name, const std::string& value) {
 std::string env(const char* name, const char* fallback = "") {
   const char* v = std::getenv(name);
   return (v != nullptr && v[0] != '\0') ? std::string(v) : std::string(fallback);
+}
+
+// Same for a file or folder path: UTF-8 (wide-character environment on Windows, gcrt_path.h), so that a name with
+// characters outside the ANSI code page survives; falls back to env() if the wide read fails (unchanged before).
+std::string env_path(const char* name, const char* fallback = "") {
+  char buf[4096];
+  return gcrt_getenv_utf8(name, buf, sizeof(buf)) ? std::string(buf) : env(name, fallback);
 }
 
 std::vector<std::string> split(const std::string& s, const char* seps) {
@@ -452,7 +460,7 @@ uint64_t vi_fields(GcrtPlatform*) { return gcrt_native_vi_fields(); }
 uint64_t vi_interrupts(GcrtPlatform*) { return gcrt_native_vi_retraces(); }
 
 void request_capture(GcrtPlatform* p, const char* name) {
-  const std::string path = (fs::path(p->captureDir) / name).string();
+  const std::string path = path_to_utf8(path_from_utf8(p->captureDir) / path_from_utf8(name)); // UTF-8 (png_writer.c)
   if (gcrt::gx::request_efb_capture(path.c_str())) {
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "capture requested (frame %llu, VI field %llu): %s",
                       static_cast<unsigned long long>(p->framesPresented + 1),
@@ -852,7 +860,7 @@ void configure(GcrtPlatform* p) {
     p->captureTimes.push_back(std::strtod(t.c_str(), nullptr));
   }
   std::sort(p->captureTimes.begin(), p->captureTimes.end());
-  p->captureDir = env("GCRT_CAPTURE_DIR", ".");
+  p->captureDir = env_path("GCRT_CAPTURE_DIR", ".");
   for (const auto& t : split(env("GCRT_CAPTURE_FRAMES"), ",; ")) {
     p->captureFrames.push_back(std::strtoull(t.c_str(), nullptr, 0));
   }
@@ -953,7 +961,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   p->audio = gcrt_audio_out_open();
   {
     const std::string speakers = env("GCRT_AUDIO", "sdl");
-    const std::string wav = env("GCRT_AUDIO_WAV");
+    const std::string wav = env_path("GCRT_AUDIO_WAV");
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "audio: speakers %s, WAV recording %s",
                       (speakers == "off" || speakers == "0" || speakers == "null") ? "no" : "yes",
                       wav.empty() ? "no" : wav.c_str());
@@ -990,8 +998,8 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     }
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "game busy waits: host wait %s", on ? "active" : "inactive");
   }
-  if (const std::string log = env("GCRT_TIMING_LOG"); !log.empty()) {
-    p->timingLog = std::fopen(log.c_str(), "w");
+  if (const std::string log = env_path("GCRT_TIMING_LOG"); !log.empty()) {
+    p->timingLog = gcrt_fopen_utf8(log.c_str(), "w");
     if (p->timingLog != nullptr) {
       std::setvbuf(p->timingLog, nullptr, _IOFBF, 1 << 20);
       std::fprintf(p->timingLog, "kind,host_us,emu_us,a,b,c,d,e\n");
@@ -1026,7 +1034,10 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   fs::create_directories(path_from_utf8(host.dataDir), ec);
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "%s", gcrt::platform::host_keyboard_help());
   if (!p->captureTimes.empty() || !p->captureFrames.empty() || !p->captureFields.empty()) {
-    fs::create_directories(p->captureDir, ec);
+    // UTF-8 folder (wide-character Windows calls): a name outside the ANSI code page is created too.
+    if (!gcrt_sf_mkdirs(p->captureDir.c_str())) {
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "warning: cannot create the screenshot folder %s", p->captureDir.c_str());
+    }
   }
   // Crash reports of a direct launch go to the user folder (runs set GCRT_CAPTURE_DIR or GCRT_CRASH_DIR first).
   // Chosen before the window opens: a hang report of the start-up (window creation, setup menu) lands there too.
@@ -1075,9 +1086,9 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   }
   // Diagnostic: fingerprint of the GX command stream per frame (proof of identity between two paths, step 10c).
   // GCRT_GX_STREAM=1: file gx-stream.txt in the screenshot folder (GCRT_CAPTURE_DIR, run folder).
-  if (std::string stream = env("GCRT_GX_STREAM"); !stream.empty() && stream != "0") {
+  if (std::string stream = env_path("GCRT_GX_STREAM"); !stream.empty() && stream != "0") {
     if (stream == "1") {
-      stream = (fs::path(p->captureDir) / "gx-stream.txt").string();
+      stream = path_to_utf8(path_from_utf8(p->captureDir) / "gx-stream.txt");
     }
     const std::string dump = env("GCRT_GX_STREAM_DUMP");
     if (p->bridge.open_stream_log(stream.c_str(), dump.c_str())) {

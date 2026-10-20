@@ -25,6 +25,7 @@
 #include "hle/gcrt_native.h"
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native_modules.h"
+#include "platform/gcrt_path.h"
 #include "platform/trace.h"
 
 #include <stdarg.h>
@@ -149,10 +150,10 @@ static GcrtCpu* s_timeline_cpu;
 
 static void timeline_open(GcrtCpu* g) {
     s_timeline_cpu = g;
-    const char* path = getenv("GCRT_TIMELINE");
-    if (!path || !path[0] || s_timeline)
+    char path[4096]; /* UTF-8 path (wide-character environment on Windows, gcrt_path.h) */
+    if (!gcrt_getenv_utf8("GCRT_TIMELINE", path, sizeof(path)) || s_timeline)
         return;
-    s_timeline = fopen(path, "w");
+    s_timeline = gcrt_fopen_utf8(path, "w");
     if (!s_timeline) {
         fprintf(stderr, "gcrt native: cannot write the timeline %s\n", path);
         return;

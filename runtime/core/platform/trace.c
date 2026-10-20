@@ -7,6 +7,8 @@
 #endif
 #include "trace.h"
 
+#include "gcrt_path.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,9 +92,11 @@ void gcrt_trace_init(void) {
   }
   s_init = true;
   s_out = stderr;
-  const char* file = getenv("GCRT_TRACE_FILE");
-  if (file != NULL && file[0] != '\0') {
-    FILE* f = fopen(file, "w");
+  /* UTF-8 path, opened with the wide-character functions on Windows (gcrt_path.h): an output folder whose name has
+     characters outside the ANSI code page works too. Unset or empty: stderr, as before. */
+  char file[4096];
+  if (gcrt_getenv_utf8("GCRT_TRACE_FILE", file, sizeof(file))) {
+    FILE* f = gcrt_fopen_utf8(file, "w");
     if (f != NULL) {
       s_out = f;
     }

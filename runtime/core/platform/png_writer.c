@@ -7,6 +7,8 @@
 #endif
 #include "png_writer.h"
 
+#include "gcrt_path.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,7 +112,7 @@ bool gcrt_png_write_rgba(const char* path, const uint8_t* rgba, uint32_t width, 
   o += 4;
   free(raw);
 
-  FILE* f = fopen(path, "wb");
+  FILE* f = gcrt_fopen_utf8(path, "wb"); /* UTF-8 path (e.g. GCRT_CAPTURE_DIR with non-ANSI characters) */
   if (f == NULL) {
     free(z);
     return false;
