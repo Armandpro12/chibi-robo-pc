@@ -303,6 +303,10 @@ line.
   (`d3dcompiler_47.dll`, found in the Windows system folder on the development machine; its presence on every
   Windows, and in Windows Sandbox, is not established) instead of DXC, so `dxcompiler.dll` and `dxil.dll` are neither
   needed nor copied next to the executable.
+  Patch 0007 requests Dawn's `ImplicitDeviceSynchronization` feature when the adapter offers it: Dawn then locks the
+  device in every API call except command encoding, so the game thread, Aurora's GX FIFO processor and its render
+  worker can no longer race inside Dawn (a warning is logged if the adapter does not offer it;
+  `AURORA_IMPLICIT_DEVICE_SYNC=0` leaves it off, for comparisons).
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
