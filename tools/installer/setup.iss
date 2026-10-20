@@ -49,9 +49,16 @@
 ; - a failed (re)install does not create or update the Programs-list entry (CreateUninstallRegKey);
 ; - free disk space is checked before anything is written: the new copy of the image, the payload and a margin (the
 ;   previous image is kept until the end, so an update needs as much free space as a first install);
-; - whenever a first install into a new folder does not complete (exit code 7, 9, cancel, error), everything this run
-;   wrote is removed, the folder included, and the parent folders it created: no orphan disc image, no "shell"
-;   installation, no uninstaller entry.
+; - whenever a first install into a new or empty folder does not complete (exit code 7, 9, cancel, error), everything
+;   this run wrote is removed, then the folder itself if this run created it (an empty folder that existed before is
+;   kept, empty, as it was), and the parent folders it created: no orphan disc image, no "shell" installation, no
+;   uninstaller entry;
+; - interrupted run (power loss, crash): from the moment the previous files may become <name>.old until the
+;   installation is complete (or everything is put back), the folder holds ProgressFile. The next run, finding it, knows
+;   that a <name> next to a <name>.old may be a new file cut while being written, or part of a half-made installation:
+;   it deletes <name> and puts <name>.old back, which brings back the installation as it was before the interrupted
+;   run, then installs. Without ProgressFile, the run that left a <name>.old had completed: <name> is kept and
+;   <name>.old deleted (CleanUpTemporaryFiles).
 
 ; ---------------------------------------------------------------------------------------- defines from build.py
 #ifndef AppName
@@ -81,6 +88,8 @@
 ; Written into {app} after a successful install (contains the AppId): marks the folder as an installation of this
 ; installer, which a later run may update.
 #define InstallMarker "installed-by-setup.txt"
+; Present while an installation is under way in {app} (see "Safety rules": interrupted run).
+#define ProgressFile "setup-in-progress.txt"
 
 [Setup]
 AppId={{{#AppId}}
@@ -158,6 +167,7 @@ Type: filesandordirs; Name: "{app}\disc"
 Type: files; Name: "{app}\manifest.json"
 Type: filesandordirs; Name: "{app}\gcrt-data"
 Type: files; Name: "{app}\{#InstallMarker}"
+Type: files; Name: "{app}\{#ProgressFile}"
 ; Leftovers of an interrupted install, if any.
 Type: files; Name: "{app}\game.iso.new"
 Type: filesandordirs; Name: "{app}\disc.new"
@@ -194,6 +204,7 @@ var
   BackupFailed: Boolean;         { a payload file could not be kept: it cannot be put back }
   CreatedDirs: TArrayOfString;   { folders created by PrepareSystemFiles (the install folder and its parents), deepest
                                    first: removed again, if empty, when a first install does not complete }
+  ProgressWritten: Boolean;      { this run wrote ProgressFile (deleted once the folder is consistent again) }
 
 { Check of the payload entries after the image: skipped once the copy failed. }
 function InstallFailed: Boolean;
@@ -526,46 +537,94 @@ begin
     RemovePath(New[I]);
 end;
 
-{ Adds the names of the "|"-terminated list Names, relative to App, to List. }
+{ Adds the names of the "|"-separated list Names, relative to App, to List. The lists end with "|"; a last name without
+  it is taken too (no endless loop), and empty names are skipped. }
 procedure AddNames(const App: String; Names: String; var List: TArrayOfString);
 var
   P, N: Integer;
+  Name: String;
 begin
   while Names <> '' do begin
     P := Pos('|', Names);
-    N := GetArrayLength(List);
-    SetArrayLength(List, N + 1);
-    List[N] := App + '\' + Copy(Names, 1, P - 1);
-    Names := Copy(Names, P + 1, Length(Names));
+    if P = 0 then begin
+      Name := Names;
+      Names := '';
+    end else begin
+      Name := Copy(Names, 1, P - 1);
+      Names := Copy(Names, P + 1, Length(Names));
+    end;
+    if Name <> '' then begin
+      N := GetArrayLength(List);
+      SetArrayLength(List, N + 1);
+      List[N] := App + '\' + Name;
+    end;
   end;
 end;
 
-{ Before anything is installed: finish or undo an interrupted run (power loss, crash): the <name>.old of a name that is
-  missing is the previous file (image files: SwapInNewFiles; payload files: BackUpExisting), put back; a <name>.old
-  whose name exists is no longer needed and is deleted, but only then: if it cannot be put back, it stays (it is the
-  only copy of the previous file) and False is returned (Setup stops: run it again once the file is free). Then the
-  temporary files are removed. }
-function CleanUpTemporaryFiles(const App: String): Boolean;
+function ProgressFilePath(const App: String): String;
+begin
+  Result := App + '\{#ProgressFile}';
+end;
+
+{ Deletes ProgressFile once the folder is consistent again (installation complete, or every previous file back).
+  True if it is gone. }
+function RemoveProgressFile(const App: String): Boolean;
+begin
+  if FileExists(ProgressFilePath(App)) and not DeleteFile(ProgressFilePath(App)) then
+    Log('Cannot delete ' + ProgressFilePath(App))
+  else if ProgressWritten then
+    Log('Progress file removed');
+  Result := not FileExists(ProgressFilePath(App));
+  if Result then
+    ProgressWritten := False;
+end;
+
+{ Before anything is installed: finish or undo an interrupted run (power loss, crash). For each name that an
+  installation replaces (image files: SwapInNewFiles; payload files: BackUpExisting), <name>.old is the previous file:
+  - <name> is missing: <name>.old is put back;
+  - both exist and Interrupted (ProgressFile found: the run that left them had not completed): <name> may be a new file
+    cut while being written, or part of a half-made installation (a new image with the previous executable), so it is
+    deleted and <name>.old put back. Every name that run replaced has its <name>.old, the others were not touched: this
+    brings back the installation as it was before that run, and this run then installs over it;
+  - both exist and not Interrupted: the run that left <name>.old had completed (ProgressFile is deleted once every file
+    is installed, and only then are the <name>.old deleted), so <name> is complete and <name>.old is deleted.
+  A <name>.old that cannot be put back or deleted stays (it may be the only copy of the previous file) and False is
+  returned (Setup stops: run it again once the file is free). Then the temporary files are removed. }
+function CleanUpTemporaryFiles(const App: String; Interrupted: Boolean): Boolean;
 var
   Final, New, Names: TArrayOfString;
   I: Integer;
+  Old: String;
 begin
   Result := True;
   SwapNames(App, Final, New);
   AddNames(App, 'disc|manifest.json|game.iso|{#PayloadNames}', Names);
-  for I := 0 to GetArrayLength(Names) - 1 do
-    if FileOrDirExists(Names[I] + '.old') then begin
+  for I := 0 to GetArrayLength(Names) - 1 do begin
+    Old := Names[I] + '.old';
+    if FileOrDirExists(Old) then begin
+      if Interrupted and FileOrDirExists(Names[I]) then begin
+        RemovePath(Names[I]);
+        if FileOrDirExists(Names[I]) then
+          Log('Cannot remove ' + Names[I] + ', left by an interrupted install: ' + Old + ' kept')
+        else
+          Log('Removed ' + Names[I] + ', left by an interrupted install');
+      end;
       if not FileOrDirExists(Names[I]) then begin
-        if RenameFile(Names[I] + '.old', Names[I]) then
+        if RenameFile(Old, Names[I]) then
           Log('Restored ' + Names[I] + ' from an interrupted install')
         else
-          Log('Cannot restore ' + Names[I] + ' from an interrupted install: ' + Names[I] + '.old kept');
+          Log('Cannot restore ' + Names[I] + ' from an interrupted install: ' + Old + ' kept');
+      end else if not Interrupted then begin
+        RemovePath(Old);
+        if FileOrDirExists(Old) then
+          Log('Cannot delete ' + Old + ' (left by a completed install)')
+        else
+          Log('Deleted ' + Old + ', left by a completed install');
       end;
-      if FileOrDirExists(Names[I]) then
-        RemovePath(Names[I] + '.old')
-      else
+      if FileOrDirExists(Old) then
         Result := False;
     end;
+  end;
   for I := 0 to GetArrayLength(New) - 1 do
     RemovePath(New[I]);
 end;
@@ -747,22 +806,26 @@ end;
 
 { A first install into a folder that was missing or empty did not complete: removes what this run put there (every
   name the installer writes; Inno Setup's rollback has already removed the payload files it installed, or they were
-  skipped), then the folder itself if it is empty, then the parent folders this run created, if they are empty. }
+  skipped), then the folder itself if this run created it and it is empty (a folder that existed before, empty, is
+  kept as it was), then the parent folders this run created, if they are empty. }
 procedure RemoveFirstInstall(const App: String);
 var
   Names: TArrayOfString;
   I: Integer;
 begin
   AddNames(App, 'game.iso|disc|manifest.json|game.iso.new|disc.new|manifest.new|game.iso.old|disc.old|' +
-           'manifest.json.old|{#InstallMarker}|gcextract.exe|game.toml|BUILD-INFO.txt|unins000.exe|unins000.dat|' +
-           'unins000.msg|', Names);
+           'manifest.json.old|{#InstallMarker}|{#ProgressFile}|gcextract.exe|game.toml|BUILD-INFO.txt|unins000.exe|' +
+           'unins000.dat|unins000.msg|', Names);
   for I := 0 to GetArrayLength(Names) - 1 do
     RemovePath(Names[I]);
-  if RemoveDir(App) then
+  ProgressWritten := False;
+  { CreatedDirs[0] is App itself when this run created it (MissingFolders). }
+  if (GetArrayLength(CreatedDirs) = 0) or (CompareText(CreatedDirs[0], App) <> 0) then
+    Log('The installation folder existed before this run, kept: ' + App)
+  else if RemoveDir(App) then
     Log('Removed the new installation folder: ' + App)
   else
     Log('The installation folder is not empty, kept: ' + App);
-  { CreatedDirs[0] is App itself (when this run created it). }
   for I := 1 to GetArrayLength(CreatedDirs) - 1 do
     if RemoveDir(CreatedDirs[I]) then
       Log('Removed the new parent folder: ' + CreatedDirs[I]);
@@ -849,6 +912,7 @@ function PrepareSystemFiles: String;
 var
   App, Params: String;
   Code: Integer;
+  Interrupted: Boolean;
 begin
   Result := '';
   App := AppDir;
@@ -871,11 +935,24 @@ begin
       Result := 'The folder "' + App + '" is not writable. ' + RefusalText(7);
       Exit;
     end;
-  if not CleanUpTemporaryFiles(App) then begin
+  { ProgressFile left by an earlier run: that run did not complete (see CleanUpTemporaryFiles). Kept as it is until
+    the clean-up has put every previous file back. }
+  Interrupted := FileExists(ProgressFilePath(App));
+  if Interrupted then
+    Log('An earlier run of Setup in this folder did not complete (' + ProgressFilePath(App) + ' found)');
+  if not CleanUpTemporaryFiles(App, Interrupted) then begin
     Result := 'A previous file of the installation in "' + App + '" could not be put back (it may be open in another ' +
       'program). Nothing was changed: close the game and run Setup again.';
     Exit;
   end;
+  { From here until the installation is complete or everything is put back, the previous files may be <name>.old. }
+  if not SaveStringToFile(ProgressFilePath(App), 'An installation by the {#AppName} installer is under way in this ' +
+      'folder (deleted when it completes). If it is still here, run the installer again over this folder.' + #13#10,
+      False) then begin
+    Result := 'The folder "' + App + '" is not writable. ' + RefusalText(7);
+    Exit;
+  end;
+  ProgressWritten := True;
   ExtractTemporaryFile('gcextract.exe');
   ExtractTemporaryFile('game.toml');
   Params := AddQuotes(GetImagePath('')) + ' ' + AddQuotes(App + '\disc.new') + ' --system-only --game-toml ' +
@@ -970,10 +1047,11 @@ begin
     Restored := False;
     Log('Clean-up after the failure: ' + GetExceptionMessage);
   end;
-  if Restored then
-    Log('The previous files are back')
-  else
-    Log('Some previous files could not be put back');
+  if Restored then begin
+    Log('The previous files are back');
+    RemoveProgressFile(AppDir);
+  end else
+    Log('Some previous files could not be put back (' + ProgressFilePath(AppDir) + ' kept: the next run puts them back)');
   Log('Installation failed: ' + GcxError);
   if DirWasNew then
     Text := 'The game could not be installed; nothing is left in the installation folder. '
@@ -1048,6 +1126,10 @@ begin
     Exit;
   try
     RemoveTemporaryFiles(PreparedApp);
+    { Nothing was replaced yet. A ProgressFile of an earlier run (clean-up failed: this run did not write its own) is
+      kept: its <name>.old files are still to be put back. }
+    if ProgressWritten then
+      RemoveProgressFile(PreparedApp);
     if DirWasNew then
       RemoveFirstInstall(PreparedApp);
   except
@@ -1092,9 +1174,14 @@ begin
     { The installation is complete (past Inno Setup's rollback): the previous image and payload files are no longer
       needed. }
     if not FailedFlag then begin
-      if SwapDone then
-        RemoveOldFiles(AppDir);
-      RemoveBackups;
+      { ProgressFile first: once it is gone, a <name>.old left by an interruption now is known to be obsolete. If it
+        cannot be deleted, the <name>.old are kept: the next run puts them back, a consistent installation too. }
+      if RemoveProgressFile(AppDir) then begin
+        if SwapDone then
+          RemoveOldFiles(AppDir);
+        RemoveBackups;
+      end else
+        Log('The previous files are kept as *.old (the progress file is still there)');
     end;
   end;
 end;
@@ -1103,24 +1190,34 @@ end;
   Setup has rolled back the files it installed), the previous image files are put back and the temporary ones
   removed; a first install that did not complete (that, or exit code 7 or 9) is removed. }
 procedure DeinitializeSetup;
+var
+  AllBack: Boolean;
 begin
   if not PreparedDir then
     Exit;
   try
     if not InstallDone then begin
+      AllBack := True;
       if SwapDone then begin
         Log('Setup did not complete after the swap: putting the previous files back');
-        if not UndoSwap(PreparedApp) then
+        if not UndoSwap(PreparedApp) then begin
+          AllBack := False;
           Log('Some previous files could not be put back (the next run of Setup restores them)');
+        end;
       end;
       { After Inno Setup's rollback, which has deleted the payload files it installed under names that were free
         (BackUpExisting had renamed the previous ones). }
       if GetArrayLength(Backups) > 0 then begin
         Log('Setup did not complete: putting the previous payload files back');
-        if not RestoreBackups then
+        if not RestoreBackups then begin
+          AllBack := False;
           Log('Some previous payload files could not be put back (the next run of Setup restores them)');
+        end;
       end;
       RemoveTemporaryFiles(PreparedApp);
+      { Kept otherwise: it tells the next run to put the remaining <name>.old files back. }
+      if AllBack and ProgressWritten then
+        RemoveProgressFile(PreparedApp);
     end;
     if DirWasNew and (FailedFlag or not InstallDone) then
       RemoveFirstInstall(PreparedApp);
@@ -1143,7 +1240,8 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then begin
     { PrepareToInstall creates the folder before Inno Setup does, so it is not in the uninstall log: remove it here
-      (RemoveDir only removes an empty folder). }
+      (RemoveDir only removes an empty folder; an empty folder that the player had chosen before the installation
+      goes too, as with any uninstaller: unlike a failed first install, the installation did complete in it). }
     RemoveDir(ExpandConstant('{app}'));
     SuppressibleMsgBox('{#AppName} was removed. Your saves and settings were kept in:' + #13#10 +
       ExpandConstant('{#UserDataDir}'), mbInformation, MB_OK, IDOK);
