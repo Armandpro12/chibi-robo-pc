@@ -115,8 +115,9 @@ of ASCII characters only; a new or empty folder, or an earlier installation of t
 other files is refused, so that nothing of the player's is overwritten or later uninstalled), choose their own `.iso` / `.gcm` dump. The image is checked (SHA-1 against `game.toml`); compressed formats (RVZ, WIA,
 GCZ, CISO, NKit), modified or unknown dumps are refused with an explanation. The image is copied into the
 installation folder as `game.iso`, `sys/` is extracted next to it, and a Start menu shortcut is created
-(desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache
-(a folder that still holds other files is kept): saves and settings stay in
+(desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache,
+then the installation folder if nothing else is left in it (also when it was an empty folder that existed before
+the installation; a folder that still holds other files is kept): saves and settings stay in
 `%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
 image already installed is offered and not copied again). Free disk space is checked before anything is written:
 an update needs as much free space as a first installation (about 1.6 GB), because the previous disc image is kept
@@ -133,16 +134,24 @@ until the new copy is in place. What happens when an installation does not compl
   open in another program), Setup keeps it as `<name>.old` and says so when it stops with an error; if Setup was
   cancelled or stopped in another way, the message may only be written to Setup's log. Run the installer again,
   which puts it back first;
-- a first installation into a new folder that does not complete in any of these ways leaves nothing behind in that
-  folder: the folder is removed, and so are the parent folders Setup created for it if they are empty; no
-  uninstaller is left, and no Programs-list entry is expected (Setup does not write it for a failed installation;
-  only checked in Setup's log so far);
+- a first installation into a new or empty folder that does not complete in any of these ways leaves nothing
+  behind in that folder: the folder is removed if Setup created it (an empty folder that existed before is left in
+  place, empty), and so are the parent folders Setup created for it if they are empty; no uninstaller is left, and
+  no Programs-list entry is expected (Setup does not write it for a failed installation; only checked in Setup's log
+  so far);
 - after a power loss or a crash during the installation, nothing is guaranteed: run the installer again over the
-  same folder, which puts back a previous file left as `<name>.old` when the file itself is missing (when both
-  exist after an interruption, the `<name>.old` is discarded and the file is replaced by the new installation) and
-  repairs the installation (a first installation interrupted that way has no uninstaller yet).
+  same folder. While an installation is under way, the folder holds `setup-in-progress.txt` (deleted when it
+  completes, or when everything was put back). The next run puts back each previous file left as `<name>.old`:
+  when the file itself is missing, and also when both exist and `setup-in-progress.txt` is there (the file may have
+  been cut while being written, or belong to a half-made installation, so it is deleted: this brings back the
+  installation as it was before the interrupted run). Without `setup-in-progress.txt`, the run that left a
+  `<name>.old` had completed, so the file is kept and the `<name>.old` deleted. Then it repairs the installation (a
+  first installation interrupted that way has no uninstaller yet). Tested by simulating the files such an
+  interruption leaves, not with a real power loss.
 
-A folder that exists but cannot be listed (access denied) is refused like a folder that holds other files.
+A folder that exists but cannot be listed (access denied) is refused like a folder that holds other files. An
+existing empty folder is accepted (tested: install, failed first installs, uninstall), and a folder that holds
+other files of the player is refused with nothing changed (tested).
 
 If the game cannot start because the installation is damaged, it shows a message box and exits instead of opening
 a black window: the disc image or `manifest.json` is missing or unreadable, the game files (`disc/sys/main.dol`,
