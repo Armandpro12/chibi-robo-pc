@@ -11,6 +11,25 @@ extract, recompile and build everything locally from that image.
 
 Project status and plans: **[ROADMAP.md](ROADMAP.md)**.
 
+## Table of contents
+
+- [Download and install (Windows, for players)](#download-and-install-windows-for-players)
+- [Current state (October 2026)](#current-state-october-2026)
+- [Supported versions](#supported-versions)
+- [Requirements to build from source (Windows)](#requirements-to-build-from-source-windows)
+- [Getting started](#getting-started)
+  - [Installer](#installer)
+  - [Setup menu](#setup-menu)
+  - [Controls](#controls)
+  - [Optional: profile-guided optimization](#optional-profile-guided-optimization)
+  - [Crash reports](#crash-reports)
+  - [Starting in a chosen stage (testing)](#starting-in-a-chosen-stage-testing)
+- [Repository layout](#repository-layout)
+- [Distribution policy](#distribution-policy)
+- [License](#license)
+- [Development](#development)
+- [Credits and third-party software](#credits-and-third-party-software)
+
 ## Download and install (Windows, for players)
 
 Get the installer from the **[latest release](https://github.com/Armandpro12/chibi-robo-pc/releases/latest)**
