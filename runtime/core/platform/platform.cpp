@@ -1136,14 +1136,14 @@ static double seconds_since_game_end() {
 // Issue 35: on a busy computer (measured: the game and 6 busy processes on the same 2 cores) the end of a launch could
 // take minutes after the game was over, with only low-priority threads of the process left: the crash reporter (it
 // starts at THREAD_PRIORITY_LOWEST, crash_handler.cpp), Direct3D's "D3D Background Thread", the graphics driver's
-// threads (stacks of tests/j11/f2 and of the issue). A thread being joined or ended has to run to finish, and below the
+// threads (stacks taken during slow ends). A thread being joined or ended has to run to finish, and below the
 // normal priority it only gets the processor when nothing else at normal priority is ready ([hypothesis] that this
 // is the whole cause: the Windows scheduler runs the ready thread of highest priority, Microsoft Learn "Scheduling
 // Priorities"; its starvation boost is only occasional). Hence, once the game is over, every thread of the process is
 // raised to THREAD_PRIORITY_HIGHEST (none is lowered), just before the window and the GPU device are shut down and
 // again just before the process ends (threads started meanwhile). GCRT_EXIT_BOOST=0 turns it off (diagnostic).
 // Ending the process at once instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help,
-// the process still waits for the same threads to end (tests/j11/f2, et2-*): the boost alone is kept.
+// the process still waits for the same threads to end (issue 35): the boost alone is kept.
 // Trace: "exit: N threads of the process raised to the highest priority (...)".
 static void raise_threads_for_exit(const char* when) {
 #if defined(_WIN32)
