@@ -252,6 +252,10 @@ while the report copies the state of its threads (at most a few seconds) and whi
 boot up to its first frame) is watched too, with `GCRT_WATCHDOG_STARTUP=<seconds>` (default: `GCRT_WATCHDOG`, at
 least 60; `0` turns it off); a start-up report is a `.txt` only, never a `.dmp`.
 
+Once the game is over, the process raises its own priority until it has ended, so that a busy computer does not keep
+it waiting for its low-priority threads (it could take minutes). `GCRT_EXIT_BOOST=0` turns this off, for diagnosis;
+the trace's `exit:` lines give the times of the end in host seconds.
+
 `GCRT_CRASH_DIR` chooses another folder. For developers, `tools/crash_inspect.py <report.dmp>` decodes the faulting
 instruction of a minidump, checks whether it explains the fault and lists the memory regions, the threads and the
 last game events stored in the dump (`--help` lists its options, verdicts and exit codes).
