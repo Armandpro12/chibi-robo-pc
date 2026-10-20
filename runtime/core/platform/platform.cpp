@@ -24,6 +24,8 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_for_exit).
+#include <tlhelp32.h>
 #endif
 
 extern "C" {
@@ -928,6 +930,8 @@ void configure(GcrtPlatform* p) {
 }
 } // namespace
 
+static void raise_threads_for_exit(const char* when); // below, with gcrt_platform_detach
+
 extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* game_id,
                                               const char* disc_root) {
   gcrt_trace_init();
@@ -1048,6 +1052,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
     // The window was closed from the setup menu, before the game started: quit without running it.
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "window closed from the setup menu: exit");
     gcrt_crash_handler_game_over(); // the exit is not watched (gcrt_crash.h)
+    raise_threads_for_exit("window closed from the setup menu"); // issue 35, as after a game
     std::fflush(nullptr);
     std::exit(0);
   }
@@ -1120,10 +1125,79 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   return p;
 }
 
+// Host time at the end of the game loop (gcrt_platform_detach), for the exit trace lines.
+static std::chrono::steady_clock::time_point g_gameEnd;
+static bool g_gameEnded = false;
+
+static double seconds_since_game_end() {
+  return g_gameEnded ? std::chrono::duration<double>(std::chrono::steady_clock::now() - g_gameEnd).count() : -1.0;
+}
+
+// Issue 35: on a busy computer (measured: the game and 6 busy processes on the same 2 cores) the end of a launch could
+// take minutes after the game was over, with only low-priority threads of the process left: the crash reporter (it
+// starts at THREAD_PRIORITY_LOWEST, crash_handler.cpp), Direct3D's "D3D Background Thread", the graphics driver's
+// threads (stacks of tests/j11/f2 and of the issue). A thread being joined or ended has to run to finish, and below the
+// normal priority it only gets the processor when nothing else at normal priority is ready ([hypothesis] that this
+// is the whole cause: the Windows scheduler runs the ready thread of highest priority, Microsoft Learn "Scheduling
+// Priorities"; its starvation boost is only occasional). Hence, once the game is over, every thread of the process is
+// raised to THREAD_PRIORITY_HIGHEST (none is lowered), just before the window and the GPU device are shut down and
+// again just before the process ends (threads started meanwhile). GCRT_EXIT_BOOST=0 turns it off (diagnostic).
+// Ending the process at once instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help,
+// the process still waits for the same threads to end (tests/j11/f2, et2-*): the boost alone is kept.
+// Trace: "exit: N threads of the process raised to the highest priority (...)".
+static void raise_threads_for_exit(const char* when) {
+#if defined(_WIN32)
+  const char* v = std::getenv("GCRT_EXIT_BOOST");
+  if (v != nullptr && std::strcmp(v, "0") == 0) {
+    return;
+  }
+  const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+  if (snap == INVALID_HANDLE_VALUE) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: thread list not available (error %lu): priorities unchanged (%s)",
+                      static_cast<unsigned long>(GetLastError()), when);
+    return;
+  }
+  const DWORD self = GetCurrentProcessId();
+  unsigned raised = 0, seen = 0, failed = 0;
+  THREADENTRY32 te{};
+  te.dwSize = sizeof(te);
+  for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+    if (te.th32OwnerProcessID != self) {
+      continue;
+    }
+    ++seen;
+    const HANDLE t = OpenThread(THREAD_QUERY_LIMITED_INFORMATION | THREAD_SET_LIMITED_INFORMATION, FALSE,
+                                te.th32ThreadID);
+    if (t == nullptr) {
+      ++failed;
+      continue;
+    }
+    const int prio = GetThreadPriority(t);
+    if (prio != THREAD_PRIORITY_ERROR_RETURN && prio < THREAD_PRIORITY_HIGHEST) {
+      if (SetThreadPriority(t, THREAD_PRIORITY_HIGHEST)) {
+        ++raised;
+      } else {
+        ++failed;
+      }
+    }
+    CloseHandle(t);
+    te.dwSize = sizeof(te);
+  }
+  CloseHandle(snap);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                    "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: error) (%s)",
+                    raised, seen, failed, when);
+#else
+  (void)when;
+#endif
+}
+
 extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
   if (p == nullptr) {
     return;
   }
+  g_gameEnd = std::chrono::steady_clock::now();
+  g_gameEnded = true;
   // The game loop has ended: no hang report during the exit, and a report still being written (a slow one on a busy
   // computer) is done with the platform context and the guest state before they are freed (gcrt_crash.h).
   gcrt_crash_handler_game_over();
@@ -1224,8 +1298,21 @@ extern "C" void gcrt_platform_detach(GcrtPlatform* p) {
   gcrt_audio_dsp_detach();
   gcrt_native_set_gx_sink(nullptr);
   gcrt_cpu_set_bus(p->g, nullptr, nullptr, nullptr);
+  raise_threads_for_exit("before the window and graphics shut down");
+  const double beforeShutdown = seconds_since_game_end();
   gcrt::platform::host_shutdown();
   gcrt_trace_set_clock(nullptr, nullptr);
+  // Host seconds (the emulated clock is gone): where the end of a launch spends its time (issue 35).
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: window and graphics shut down in %.2f s (%.2f s after the end of the "
+                    "game loop)", seconds_since_game_end() - beforeShutdown, seconds_since_game_end());
   g_platform = nullptr;
   delete p;
+}
+
+extern "C" int gcrt_platform_before_exit(int code) {
+  // Threads started since gcrt_platform_detach raised them (the CRT exit, ExitProcess and the DLL unloading follow).
+  raise_threads_for_exit("before the end of the process");
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: code %d, %.2f s after the end of the game loop", code,
+                    seconds_since_game_end());
+  return code;
 }

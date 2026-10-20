@@ -51,10 +51,14 @@
  *   GCRT_NO_FOCUS      1: "no focus" test mode, for launches on a computer someone is using (platform/gcrt_focus.h;
  *                      tools/run.py sets it unless the caller did): the game window is never activated nor raised
  *                      (shown without activation behind the other windows and not focusable, "normal" counting as
- *                      "background"; minimized if GCRT_WINDOW=minimized, then behind the others until minimized),
+ *                      "background"; with GCRT_WINDOW=minimized, minimized without activation off the screen,
+ *                      without a taskbar button),
  *                      the menu's fullscreen setting is not applied, a console opened by the console option is created
  *                      minimized without activation, the foreground is never handed to the game window, and Shift
  *                      held at launch no longer shows a skipped setup menu. Default 0
+ *   GCRT_EXIT_BOOST    1 (default): once the game is over, every thread of the process is raised to the highest
+ *                      priority, so that the end of the process does not wait for starved low-priority threads on a
+ *                      busy computer (platform.cpp, raise_threads_for_exit); 0: priorities left as they are
  *   GCRT_SETUP_MENU    setup menu before the game (window size, fullscreen, render scale, console; gcrt_game_config.h):
  *                      auto (default): on a direct launch only, i.e. none of GCRT_WINDOW, GCRT_USER_DIR, GCRT_INPUT,
  *                      GCRT_INPUT_FRAMES, GCRT_STOP_AT, GCRT_STOP_FRAME, GCRT_CAPTURE_DIR, GCRT_RTC, GCRT_NO_FOCUS is set;
@@ -171,6 +175,11 @@ typedef struct GcrtPlatform GcrtPlatform;
 GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* game_id, const char* disc_root);
 /* After gcrt_cpu_run: finishes the current frame, writes the pending screenshots and the report. */
 void gcrt_platform_detach(GcrtPlatform* platform);
+/* Last call of a launch whose game ran (after gcrt_platform_detach and the final prints), just before main returns:
+   raises the threads started since the detach to the highest priority, like gcrt_platform_detach did for the others
+   (GCRT_EXIT_BOOST; on a busy computer the end of the process otherwise waited minutes for low-priority threads,
+   issue 35), then the trace line "exit: code N, ...". Returns `code`. The exit itself stays the normal one. */
+int gcrt_platform_before_exit(int code);
 
 #ifdef __cplusplus
 }

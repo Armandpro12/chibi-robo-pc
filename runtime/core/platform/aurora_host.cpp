@@ -88,16 +88,18 @@ void log_callback(AuroraLogLevel level, const char* module, const char* message,
 // right after aurora_initialize (about 0.35 s later: GPU and ImGui set-up):
 //   - at the bottom of the Z order (SetWindowPos HWND_BOTTOM with SWP_NOACTIVATE, Microsoft Learn "SetWindowPos");
 //   - not focusable (SDL_SetWindowFocusable: WS_EX_NOACTIVATE, Microsoft Learn "Extended Window Styles": does not
-//     become the foreground window when clicked, nor when the foreground window is minimized or closed), unless the
-//     window is to be minimized (GCRT_WINDOW=minimized): that style also removes the taskbar button, and a minimized
-//     window without one is drawn as a small bar above the taskbar (seen at the bottom left of the screen).
+//     become the foreground window when clicked, nor when the foreground window is minimized or closed; no taskbar
+//     button, hence not offered by Alt+Tab either), in every window mode. With GCRT_WINDOW=minimized it used to be
+//     kept focusable, for its taskbar button: then a person's Alt+Tab or taskbar click, or the closing of the
+//     foreground window, could activate it (issue 39). A minimized window without a taskbar button is drawn as a
+//     small bar above the taskbar (seen at the bottom left of the screen): minimize_without_activation gives it a
+//     minimized position off the screen instead.
 // Trace (GCRT_TRACE_PLATFORM): "no focus: ..." with the moment it was done.
 bool g_keptBehind = false;
-bool g_keepFocusable = false; // GCRT_WINDOW=minimized
 
 void keep_window_behind(SDL_Window* window, const char* when) {
   g_keptBehind = true;
-  const bool unfocusable = !g_keepFocusable && SDL_SetWindowFocusable(window, false);
+  const bool unfocusable = SDL_SetWindowFocusable(window, false);
   bool bottom = false;
 #ifdef _WIN32
   const auto hwnd = static_cast<HWND>(
@@ -106,10 +108,42 @@ void keep_window_behind(SDL_Window* window, const char* when) {
            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 #endif
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window %s, %s (%s)",
-                    g_keepFocusable ? "kept focusable (to be minimized)"
-                    : unfocusable   ? "not focusable"
-                                    : "focusable (failed)",
+                    unfocusable ? "not focusable" : "focusable (failed)",
                     bottom ? "moved to the bottom of the Z order" : "Z order unchanged (failed)", when);
+}
+
+// "No focus" mode with GCRT_WINDOW=minimized: SDL_MinimizeWindow is ShowWindow(SW_MINIMIZE) (SDL 3.4
+// src/video/windows/SDL_windowswindow.c, WIN_MinimizeWindow), which "activates the next top-level window in the Z
+// order" (Microsoft Learn, "ShowWindow"). Instead: SetWindowPlacement with SW_SHOWMINNOACTIVE ("displays the window
+// as a minimized window ... the window is not activated") and WPF_SETMINPOSITION (Microsoft Learn, "WINDOWPLACEMENT")
+// with the minimized position at (-32000, -32000), off the screen, where the minimized window with a taskbar button
+// was measured before (tests of issue 30). SDL sees the minimization from the window messages, as before. Returns
+// false if not done (the caller then uses SDL_MinimizeWindow).
+bool minimize_without_activation(SDL_Window* window) {
+#ifdef _WIN32
+  const auto hwnd = static_cast<HWND>(
+      SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+  WINDOWPLACEMENT wp{};
+  wp.length = sizeof(wp);
+  if (hwnd == nullptr || !GetWindowPlacement(hwnd, &wp)) {
+    return false;
+  }
+  wp.flags = WPF_SETMINPOSITION;
+  wp.showCmd = SW_SHOWMINNOACTIVE;
+  wp.ptMinPosition.x = -32000;
+  wp.ptMinPosition.y = -32000;
+  if (!SetWindowPlacement(hwnd, &wp)) {
+    return false;
+  }
+  RECT r{};
+  GetWindowRect(hwnd, &r);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window minimized without activation, at (%ld, %ld)%s",
+                    static_cast<long>(r.left), static_cast<long>(r.top), IsIconic(hwnd) ? "" : " (not minimized!)");
+  return true;
+#else
+  (void)window;
+  return false;
+#endif
 }
 
 // Event watch (SDL_AddEventWatch), only during aurora_initialize: runs on the thread that shows the window.
@@ -163,7 +197,6 @@ bool host_init(const HostConfig& config) {
   }
   const bool noFocus = gcrt_no_focus();
   if (noFocus) {
-    g_keepFocusable = config.windowMode == 2;
     SDL_AddEventWatch(keep_behind_on_shown, nullptr);
   }
   // Graphics backend (gcrt_game_config.h): --backend, else GCRT_BACKEND, else the settings file on a player's launch
@@ -240,7 +273,9 @@ bool host_init(const HostConfig& config) {
     }
   }
   if (config.windowMode == 2 && info.window != nullptr) {
-    SDL_MinimizeWindow(info.window);
+    if (!(noFocus && minimize_without_activation(info.window))) {
+      SDL_MinimizeWindow(info.window);
+    }
   }
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
   gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_OPENED,

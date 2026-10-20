@@ -642,7 +642,8 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         fclose(guest_log);
     gcrt_cpu_free(g);
     /* 0 = normal stop (limit reached, window closed or stop requested by the launcher);
-     * 2 = abnormal stop (exception, unhandled access, game halted by OSPanic/PPCHalt...). */
-    return (reason == GCRT_STOP_BLOCK_LIMIT || reason == GCRT_STOP_TIME_LIMIT ||
-            reason == GCRT_STOP_REQUESTED) ? 0 : 2;
+     * 2 = abnormal stop (exception, unhandled access, game halted by OSPanic/PPCHalt...).
+     * gcrt_platform_before_exit: last threads raised to the highest priority (issue 35) and trace line. */
+    return gcrt_platform_before_exit((reason == GCRT_STOP_BLOCK_LIMIT || reason == GCRT_STOP_TIME_LIMIT ||
+                                      reason == GCRT_STOP_REQUESTED) ? 0 : 2);
 }
