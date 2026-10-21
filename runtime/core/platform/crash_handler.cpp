@@ -2337,6 +2337,8 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   }
   if (env_set(L"GCRT_CRASH_TEST_DUMP", buf, 32)) {
     g_test_dump = _wcsicmp(buf, L"false") == 0 ? 1 : _wcsicmp(buf, L"fault") == 0 ? 2 : 0;
+    if (g_test_dump != 0)
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: GCRT_CRASH_TEST_DUMP set, minidumps will fail on purpose");
   }
   g_suspend_begin = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   g_suspend_end = CreateEventW(nullptr, TRUE, FALSE, nullptr);
