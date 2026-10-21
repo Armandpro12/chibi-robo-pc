@@ -24,6 +24,7 @@ Project status and plans: **[ROADMAP.md](ROADMAP.md)**.
   - [Optional: profile-guided optimization](#optional-profile-guided-optimization)
   - [Crash reports](#crash-reports)
   - [Starting in a chosen stage (testing)](#starting-in-a-chosen-stage-testing)
+  - [Optional: reverse engineering with REA](#optional-reverse-engineering-with-rea)
 - [Repository layout](#repository-layout)
 - [Distribution policy](#distribution-policy)
 - [License](#license)
@@ -311,6 +312,35 @@ restored during the run, `--stage` has no effect and `tools/run.py` prints a war
 in `games/chibi-robo/game.toml`
 (`[stage]`). Without `--stage`, nothing changes.
 
+### Optional: reverse engineering with REA
+
+[REA](https://github.com/morluto/rea) (Reverse Engineer Anything, MIT) answers questions about a binary through
+Ghidra: overview, functions, pseudo-C, callers and references, from the command line or as an MCP server for an
+AI agent. It is not needed to build or play. REA reads 32-bit big-endian PowerPC ELF executables, on Linux or
+macOS only, and does not read GameCube DOL files, so:
+
+- `tools/dol2elf.py` converts the extracted DOL (plus the version's symbol map) into such an ELF, byte for byte,
+  under `generated/<game>/<ID>/rea/` (derived from your copy of the game: never committed). It checks the result
+  against the DOL, and with `llvm-readelf` when available;
+- `tools/rea.py` runs REA in a Linux container (Docker), with the Ghidra of `external/ghidra` mounted read-only.
+  The image is built from `tools/rea/Dockerfile` (REA 6.7.0, Node.js 22, JDK 21, all pinned). On a Linux or
+  macOS host with REA installed, `--native` runs it directly.
+
+Requirements: Docker, Ghidra with the GameCube loader (`tools/bootstrap.py`), an extracted game
+(`tools/extract.py`). Both versions work the same way:
+
+```
+py -3 tools/rea.py chibi-robo --version GGTE01 run -- analyze {elf} --provider ghidra --json
+py -3 tools/rea.py chibi-robo --version GGTP01 run -- function {elf} OSInit --provider ghidra --json
+py -3 tools/rea.py chibi-robo --version GGTE01 mcp-config      # registration for an MCP client (`rea mcp`)
+```
+
+`{elf}` stands for the ELF as REA sees it. The Ghidra language is the Gekko/Broadway one of the GameCube loader
+(`[rea]` in `games/chibi-robo/game.toml`), so paired-single instructions are decoded. The small-data registers
+(r13, r2) are read from the game's start-up code and given to Ghidra, so small globals show as addresses rather
+than `unaff_r13 + offset`. Limits: each command-line call imports the program again (about 2 minutes); the MCP
+server keeps it open between questions. Only the main executable is converted, not the REL modules.
+
 ## Repository layout
 
 - `runtime/core/` — generic GameCube runtime, reusable for other games: native replacements of the SDK
@@ -401,5 +431,7 @@ line.
 - [unplug](https://github.com/adierking/unplug) (MIT) — the stage numbers in `games/chibi-robo/game.toml`
   (`[stage.names]`), and the reference for the disc and stage formats.
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) (Apache-2.0) — binary analysis.
+- [REA](https://github.com/morluto/rea) (MIT) — optional reverse-engineering assistant over Ghidra
+  (`tools/rea.py`); not shipped, installed in a local container image.
 - [LLVM/clang](https://github.com/llvm/llvm-project) (Apache-2.0 with LLVM exception),
   [Ninja](https://github.com/ninja-build/ninja) (Apache-2.0).
