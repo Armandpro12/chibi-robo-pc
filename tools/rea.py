@@ -21,6 +21,8 @@ Hence:
   - by default REA runs in a Linux container (Docker), from the image of tools/rea/Dockerfile (versions
     pinned there), with the host's Ghidra mounted read-only at /opt/ghidra and the ELF folder mounted at
     /work. `--native` runs a `rea` found on the PATH instead (Linux/macOS hosts only);
+  - the container has no network (`--network none`), no capabilities (`--cap-drop ALL`), cannot gain
+    privileges (`--security-opt no-new-privileges`) and runs as a non-root user (container_user());
   - the Ghidra language comes from `[rea] language` in games/<game>/game.toml (passed as
     REA_GHIDRA_LANGUAGE_ID) when that language id is declared by an installed `.ldefs` file of the Ghidra
     installation; otherwise REA's default PowerPC language is used and a warning is printed.
@@ -62,6 +64,24 @@ IMAGE = f"gcrt-rea:{REA_VERSION}"
 DOCKERFILE_DIR = Path(__file__).resolve().parent / "rea"
 CONTAINER_GHIDRA = "/opt/ghidra"
 CONTAINER_WORK = "/work"
+CONTAINER_HOME = "/home/rea"                 # world-writable (sticky) home created by the Dockerfile
+IMAGE_USER = "1000:1000"                     # the base image's `ubuntu` user
+
+
+def container_user() -> str:
+    """Non-root user of the container. Linux/macOS: the host's uid:gid, so that files REA writes in the work
+    folder belong to the user (root on the host: the image's user instead, never root in the container).
+    Windows (Docker Desktop): the image's user; writes to the bind-mounted work folder are allowed for it."""
+    if hasattr(os, "getuid") and os.getuid() != 0:
+        return f"{os.getuid()}:{os.getgid()}"
+    return IMAGE_USER
+
+
+def isolation_options() -> list[str]:
+    """`docker run` options: no network (REA, Ghidra and the MCP server over stdio need none), no Linux
+    capabilities, no privilege gain through setuid binaries, non-root user with a writable HOME."""
+    return ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--user", container_user(), "-e", f"HOME={CONTAINER_HOME}"]
 
 
 def log(msg: str) -> None:
@@ -226,7 +246,7 @@ class Context:
         name = f"rea-pc-{self.slug}-{self.vid}-{os.getpid()}"
         subst = {"{elf}": f"{CONTAINER_WORK}/{elf.name}", "{work}": CONTAINER_WORK}
         args = [rea_arg_subst(x, subst) for x in rea_args]
-        cmd = [self.docker(), "run", "--rm", "--init", "--name", name]
+        cmd = [self.docker(), "run", "--rm", "--init", "--name", name, *isolation_options()]
         if interactive:
             cmd.append("-i")
         cmd += ["--mount", f"type=bind,source={ghidra.resolve()},target={CONTAINER_GHIDRA},readonly",
