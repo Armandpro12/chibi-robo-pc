@@ -137,7 +137,9 @@
  *                      heaplock (fault while the game thread holds the process heap lock), hangheap (the game thread
  *                      holds the heap lock for GCRT_CRASH_TEST_HANG seconds, then faults: hang report, then crash
  *                      report), hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
- *                      the watchdog). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap|fault: what a report does while the other
+ *                      the watchdog), hangchurn (as hang, while a helper thread keeps the heap lock, or with
+ *                      GCRT_CRASH_TEST_CHURN=loader the loader lock, busy: the hang report must neither block nor freeze
+ *                      the game). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap|fault: what a report does while the other
  *                      threads are suspended (sleep, a 1 MiB allocation on the process heap, or a fault of the
  *                      reporting thread): test of the suspension guard (GCRT_CRASH_SUSPEND_LIMIT, platform/gcrt_crash.h)
  *                      and of the cut report
