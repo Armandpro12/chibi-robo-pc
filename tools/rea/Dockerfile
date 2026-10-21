@@ -8,9 +8,12 @@
 # (the Java distribution is platform-independent and ships the Linux decompiler binaries), so the language
 # extensions installed on the host (e.g. a Gekko/Broadway language) are the ones REA sees.
 #
-# Everything is pinned: base image by digest (Eclipse Temurin JDK 21 on Ubuntu 24.04, Ghidra 12.1.4
+# Pinned: base image by digest (Eclipse Temurin JDK 21 on Ubuntu 24.04, Ghidra 12.1.4
 # requires a Java 21 JDK, GettingStarted.md "Minimum Requirements"), Node.js by version and SHA-256 (values from https://nodejs.org/dist/v22.23.3/SHASUMS256.txt;
 # rea-agents 6.7.0 declares "engines": {"node": "^22.19.0 || ^24.11.0 || >=26.0.0"}), REA by exact version.
+# Not pinned: the npm dependencies of rea-agents (transitive ones included) are resolved by `npm install -g`
+# at build time from the version ranges REA declares (no lockfile is used), and the apt packages come from
+# the Ubuntu archive of the day. So two builds can differ: the image is not bit-reproducible.
 # `procps` is required by REA on Linux (REA docs/installation.md).
 #
 # Build: py -3 tools/rea.py <game> image   (or: docker build -t gcrt-rea:6.7.0 tools/rea)

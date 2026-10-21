@@ -125,10 +125,19 @@ def read_map(path: Path) -> list[tuple[int, int, str]]:
     return out
 
 
+DOL_HEADER_SIZE = 0x100   # 18 offsets, 18 addresses, 18 sizes, BSS address/size, entry, padding (tockdom wiki)
+
+
 class DolImage:
     def __init__(self, data: bytes):
         self.data = data
-        self.info = gcinfo.describe_dol(data)
+        # A clean error instead of a struct.error traceback for a truncated or non-DOL file.
+        if len(data) < DOL_HEADER_SIZE:
+            sys.exit(f"not a DOL: {len(data)} bytes, shorter than the {DOL_HEADER_SIZE:#x}-byte DOL header")
+        try:
+            self.info = gcinfo.describe_dol(data)
+        except struct.error as e:
+            sys.exit(f"not a DOL: unreadable header ({e})")
         self.segs = self.info["segments"]
 
     def bytes_at(self, addr: int, size: int) -> bytes | None:
@@ -528,7 +537,10 @@ def readelf_check(path: Path, elf_bytes: bytes) -> tuple[str, list[str]]:
 
 def convert(dol_path: Path, out_path: Path, map_path: Path | None, sda: str = "auto",
             verify: bool = True) -> Plan:
-    dol = dol_path.read_bytes()
+    try:
+        dol = dol_path.read_bytes()
+    except OSError as e:
+        sys.exit(f"cannot read the DOL: {e}")
     p = plan(dol, map_path, sda)
     elf = write_elf(p)
     out_path.parent.mkdir(parents=True, exist_ok=True)

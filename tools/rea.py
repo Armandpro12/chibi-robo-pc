@@ -34,7 +34,13 @@ Each CLI call imports the program into Ghidra again (about 2 minutes for a 2 MiB
 its session open between questions.
 
 Paths: Ghidra from tools/toolchain.py (config/local.toml [paths] ghidra, then external/ghidra); docker from
-[paths] docker, then the PATH. Commands are run without a shell (argument lists), so paths with spaces work.
+[paths] docker, then the PATH. Commands are run without a shell (argument lists), so paths with spaces work;
+paths with a comma are refused in Docker mode (`docker run --mount` splits its value on commas).
+The Docker daemon is checked (`docker version`) before any image or container command.
+
+Warning: the ELF is derived from the game. `--out` can make this tool write it anywhere (and `--dol` convert
+any DOL); the default folder (generated/<game>/<ID>/rea) is ignored by Git. Never commit the ELF or anything
+in the work folder.
 """
 
 from __future__ import annotations
@@ -159,11 +165,29 @@ class Context:
             sys.exit("docker not found (install Docker, or use --native on a Linux/macOS host with REA installed)")
         return str(exe)
 
+    def ensure_daemon(self) -> None:
+        """Fails clearly when the Docker daemon is unreachable, instead of a confusing build or run error."""
+        if getattr(self, "_daemon_ok", False):
+            return
+        try:
+            r = subprocess.run([self.docker(), "version", "--format", "{{.Server.Version}}"],
+                               capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            sys.exit("Docker daemon not responding (docker version timed out): start Docker Desktop or the "
+                     "docker service, then retry")
+        if r.returncode != 0 or not r.stdout.strip():
+            detail = next((x.strip() for x in r.stderr.splitlines() if x.strip()), "no server version")
+            sys.exit(f"Docker daemon unreachable: {detail}\n"
+                     "Start Docker Desktop (Windows/macOS) or the docker service (Linux), then retry.")
+        self._daemon_ok = True
+
     def image_exists(self) -> bool:
+        self.ensure_daemon()
         return subprocess.run([self.docker(), "image", "inspect", self.image], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL).returncode == 0
 
     def build_image(self, rebuild: bool = False) -> None:
+        self.ensure_daemon()
         if not rebuild and self.image_exists():
             log(f"image {self.image}: present")
             return
@@ -181,8 +205,16 @@ class Context:
         rea = tc._which("rea") if self.native else None
         if self.native and not rea:
             sys.exit(f"--native: `rea` not found on the PATH (npm install -g rea-agents@{REA_VERSION})")
-        elf = self.ensure_elf()
         ghidra = self.ghidra()
+        if not self.native:
+            # `--mount` takes comma-separated key=value fields: a comma in a path would split it.
+            # Checked before the ELF is written and before Docker runs.
+            for what, path in (("Ghidra folder", ghidra.resolve()), ("work folder (--out)", self.work.resolve())):
+                if "," in str(path):
+                    sys.exit(f"{what} path contains a comma, which `docker run --mount` cannot take: {path}\n"
+                             "Use a path without a comma (move the folder, or pass another --out).")
+            self.ensure_daemon()
+        elf = self.ensure_elf()
         env = self.rea_env(ghidra)
         if self.native:
             subst = {"{elf}": str(elf.resolve()), "{work}": str(self.work.resolve())}
@@ -264,11 +296,14 @@ def main() -> int:
     ap.add_argument("--native", action="store_true", help="run a `rea` from the PATH (Linux/macOS), not Docker")
     ap.add_argument("--image", default=IMAGE, help=f"Docker image tag (default {IMAGE})")
     ap.add_argument("--env", action="append", metavar="NAME=VALUE", help="extra environment variable for REA")
-    ap.add_argument("--dol", help="DOL to convert (default: generated/<game>/<ID>/disc/<[code] dol>)")
+    ap.add_argument("--dol", help="DOL to convert (default: generated/<game>/<ID>/disc/<[code] dol>); the ELF "
+                    "derived from it goes to the --out folder")
     ap.add_argument("--map", help="symbol map (default: games/<game>/<[symbols] map_dir>/<ID>.map)")
     ap.add_argument("--no-map", action="store_true", help="no symbol map")
     ap.add_argument("--sda", help="small-data bases for dol2elf: auto, none or R13,R2 (default: [rea] sda)")
-    ap.add_argument("--out", help="ELF and REA work folder (default: generated/<game>/<ID>/rea)")
+    ap.add_argument("--out", help="ELF and REA work folder (default: generated/<game>/<ID>/rea, ignored by Git). "
+                    "The ELF is derived from the game: never commit it, keep --out outside the repository's "
+                    "tracked folders")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("elf", help="build the ELF")
     p.add_argument("--force", action="store_true")
