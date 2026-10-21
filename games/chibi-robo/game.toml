@@ -147,3 +147,15 @@ scenarios = ["title-boot", "intro-no-card"]
 user_org = "Chibi Robo PC"
 user_app = "Chibi Robo"
 exe_name = "chibi-robo.exe"
+
+[rea]
+# tools/rea.py (optional): REA (Reverse Engineer Anything, https://github.com/morluto/rea, MIT License) on the
+# main executable, converted to an ELF by tools/dol2elf.py (REA does not admit DOL files).
+# Ghidra language passed as REA_GHIDRA_LANGUAGE_ID when an installed .ldefs declares it: the Gekko/Broadway
+# language of the GameCubeLoader extension (Ghidra/Extensions/GameCubeLoader, installed by tools/bootstrap.py),
+# which decodes the paired-single instructions. Without it REA uses PowerPC:BE:32:default.
+language = "PowerPC:BE:32:Gekko_Broadway"
+# Small-data bases (r13, r2) given to Ghidra through the ELF: "auto" reads them from the boot code
+# (__init_registers: GGTE01 r13 = 0x80661EC0, r2 = 0x80663D40; GGTP01 r13 = 0x80668D40, r2 = 0x8066ABE0),
+# "none" leaves them unset, "0x...,0x..." gives r13,r2 by hand. See tools/dol2elf.py.
+sda = "auto"
