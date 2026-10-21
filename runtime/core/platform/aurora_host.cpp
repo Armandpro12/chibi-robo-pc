@@ -188,6 +188,9 @@ bool host_init(const HostConfig& config) {
   ac.vsync = false; // pacing comes from the emulated VI (real time), not from vertical sync
   ac.mem1Size = 0;  // guest memory belongs to the runtime
   ac.mem2Size = 0;
+  // No usable GPU: Aurora tries the CPU (software) adapters after every hardware one, before its null backend
+  // (Aurora patch 0009; allowCpuAdapter stays false so that a CPU adapter never comes before a GPU).
+  ac.cpuAdapterFallback = true;
   if (config.windowMode != 0) {
     // Automatic launches: the window does not steal the foreground (SDL 3.2+ hints, to be set
     // before Aurora shows the window in aurora_initialize).
@@ -217,7 +220,7 @@ bool host_init(const HostConfig& config) {
     requestedName = gcrt_backend_name(gcrt_game_config()->backend);
     requestSource = "game_config.ini";
   }
-  int requested = gcrt_backend_from_name(requestedName.c_str());
+  int requested = gcrt_backend_from_test_name(requestedName.c_str());
   // What the trace line below says was asked for: the name as given when it was refused.
   std::string requestDesc;
   if (requested < 0 || !gcrt_backend_available(requested)) {
@@ -235,6 +238,13 @@ bool host_init(const HostConfig& config) {
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
   gcrt_backend_set_active(info.backend);
+  if (info.cpuAdapter) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                      "graphics backend: no usable GPU, %s on a CPU (software) adapter: the game will be slow",
+                      gcrt_backend_label(info.backend));
+    std::fprintf(stderr, "gcrt: no usable GPU: using the software renderer (%s), the game will be slow\n",
+                 gcrt_backend_label(info.backend));
+  }
   {
     std::string offered;
     size_t count = 0;
@@ -254,13 +264,15 @@ bool host_init(const HostConfig& config) {
       std::fprintf(stderr, "gcrt: graphics backend %s could not be started; using %s instead\n",
                    gcrt_backend_label(requested), gcrt_backend_label(info.backend));
     } else if (requested == BACKEND_AUTO && (info.backend == BACKEND_D3D11 || info.backend == BACKEND_NULL)) {
-      // Last resort of Aurora's own order: neither Direct3D 12 nor Vulkan could be started. Not a player's choice, and
-      // the picture may be wrong (measured on one of the two supported versions with Direct3D 11).
+      // Last resort of Aurora's own order: neither Direct3D 12 nor Vulkan could be started. Not a player's choice:
+      // Direct3D 11 is less tested (title-boot identical on both versions since Aurora patch 0008, issue 38), and
+      // null draws nothing.
       gcrt_trace_printf(GCRT_TRACE_PLATFORM,
                         "graphics backend: neither Direct3D 12 nor Vulkan could be started, Aurora fell back to %s",
                         gcrt_backend_label(info.backend));
-      std::fprintf(stderr, "gcrt: neither Direct3D 12 nor Vulkan could be started; using %s, the picture may be wrong\n",
-                   gcrt_backend_label(info.backend));
+      std::fprintf(stderr, "gcrt: neither Direct3D 12 nor Vulkan could be started; using %s%s\n",
+                   gcrt_backend_label(info.backend),
+                   info.backend == BACKEND_D3D11 ? ", less tested than Direct3D 12 and Vulkan" : "");
     }
   }
   gcrt_diag_startup_beat();

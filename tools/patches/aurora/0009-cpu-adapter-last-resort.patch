@@ -1,0 +1,268 @@
+diff --git a/cmake/aurora_core.cmake b/cmake/aurora_core.cmake
+index bb88ba9..e4518fa 100644
+--- a/cmake/aurora_core.cmake
++++ b/cmake/aurora_core.cmake
+@@ -84,6 +84,7 @@ if (AURORA_ENABLE_GX)
+             lib/webgpu/gpu.cpp
+             lib/webgpu/gpu_cache.cpp
+             lib/webgpu/gpu_prof.cpp
++            lib/webgpu/software_adapter.cpp
+             lib/dawn/BackendBinding.cpp
+             lib/dawn/TracyPlatform.cpp
+     )
+@@ -106,6 +107,10 @@ if (AURORA_ENABLE_GX)
+     if (DAWN_ENABLE_D3D12)
+         target_compile_definitions(aurora_core PRIVATE DAWN_ENABLE_BACKEND_D3D12)
+     endif ()
++    if (WIN32 AND (DAWN_ENABLE_D3D11 OR DAWN_ENABLE_D3D12))
++        # lib/webgpu/software_adapter.cpp: DXGI adapter list (CreateDXGIFactory1)
++        target_link_libraries(aurora_core PRIVATE dxgi)
++    endif ()
+     if (DAWN_ENABLE_DESKTOP_GL OR DAWN_ENABLE_OPENGLES)
+         target_compile_definitions(aurora_core PRIVATE DAWN_ENABLE_BACKEND_OPENGL)
+         if (DAWN_ENABLE_DESKTOP_GL)
+diff --git a/include/aurora/aurora.h b/include/aurora/aurora.h
+index 92b734f..7200e72 100644
+--- a/include/aurora/aurora.h
++++ b/include/aurora/aurora.h
+@@ -116,6 +116,13 @@ typedef struct {
+    * This can be set to 0 to disable allocating this region.
+    */
+   uint32_t mem2Size;
++
++  /*
++   * With allowCpuAdapter false: when no hardware adapter can be used on any backend, try the CPU (software)
++   * adapters as a last resort (WARP on Direct3D 12), before the null backend. Rendering is then much slower.
++   * Test switch: the environment variable AURORA_TEST_SKIP_HARDWARE=1 ignores every hardware adapter.
++   */
++  bool cpuAdapterFallback;
+ } AuroraConfig;
+ 
+ typedef struct {
+@@ -124,6 +131,7 @@ typedef struct {
+   const char* cachePath;
+   SDL_Window* window;
+   AuroraWindowSize windowSize;
++  bool cpuAdapter; /* the adapter in use is a CPU (software) adapter */
+ } AuroraInfo;
+ 
+ AuroraInfo aurora_initialize(int argc, char* argv[], const AuroraConfig* config);
+diff --git a/lib/aurora.cpp b/lib/aurora.cpp
+index 28d2727..3fd9e04 100644
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -30,6 +30,7 @@
+ 
+ #include "system_info.hpp"
+ #include "tracy/Tracy.hpp"
++#include <vector>
+ 
+ namespace aurora {
+ AuroraConfig g_config;
+@@ -144,8 +145,13 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
+     }
+   }
+ 
++  // With cpuAdapterFallback, the null backend waits until the CPU adapters have been tried.
++  const bool cpuLastResort = config.cpuAdapterFallback && !config.allowCpuAdapter;
+   if (!windowCreated) {
+     for (const auto backendType : PreferredBackendOrder) {
++      if (cpuLastResort && backendType == BACKEND_NULL) {
++        continue;
++      }
+       selectedBackend = backendType;
+       if (!window::create_window(selectedBackend)) {
+         continue;
+@@ -159,6 +165,46 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
+     }
+   }
+ 
++  if (!windowCreated && cpuLastResort) {
++    // No hardware adapter could be used: a CPU (software) adapter, in the same order (the desired backend first).
++    Log.warn("No usable hardware graphics adapter: trying CPU (software) adapters, rendering will be slow");
++    std::vector<AuroraBackend> order;
++    if (config.desiredBackend != BACKEND_AUTO && config.desiredBackend != BACKEND_NULL) {
++      order.push_back(config.desiredBackend);
++    }
++    for (const auto backendType : PreferredBackendOrder) {
++      if (backendType != BACKEND_NULL && backendType != config.desiredBackend) {
++        order.push_back(backendType);
++      }
++    }
++    for (const auto backendType : order) {
++      selectedBackend = backendType;
++      if (!window::create_window(selectedBackend)) {
++        continue;
++      }
++      if (webgpu::initialize(selectedBackend, true, true)) {
++        windowCreated = true;
++        break;
++      }
++      window::destroy_window();
++    }
++    if (!windowCreated) {
++      for (const auto backendType : PreferredBackendOrder) {
++        if (backendType != BACKEND_NULL) {
++          continue;
++        }
++        selectedBackend = backendType;
++        if (window::create_window(selectedBackend)) {
++          if (webgpu::initialize(selectedBackend, false)) {
++            windowCreated = true;
++          } else {
++            window::destroy_window();
++          }
++        }
++      }
++    }
++  }
++
+   AURORA_ASSERT(windowCreated, "Error creating window: {}", SDL_GetError());
+ 
+   // Initialize SDL_Renderer for ImGui when we can't use a Dawn backend
+@@ -203,6 +249,10 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
+       .cachePath = g_config.cachePath,
+       .window = window::get_sdl_window(),
+       .windowSize = size,
++#ifdef AURORA_ENABLE_GX
++      .cpuAdapter = webgpu::g_backendType != wgpu::BackendType::Null &&
++                    webgpu::g_adapterInfo.adapterType == wgpu::AdapterType::CPU,
++#endif
+   };
+ }
+ 
+diff --git a/lib/webgpu/gpu.cpp b/lib/webgpu/gpu.cpp
+index 95162b2..8556e8f 100644
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -1,4 +1,5 @@
+ #include "gpu.hpp"
++#include "software_adapter.hpp"
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -797,7 +798,7 @@ static bool create_surface() {
+   return true;
+ }
+ 
+-bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
++bool initialize(AuroraBackend auroraBackend, bool allowCpu, bool cpuOnly) {
+   if (!g_instance) {
+     Log.info("Creating WebGPU instance");
+     const std::array requiredInstanceFeatures{
+@@ -841,9 +842,12 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+     return false;
+   }
+   {
++    const wgpu::ChainedStruct* softwareAdapter = cpuOnly ? software_adapter_option(backend) : nullptr;
+     const wgpu::RequestAdapterOptions options{
++        .nextInChain = softwareAdapter,
+         .featureLevel = wgpu::FeatureLevel::Compatibility,
+         .powerPreference = wgpu::PowerPreference::HighPerformance,
++        .forceFallbackAdapter = cpuOnly && softwareAdapter == nullptr,
+         .backendType = backend,
+         .compatibleSurface = g_surface,
+     };
+@@ -891,6 +895,21 @@ bool initialize(AuroraBackend auroraBackend, bool allowCpu) {
+   if (adapterName.IsUndefined()) {
+     adapterName = wgpu::StringView("Unknown");
+   }
++  if (const char* skip = std::getenv("AURORA_TEST_SKIP_HARDWARE"); skip != nullptr && skip[0] == '1' &&
++      g_adapterInfo.adapterType != wgpu::AdapterType::CPU && backend != wgpu::BackendType::Null) {
++    // Test switch: behave as on a computer without a usable GPU (exercises the CPU adapter fallback).
++    Log.warn("Ignoring hardware adapter {} (test switch AURORA_TEST_SKIP_HARDWARE=1)", adapterName);
++    g_adapterInfo = {};
++    g_adapter = {};
++    return false;
++  }
++  if (cpuOnly && g_adapterInfo.adapterType != wgpu::AdapterType::CPU) {
++    // The hardware adapters were tried first and failed: not again here.
++    Log.warn("Ignoring adapter {}: not a CPU adapter", adapterName);
++    g_adapterInfo = {};
++    g_adapter = {};
++    return false;
++  }
+   if (!allowCpu && g_adapterInfo.adapterType == wgpu::AdapterType::CPU && backend != wgpu::BackendType::Null) {
+     Log.warn("Ignoring CPU adapter: {}", adapterName);
+     g_adapterInfo = {};
+diff --git a/lib/webgpu/gpu.hpp b/lib/webgpu/gpu.hpp
+index c1d011f..5b8b08c 100644
+--- a/lib/webgpu/gpu.hpp
++++ b/lib/webgpu/gpu.hpp
+@@ -62,7 +62,8 @@ extern bool g_astcTexturesSupported;
+ extern bool g_textureComponentSwizzleSupported;
+ extern bool g_dualSourceBlendingSupported;
+ 
+-bool initialize(AuroraBackend backend, bool allowCpu);
++// cpuOnly: request the CPU (software) adapter of the backend (last resort, see AuroraConfig::cpuAdapterFallback).
++bool initialize(AuroraBackend backend, bool allowCpu, bool cpuOnly = false);
+ void shutdown();
+ void release_surface() noexcept;
+ bool refresh_surface(bool recreate = true);
+diff --git a/lib/webgpu/software_adapter.cpp b/lib/webgpu/software_adapter.cpp
+new file mode 100644
+index 0000000..c522865
+--- /dev/null
++++ b/lib/webgpu/software_adapter.cpp
+@@ -0,0 +1,46 @@
++#include "software_adapter.hpp"
++
++#if defined(_WIN32) && (defined(DAWN_ENABLE_BACKEND_D3D12) || defined(DAWN_ENABLE_BACKEND_D3D11))
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <dawn/native/D3DBackend.h>
++#include <dxgi1_4.h>
++#include <wrl/client.h>
++
++namespace aurora::webgpu {
++const wgpu::ChainedStruct* software_adapter_option(wgpu::BackendType backend) {
++  if (backend != wgpu::BackendType::D3D12 && backend != wgpu::BackendType::D3D11) {
++    return nullptr;
++  }
++  // Dawn's D3D backends do not return their software adapter for forceFallbackAdapter ("No supported adapters"),
++  // but they take an adapter LUID: the DXGI adapter flagged as software (WARP, "Microsoft Basic Render Driver").
++  static dawn::native::d3d::RequestAdapterOptionsLUID option;
++  static bool found = false;
++  static bool searched = false;
++  if (!searched) {
++    searched = true;
++    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
++    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
++      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
++      for (UINT i = 0; !found && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
++        DXGI_ADAPTER_DESC1 desc{};
++        if (SUCCEEDED(adapter->GetDesc1(&desc)) && (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
++          option.adapterLUID = desc.AdapterLuid;
++          found = true;
++        }
++        adapter.Reset();
++      }
++    }
++  }
++  return found ? &option : nullptr;
++}
++} // namespace aurora::webgpu
++#else
++namespace aurora::webgpu {
++const wgpu::ChainedStruct* software_adapter_option(wgpu::BackendType) { return nullptr; }
++} // namespace aurora::webgpu
++#endif
+diff --git a/lib/webgpu/software_adapter.hpp b/lib/webgpu/software_adapter.hpp
+new file mode 100644
+index 0000000..6038dc0
+--- /dev/null
++++ b/lib/webgpu/software_adapter.hpp
+@@ -0,0 +1,9 @@
++#pragma once
++
++#include <webgpu/webgpu_cpp.h>
++
++namespace aurora::webgpu {
++// Option to chain to the adapter request so that the backend returns its CPU (software) adapter, when the backend
++// needs one for that (Direct3D: the DXGI software adapter, by LUID); nullptr otherwise (forceFallbackAdapter alone).
++const wgpu::ChainedStruct* software_adapter_option(wgpu::BackendType backend);
++} // namespace aurora::webgpu

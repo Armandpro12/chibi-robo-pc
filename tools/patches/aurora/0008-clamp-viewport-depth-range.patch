@@ -1,0 +1,19 @@
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+index bc3314e..df530ae 100644
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -35,8 +35,12 @@ constexpr Module Log{"aurora::gfx"};
+ WGPURenderPipeline g_currentPipeline = nullptr;
+ 
+ void apply_viewport(const wgpu::RenderPassEncoder& pass, const Viewport& vp) {
+-  const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
+-  const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
++  // WebGPU (and Direct3D 11 behind it) only takes depth ranges within [0, 1]. A GX viewport can end slightly past
++  // them: the SDK's z scale of 2^24 gives a far plane of 16777216 / 16777215, so 1 - zfar is about -1.2e-7. Release
++  // builds skip Dawn's validation, and the Direct3D 11 backend then did not apply such a viewport at all (the draws
++  // covered the whole render target). The hardware clamps depth to its 24-bit range anyway.
++  const float minDepth = std::clamp(gx::UseReversedZ ? 1.f - vp.zfar : vp.znear, 0.f, 1.f);
++  const float maxDepth = std::clamp(gx::UseReversedZ ? 1.f - vp.znear : vp.zfar, 0.f, 1.f);
+   pass.SetViewport(vp.left, vp.top, vp.width, vp.height, minDepth, maxDepth);
+ }
+ 
