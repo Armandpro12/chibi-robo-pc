@@ -104,6 +104,12 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 5. **Milestone 11**: the player installer (clean-Windows test, review, then GitHub release).
 6. Phase review, then validation by the project owner.
 
+### Optional tooling (outside the milestones)
+
+- **Reverse engineering with REA** (`tools/rea.py`, `tools/dol2elf.py`): REA over Ghidra on the main executable of
+  both versions, from the command line or as an MCP server, in a container with no network that runs as a non-root
+  user. Not needed to build or play; see the README, "Optional: reverse engineering with REA".
+
 ## Stage 2 — Full decompilation ⬜
 
 Rewrite every function of the game (DOL and 16 REL modules) as readable C++ with meaningful names, verified

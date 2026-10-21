@@ -18,9 +18,10 @@ Hence:
   - `elf` converts the DOL into such an ELF with the version's symbol map: tools/dol2elf.py, output
     `generated/<game>/<ID>/rea/<ID>.elf` (derived from the game: ignored by Git). Rebuilt automatically when
     the DOL, the map or dol2elf.py is newer;
-  - by default REA runs in a Linux container (Docker), from the image of tools/rea/Dockerfile (versions
-    pinned there), with the host's Ghidra mounted read-only at /opt/ghidra and the ELF folder mounted at
-    /work. `--native` runs a `rea` found on the PATH instead (Linux/macOS hosts only);
+  - by default REA runs in a Linux container (Docker), from the image of tools/rea/Dockerfile (base image,
+    Node.js and REA pinned there; REA's transitive npm dependencies and the build stage's apt packages are
+    not), with the host's Ghidra mounted read-only at /opt/ghidra and the ELF folder mounted at /work.
+    `--native` runs a `rea` found on the PATH instead (Linux/macOS hosts only);
   - the image is built only by the `image` command (it downloads software: see IMAGE_DOWNLOADS); `run` and
     `mcp` stop with a message when it is missing, or when it was built from another version of the
     Dockerfile (label DOCKERFILE_LABEL = the Dockerfile's SHA-256);

@@ -27,8 +27,10 @@ as `unaff_r13 + off`. Ghidra's PowerPC ELF loader (Ghidra 12.1.4, Processors/Pow
 PowerPC_ElfRelocationContext.getSDABase/getSDA2Base) sets r13/r2 as register context over every executable
 block, but only while it applies an R_PPC_EMB_SDA21 relocation, and it takes the base from a `_SDA_BASE_` /
 `_SDA2_BASE_` symbol when one exists. A symbol alone has no effect. So with `--sda`, this tool:
-  - finds r13 and r2 in the boot code (`auto`: the entry function and the functions it calls directly,
-    `lis rN,hi` then `ori`/`addi rN,rN,lo`), or takes them from the command line;
+  - finds r13 and r2 in the boot code, or takes them from the command line. `auto` scans from the entry
+    point, then the first 32 functions it calls with `bl`, each scan stopping at the first `blr` or after
+    512 instructions (so the entry scan may run past the entry function), for `lis rN,hi` then
+    `ori`/`addi rN,rN,lo`. On the SDK's crt0, __start calls __init_registers, which sets both;
   - names `.sdata` / `.sdata2` the DOL data sections reached through r13 / r2, and adds absolute
     `_SDA_BASE_` / `_SDA2_BASE_` symbols;
   - adds one R_PPC_EMB_SDA21 relocation per register, on an existing instruction that already addresses

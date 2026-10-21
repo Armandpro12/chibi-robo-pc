@@ -323,13 +323,17 @@ macOS only, and does not read GameCube DOL files, so:
   under `generated/<game>/<ID>/rea/` (derived from your copy of the game: never committed). It checks the result
   against the DOL, and with `llvm-readelf` when available;
 - `tools/rea.py` runs REA in a Linux container (Docker), with the Ghidra of `external/ghidra` mounted read-only.
-  The image is built from `tools/rea/Dockerfile` (REA 6.7.0, Node.js 22, JDK 21, all pinned). On a Linux or
-  macOS host with REA installed, `--native` runs it directly.
+  The container has no network, no Linux capabilities and runs as a non-root user. The image is built from
+  `tools/rea/Dockerfile` (REA 6.7.0, Node.js 22, JDK 21): the base image, Node.js and REA are pinned; REA's
+  transitive npm dependencies and the build stage's apt packages are not, and npm install scripts are not run.
+  On a Linux or macOS host with REA installed, `--native` runs it directly.
 
 Requirements: Docker, Ghidra with the GameCube loader (`tools/bootstrap.py`), an extracted game
-(`tools/extract.py`). Both versions work the same way:
+(`tools/extract.py`). Build the image once (it downloads the base image, Node.js, REA and its npm
+dependencies; `run` and `mcp` never build it themselves). Both versions work the same way:
 
 ```
+py -3 tools/rea.py chibi-robo image
 py -3 tools/rea.py chibi-robo --version GGTE01 run -- analyze {elf} --provider ghidra --json
 py -3 tools/rea.py chibi-robo --version GGTP01 run -- function {elf} OSInit --provider ghidra --json
 py -3 tools/rea.py chibi-robo --version GGTE01 mcp-config      # registration for an MCP client (`rea mcp`)
@@ -337,9 +341,9 @@ py -3 tools/rea.py chibi-robo --version GGTE01 mcp-config      # registration fo
 
 `{elf}` stands for the ELF as REA sees it. The Ghidra language is the Gekko/Broadway one of the GameCube loader
 (`[rea]` in `games/chibi-robo/game.toml`), so paired-single instructions are decoded. The small-data registers
-(r13, r2) are read from the game's start-up code and given to Ghidra, so small globals show as addresses rather
-than `unaff_r13 + offset`. Limits: each command-line call imports the program again (about 2 minutes); the MCP
-server keeps it open between questions. Only the main executable is converted, not the REL modules.
+(r13, r2) are scanned from the entry point and its first calls and given to Ghidra, so small globals show as
+addresses rather than `unaff_r13 + offset`. Limits: each command-line call imports the program again (about
+2 minutes); the MCP server keeps it open between questions. Only the main executable is converted, not the REL modules.
 
 ## Repository layout
 
