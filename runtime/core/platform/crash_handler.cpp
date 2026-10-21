@@ -1502,16 +1502,17 @@ bool open_report_file(const wchar_t* prefix, const SYSTEMTIME& st) {
 
 // Minidump writer (issue 36). MiniDumpWriteDump on the live process, called inside it, suspends every other thread of
 // the process for the whole dump (the suspension guard included) and then needs the process heap and the loader lock
-// itself: a thread it suspended while holding one of them blocks it, and the whole process, for ever (probe
-// tests/j8/f3/psssusp: 6 of 7 dumps blocked in RtlAllocateHeap with a thread holding the heap lock, 5 of 5 in
-// LoadLibraryExW with a thread loading libraries; Microsoft Learn, MiniDumpWriteDump, Remarks: loader deadlock).
+// itself: a thread it suspended while holding one of them blocks it, and the whole process, for ever (a standalone
+// probe: 6 of 7 dumps blocked in RtlAllocateHeap with a thread holding the heap lock, 5 of 5 in LoadLibraryExW with a
+// thread loading libraries; Microsoft Learn, MiniDumpWriteDump, Remarks: loader deadlock).
 // The dump is written from a snapshot of the process instead: PssCaptureSnapshot with a virtual-address clone, then
 // MiniDumpWriteDump on the snapshot handle, which the minidump callback identifies (IsProcessSnapshotCallback answered
 // S_FALSE; Microsoft Learn, "Generate Dump File from a Process Snapshot"). dbgcore then reads the clone and suspends
 // nothing in the running process: a thread holding a lock goes on and releases it (same probe: 15 of 15 written, the
-// other threads never suspended during the dump). The capture pauses the process while the clone is made (a few
-// tens of ms measured) [hypothesis: the clone is taken with the threads suspended by the kernel] and uses no process
-// heap (PSS_CREATE_USE_VM_ALLOCATIONS). Handle names are not captured: a name query may wait on a file handle with
+// other threads never suspended during the dump; test GCRT_CRASH_TEST=hangchurn: no blocked hang report). The capture
+// takes 0.2 to 0.4 s in the game (15 to 70 ms in the probe), and the process seems paused meanwhile [hypothesis: in
+// the probe a busy thread made no progress for as long as the capture took] and it uses no process heap
+// (PSS_CREATE_USE_VM_ALLOCATIONS). Handle names are not captured: a name query may wait on a file handle with
 // a synchronous I/O in progress [hypothesis], and the reports never use them.
 constexpr DWORD kPssCaptureFlags =
     PSS_CAPTURE_VA_CLONE | PSS_CAPTURE_HANDLES | PSS_CAPTURE_HANDLE_BASIC_INFORMATION |

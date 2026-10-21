@@ -15,7 +15,8 @@
  *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game is not killed: every
  *                                    other thread is suspended while their state is copied (at most
  *                                    GCRT_CRASH_SUSPEND_LIMIT, default 5 s), and the process is paused while the
- *                                    snapshot of the minidump is taken (tens of ms), never while the dump is written;
+ *                                    snapshot of the minidump is taken (a fraction of a second), never while the dump
+ *                                    is written;
  *                                    a start-up hang report is text only (no .dmp), see below;
  *   crash-signatures.txt             one line per crash (signature, date): recurrence detection.
  * Text report: cause, exception, faulting address (module + offset), recurrence ("same signature as the crash of
