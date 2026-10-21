@@ -108,6 +108,15 @@ def find_java() -> Path | None:
     )
 
 
+def find_ghidra_root() -> Path | None:
+    """Ghidra installation folder (the one holding `support/` and `Ghidra/`)."""
+    configured = _configured("ghidra")
+    return _first_existing(
+        configured if configured and (configured / "Ghidra").is_dir() else None,
+        EXTERNAL / "ghidra" if (EXTERNAL / "ghidra" / "Ghidra").is_dir() else None,
+    )
+
+
 def find_ghidra_headless() -> Path | None:
     script = "analyzeHeadless.bat" if IS_WINDOWS else "analyzeHeadless"
     configured = _configured("ghidra")
@@ -115,6 +124,20 @@ def find_ghidra_headless() -> Path | None:
         configured / "support" / script if configured else None,
         EXTERNAL / "ghidra" / "support" / script,
     )
+
+
+def find_readelf() -> Path | None:
+    """An ELF reader for independent checks: llvm-readelf (external/llvm) or GNU readelf."""
+    return _first_existing(
+        _configured("readelf"),
+        EXTERNAL / "llvm" / "bin" / f"llvm-readelf{EXE}",
+        _which("llvm-readelf"),
+        _which("readelf"),
+    )
+
+
+def find_docker() -> Path | None:
+    return _first_existing(_configured("docker"), _which("docker"))
 
 
 def find_dolrecomp() -> Path | None:
