@@ -26,7 +26,8 @@
 # non-root user (the host's uid:gid on Linux/macOS, uid 1000 = the base image's `ubuntu` user on Windows), with
 # HOME=/home/rea (world-writable, sticky) so that any uid has a writable home.
 #
-# Build: py -3 tools/rea.py <game> image   (or: docker build -t gcrt-rea:6.7.0 tools/rea)
+# Build: py -3 tools/rea.py <game> image   (tools/rea.py labels the image with the SHA-256 of this file and asks
+# for `image --rebuild` when it changes)
 
 ARG BASE=eclipse-temurin:21-jdk-noble@sha256:107215954359f1ab0be058a247d7c64ed6e69c71c1682d471d38ef751ec8e964
 

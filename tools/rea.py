@@ -21,6 +21,9 @@ Hence:
   - by default REA runs in a Linux container (Docker), from the image of tools/rea/Dockerfile (versions
     pinned there), with the host's Ghidra mounted read-only at /opt/ghidra and the ELF folder mounted at
     /work. `--native` runs a `rea` found on the PATH instead (Linux/macOS hosts only);
+  - the image is built only by the `image` command (it downloads software: see IMAGE_DOWNLOADS); `run` and
+    `mcp` stop with a message when it is missing, or when it was built from another version of the
+    Dockerfile (label DOCKERFILE_LABEL = the Dockerfile's SHA-256);
   - the container has no network (`--network none`), no capabilities (`--cap-drop ALL`), cannot gain
     privileges (`--security-opt no-new-privileges`) and runs as a non-root user (container_user());
   - the Ghidra language comes from `[rea] language` in games/<game>/game.toml (passed as
@@ -48,6 +51,7 @@ in the work folder.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -66,6 +70,17 @@ CONTAINER_GHIDRA = "/opt/ghidra"
 CONTAINER_WORK = "/work"
 CONTAINER_HOME = "/home/rea"                 # world-writable (sticky) home created by the Dockerfile
 IMAGE_USER = "1000:1000"                     # the base image's `ubuntu` user
+DOCKERFILE_LABEL = "org.chibi-robo-pc.rea.dockerfile-sha256"
+IMAGE_DOWNLOADS = ("The image build downloads: the Eclipse Temurin JDK 21 base image (pinned by digest), the "
+                   "Ubuntu packages curl, ca-certificates and xz-utils (build stage only), Node.js "
+                   "(pinned, SHA-256 checked) and the npm package rea-agents with its npm dependencies "
+                   "(rea-agents pinned; its transitive dependencies are not). See tools/rea/Dockerfile.")
+
+
+def dockerfile_hash() -> str:
+    """SHA-256 of tools/rea/Dockerfile, line endings normalized (a Windows checkout may have CRLF)."""
+    data = (DOCKERFILE_DIR / "Dockerfile").read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
 
 
 def container_user() -> str:
@@ -201,18 +216,43 @@ class Context:
                      "Start Docker Desktop (Windows/macOS) or the docker service (Linux), then retry.")
         self._daemon_ok = True
 
-    def image_exists(self) -> bool:
+    def image_label(self) -> str | None:
+        """The Dockerfile hash label of the image, "" when the image has no such label, None when it is absent."""
         self.ensure_daemon()
-        return subprocess.run([self.docker(), "image", "inspect", self.image], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL).returncode == 0
+        r = subprocess.run([self.docker(), "image", "inspect", "--format",
+                            "{{ index .Config.Labels \"" + DOCKERFILE_LABEL + "\" }}", self.image],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        label = r.stdout.strip()
+        return "" if label == "<no value>" else label
+
+    def image_exists(self) -> bool:
+        return self.image_label() is not None
+
+    def require_image(self) -> None:
+        """`run` and `mcp` never build the image (a build downloads software): `image` must be run first."""
+        label = self.image_label()
+        build = (f"py -3 tools/rea.py {self.slug}" + (f" --image {self.image}" if self.image != IMAGE else "")
+                 + " image")
+        if label is None:
+            sys.exit(f"Docker image {self.image} not found. Build it first (once) with:\n  {build}\n"
+                     f"{IMAGE_DOWNLOADS}")
+        if label != dockerfile_hash():
+            msg = (f"Docker image {self.image} was not built from the current tools/rea/Dockerfile "
+                   f"(label {DOCKERFILE_LABEL}: {label or 'none'}). Rebuild it with:\n  {build} --rebuild")
+            if self.image == IMAGE:
+                sys.exit(msg)
+            log("warning: " + msg)
 
     def build_image(self, rebuild: bool = False) -> None:
         self.ensure_daemon()
         if not rebuild and self.image_exists():
-            log(f"image {self.image}: present")
+            log(f"image {self.image}: present (`image --rebuild` to build it again)")
             return
-        cmd = [self.docker(), "build", "--build-arg", f"REA_VERSION={REA_VERSION}", "-t", self.image,
-               str(DOCKERFILE_DIR)]
+        log(IMAGE_DOWNLOADS)
+        cmd = [self.docker(), "build", "--build-arg", f"REA_VERSION={REA_VERSION}",
+               "--label", f"{DOCKERFILE_LABEL}={dockerfile_hash()}", "-t", self.image, str(DOCKERFILE_DIR)]
         log("+ " + " ".join(cmd))
         # Build output to stderr, so that `mcp` keeps a clean stdout.
         if subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr).returncode != 0:
@@ -234,6 +274,7 @@ class Context:
                     sys.exit(f"{what} path contains a comma, which `docker run --mount` cannot take: {path}\n"
                              "Use a path without a comma (move the folder, or pass another --out).")
             self.ensure_daemon()
+            self.require_image()
         elf = self.ensure_elf()
         env = self.rea_env(ghidra)
         if self.native:
@@ -241,8 +282,6 @@ class Context:
             args = [rea_arg_subst(x, subst) for x in rea_args]
             full_env = dict(os.environ, GHIDRA_INSTALL_DIR=str(ghidra), **env)
             return [str(rea), *args], full_env, None
-        if not self.image_exists():
-            self.build_image()
         name = f"rea-pc-{self.slug}-{self.vid}-{os.getpid()}"
         subst = {"{elf}": f"{CONTAINER_WORK}/{elf.name}", "{work}": CONTAINER_WORK}
         args = [rea_arg_subst(x, subst) for x in rea_args]
