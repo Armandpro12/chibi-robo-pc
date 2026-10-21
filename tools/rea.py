@@ -143,6 +143,7 @@ class Context:
         self.map = None if a.no_map else (Path(a.map) if a.map else (default_map if default_map.exists() else None))
         self.rea_cfg = self.game.get("rea", {})
         self.sda = a.sda or self.rea_cfg.get("sda", "auto")
+        dol2elf.parse_sda(self.sda)          # a clean error now, before Docker or the ELF
 
     # --- ELF -------------------------------------------------------------------------------------------
     def ensure_elf(self, force: bool = False) -> Path:

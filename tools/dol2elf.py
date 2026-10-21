@@ -17,7 +17,9 @@ Layout of the output:
     sections sit in the middle of the BSS range): one NOBITS section `.bss`, `.bss.1`, ... and one PT_LOAD
     (file size 0) per remaining piece;
   - `.symtab`/`.strtab`: one global FUNC symbol (address, size) per line of the symbol map, if given.
-    Map format: "ADDRESS SIZE NAME" in hexadecimal, `#` comments (the format of tools/symbols.py).
+    Map format: "ADDRESS SIZE NAME" in hexadecimal, `#` comments (the format of tools/symbols.py). Malformed
+    lines are reported on stderr and skipped; an unreadable map, or one that gives no symbol inside the
+    DOL's text sections, is an error.
 
 Small-data bases (`--sda`, default `auto`): PowerPC EABI code reaches small globals through r13 (`.sdata`/
 `.sbss`) and r2 (`.sdata2`/`.sbss2`), set once at boot. Without their values, Ghidra shows these accesses
@@ -112,17 +114,57 @@ class Plan:
     skipped: list[str] = field(default_factory=list)
 
 
+U32 = 0xFFFFFFFF
+
+
 def read_map(path: Path) -> list[tuple[int, int, str]]:
-    out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    """Lines "ADDRESS SIZE NAME" (hexadecimal, 32-bit). Blank and `#` lines are ignored; any other line that
+    does not parse is malformed: counted and reported (first line numbers) on stderr, then skipped. A map
+    that cannot be read, or that yields no symbol at all, is an error."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        sys.exit(f"cannot read the symbol map {path}: {e}")
+    out, bad = [], []
+    for n, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
         parts = line.split()
-        if len(parts) < 3 or line.lstrip().startswith("#"):
-            continue
         try:
-            out.append((int(parts[0], 16), int(parts[1], 16), parts[2]))
+            if len(parts) < 3:
+                raise ValueError
+            addr, size = int(parts[0], 16), int(parts[1], 16)
+            if not (0 <= addr <= U32 and 0 <= size <= U32):
+                raise ValueError
         except ValueError:
+            bad.append(n)
             continue
+        out.append((addr, size, parts[2]))
+    if bad:
+        print(f"warning: symbol map {path.name}: {len(bad)} malformed line(s) skipped (line "
+              f"{', '.join(map(str, bad[:5]))}{', ...' if len(bad) > 5 else ''}); expected "
+              "\"ADDRESS SIZE NAME\", hexadecimal, 32-bit values", file=sys.stderr)
+    if not out:
+        sys.exit(f"symbol map {path}: no symbol read (expected lines \"ADDRESS SIZE NAME\"); "
+                 "fix the map, or convert without one")
     return out
+
+
+def parse_sda(sda: str) -> str | tuple[int, int]:
+    """`auto`, `none`, or "R13,R2" (two 32-bit values, decimal or 0x-prefixed): a clean error otherwise."""
+    if sda in ("auto", "none"):
+        return sda
+    parts = [v.strip() for v in sda.split(",")]
+    try:
+        if len(parts) != 2:
+            raise ValueError
+        r13, r2 = (int(v, 0) for v in parts)
+        if not (0 <= r13 <= U32 and 0 <= r2 <= U32):
+            raise ValueError
+    except ValueError:
+        sys.exit(f"--sda: expected auto, none or R13,R2 (two 32-bit values, e.g. 0x80661EC0,0x80663D40), "
+                 f"got {sda!r}")
+    return r13, r2
 
 
 DOL_HEADER_SIZE = 0x100   # 18 offsets, 18 addresses, 18 sizes, BSS address/size, entry, padding (tockdom wiki)
@@ -211,6 +253,8 @@ def sda_instruction(sections: list[Section], reg: int) -> tuple[int, int] | None
 
 
 def plan(dol: bytes, map_path: Path | None, sda: str) -> Plan:
+    sda_mode = parse_sda(sda)
+    funcs_in = read_map(map_path) if map_path else []
     img = DolImage(dol)
     info = img.info
     sections: list[Section] = []
@@ -241,15 +285,15 @@ def plan(dol: bytes, map_path: Path | None, sda: str) -> Plan:
 
     p = Plan(entry=info["entry"], sections=sections)
 
-    if sda != "none":
-        if sda == "auto":
+    if sda_mode != "none":
+        if sda_mode == "auto":
             p.sda = find_sda_bases(img)
             if set(p.sda) != {2, 13}:
                 print(f"warning: small-data bases not found in the boot code (found: "
                       f"{', '.join(f'r{r}={v:#x}' for r, v in sorted(p.sda.items())) or 'none'}); "
                       "use --sda R13,R2 to give them", file=sys.stderr)
         else:
-            r13, r2 = (int(v, 0) for v in sda.split(","))
+            r13, r2 = sda_mode
             p.sda = {13: r13, 2: r2}
         names = {13: ".sdata", 2: ".sdata2"}
         used: set[int] = set()
@@ -268,12 +312,14 @@ def plan(dol: bytes, map_path: Path | None, sda: str) -> Plan:
             addr, disp = ins
             p.relocs.append(Reloc(addr=addr, reg=reg, section=sec, addend=p.sda[reg] + disp - sec.addr))
 
-    if map_path:
-        for addr, size, name in read_map(map_path):
-            if any(s.exec_ and s.addr <= addr < s.addr + s.size for s in sections):
-                p.funcs.append((addr, size, name))
-            else:
-                p.skipped.append(name)
+    for addr, size, name in funcs_in:
+        if any(s.exec_ and s.addr <= addr < s.addr + s.size for s in sections):
+            p.funcs.append((addr, size, name))
+        else:
+            p.skipped.append(name)
+    if map_path and not p.funcs:
+        sys.exit(f"symbol map {map_path}: none of its {len(funcs_in)} symbols is inside a text section of "
+                 "this DOL (map of another version?)")
     return p
 
 
