@@ -508,8 +508,7 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         fprintf(stderr, "gcrt: DOL not found: %s\n", dol_path);
         char shown[2048];
         gcrt_path_display(dol_path, shown, sizeof(shown));
-        start_error("The game files were not found (DOL not found).\n\nThe game looked for:\n%s\n\n%s", shown,
-                    k_reinstall);
+        start_error("The game files are missing or damaged.\n\nThe game looked for:\n%s\n\n%s", shown, k_reinstall);
     }
     u64 fnv = gcrt_fnv1a64(dol_data, dol_size);
     if (info->dol_fnv64 && fnv != info->dol_fnv64) {
