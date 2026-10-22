@@ -8,7 +8,7 @@
  * variables a launcher sets (gcrt_launched_by_tool), and in addition neither GCRT_NO_FOCUS nor GCRT_SETUP_MENU_AUTO.
  * An automated run never gets a dialog: nobody would be there to close it.
  *
- * GCRT_FATAL_DIALOG overrides the choice:
+ * GCRT_FATAL_DIALOG overrides the choice (values without regard to case, e.g. "Show"):
  *   auto (default)  dialog on a player launch only;
  *   log             never a window: writes to stderr what the dialog would show (title, text, UTF-16 length), then
  *                   exits with code 1. For tests of the dialog path;
