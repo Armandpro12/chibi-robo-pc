@@ -3,7 +3,8 @@
 Usage: py -3 tools/installer/build.py <game> [--build ID=DIR ...] [--gcextract EXE] [--iscc ISCC.exe]
                                       [--vc-redist DIR] [--out build/installer] [--no-disc-arg]
 
-  <game>        folder in games/ (game.toml: name, slug, [[versions]], [diagnostics] user_org / user_app / exe_name)
+  <game>        folder in games/ (game.toml: name, slug, [[versions]], [diagnostics] user_org / user_app / exe_name,
+                [installer] icon (.ico file of the game folder))
   --build       game build folder of one version (contains bin/ and gcrt_build_info.c); repeatable. Default: every
                 version of game.toml whose build/<slug>-<ID>-Release/bin exists.
   --gcextract   gcextract.exe (default build/gcextract/gcextract.exe, built with tools/gcextract/build.py if absent)
@@ -110,6 +111,10 @@ def main() -> int:
     diag = cfg.get("diagnostics", {})
     exe_name = diag.get("exe_name", f"{slug}.exe")
     versions = {v["game_id"]: v for v in cfg["versions"]}
+    installer_cfg = cfg.get("installer", {})
+    icon = game_dir / str(installer_cfg.get("icon", f"{slug}.ico"))
+    if not icon.is_file() or icon.suffix.lower() != ".ico":
+        raise SystemExit(f"{icon}: missing ([installer] icon of {game_toml}; tools/make_icon.py makes it)")
 
     builds: dict[str, Path] = {}
     for item in args.build:
@@ -260,7 +265,7 @@ def main() -> int:
     defines = {
         "AppName": app_name, "GameName": game_name, "AppSlug": f"{slug}-pc",
         "AppId": str(uuid.uuid5(uuid.NAMESPACE_URL, f"gcrt-player-installer/{slug}")).upper(),
-        "AppVersion": app_version, "ExeCommits": exe_commits, "ExeName": exe_name, "PayloadDir": str(payload),
+        "AppVersion": app_version, "IconFile": str(icon), "ExeCommits": exe_commits, "ExeName": exe_name, "PayloadDir": str(payload),
         "OutputDir": str(out), "OutputName": output_name, "ImageSize": str(GAMECUBE_IMAGE_SIZE),
         "UserDataDir": user_dir, "SupportedList": supported, "PassDiscArg": "0" if args.no_disc_arg else "1",
     }

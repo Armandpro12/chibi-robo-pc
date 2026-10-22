@@ -75,6 +75,7 @@
 ; OutputDir      where the installer is written
 ; OutputName     installer file name without .exe
 ; ImageSize      size of a full disc image in bytes (disk space estimate for the copy)
+; IconFile       icon of the installer and of the uninstaller ([installer] icon of game.toml)
 ; UserDataDir    where the game keeps saves and settings, e.g. "{userappdata}\Org\App"
 ; SupportedList  human-readable list of the recognised versions
 ; PassDiscArg    1: shortcuts pass --disc "{app}\disc" (executables that do not find disc\ next to themselves)
@@ -116,6 +117,9 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
+; Icon of the installer and of the uninstaller. The game executable has the same icon in its resources: the shortcuts
+; and the Programs list show it.
+SetupIconFile={#IconFile}
 UninstallDisplayIcon={app}\{#ExeName}
 UninstallDisplayName={#AppName}
 UsePreviousAppDir=yes
@@ -154,8 +158,8 @@ Source: "{#PayloadDir}\common\*"; Excludes: "gcextract.exe,game.toml"; DestDir: 
 Source: "{code:TestFailSource}"; DestDir: "{app}"; DestName: "testfail-exe.bin"; ExternalSize: 1; Flags: external ignoreversion; Check: TestFailure('exe')
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; Check: not IsTestMode and not InstallFailed
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; Tasks: desktopicon; Check: not IsTestMode and not InstallFailed
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; IconFilename: "{app}\{#ExeName}"; Check: not IsTestMode and not InstallFailed
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; IconFilename: "{app}\{#ExeName}"; Tasks: desktopicon; Check: not IsTestMode and not InstallFailed
 
 [Run]
 Filename: "{app}\{#ExeName}"; Parameters: "{#DiscArg}"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent; Check: not InstallFailed

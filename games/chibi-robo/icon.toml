@@ -1,0 +1,67 @@
+# Icon of the PC executable and of the installer: an ORIGINAL geometric pictogram (a generic boxy robot on a rounded
+# tile), drawn by tools/make_icon.py from the shapes below. Nothing here comes from the game, its disc or any other
+# artwork. Rebuild the .ico after a change:
+#   py -3 tools/make_icon.py games/chibi-robo/icon.toml games/chibi-robo/chibi-robo.ico
+# Coordinates are fractions of the icon size (0 = left/top, 1 = right/bottom). Shapes are drawn in order.
+
+sizes = [16, 24, 32, 48, 64, 128, 256]
+
+# Tile.
+[[shape]]
+kind = "rect"
+box = [0.02, 0.02, 0.98, 0.98]
+radius = 0.2
+color = "#2B7A9B"
+
+# Antenna: stem, then ball.
+[[shape]]
+kind = "rect"
+box = [0.465, 0.17, 0.535, 0.36]
+radius = 0.0
+color = "#EEF2F4"
+
+[[shape]]
+kind = "circle"
+center = [0.5, 0.16]
+radius = 0.075
+color = "#FFC23D"
+
+# Ears.
+[[shape]]
+kind = "rect"
+box = [0.11, 0.48, 0.22, 0.66]
+radius = 0.035
+color = "#C9D3D9"
+
+[[shape]]
+kind = "rect"
+box = [0.78, 0.48, 0.89, 0.66]
+radius = 0.035
+color = "#C9D3D9"
+
+# Head.
+[[shape]]
+kind = "rect"
+box = [0.19, 0.34, 0.81, 0.84]
+radius = 0.11
+color = "#EEF2F4"
+
+# Eyes.
+[[shape]]
+kind = "circle"
+center = [0.375, 0.55]
+radius = 0.08
+color = "#22303A"
+
+[[shape]]
+kind = "circle"
+center = [0.625, 0.55]
+radius = 0.08
+color = "#22303A"
+
+# Mouth.
+[[shape]]
+kind = "rect"
+box = [0.39, 0.69, 0.61, 0.74]
+radius = 0.025
+color = "#22303A"

@@ -148,6 +148,10 @@ see "Credits and third-party software"). That was checked on the development mac
 is missing has not been tested, and a PC without a GPU only through a test switch (see "Graphics backend").
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
+The game icon (`games/chibi-robo/chibi-robo.ico`: executable, game window and taskbar, shortcuts, installer and
+uninstaller) is an original pictogram drawn by `tools/make_icon.py` from `games/chibi-robo/icon.toml`; nothing in it
+comes from the game. `py -3 tools/make_icon.py games/chibi-robo/icon.toml games/chibi-robo/chibi-robo.ico --check`
+checks that the committed icon matches its description.
 
 What the player does: run the installer, choose the installation folder (per user, no administrator rights; a path
 of ASCII characters only; a new or empty folder, or an earlier installation of this installer: a folder that holds
