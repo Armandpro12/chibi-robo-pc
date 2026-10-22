@@ -24,7 +24,8 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-// After windows.h (Toolhelp snapshot of the process's threads, raise_threads_once).
+// After windows.h (raise_threads_once: a Toolhelp thread snapshot lists the threads of the whole system, kept when
+// their owner is this process).
 #include <tlhelp32.h>
 #endif
 
