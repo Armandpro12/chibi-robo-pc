@@ -1,5 +1,11 @@
 #include <windows.h>
 
+// Icon of the executable (Explorer, shortcuts, Programs list) and of the game window: SDL 3 registers its window
+// class with the first RT_GROUP_ICON resource of the executable (SDL_RegisterApp in
+// src/video/windows/SDL_windowsevents.c, SDL 3.4.10), so the title bar and the taskbar show it too. Id 1, the only
+// and lowest icon id: the default icon. Original pictogram drawn by tools/make_icon.py from icon.toml (no game art).
+1 ICON "chibi-robo.ico"
+
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 1,0,0,0

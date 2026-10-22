@@ -38,7 +38,8 @@ Get the installer from the **[latest release](https://github.com/Armandpro12/chi
 Run it and pick **your own disc image** of the game (US or PAL; an uncompressed `.iso` or `.gcm` file: other formats
 must be converted first, for example with Dolphin). The installer checks the image, copies it into the installation
 folder (about 1.5 GB in total), and installs per user, without administrator rights. Uninstalling removes only what
-the installer put there; your saves and settings stay in your user folder.
+the installer put there; your saves and settings stay in your user folder, unless you tick "Also delete my saves and
+settings" in the uninstaller (unticked by default; it asks you to confirm).
 
 Needs a 64-bit Windows and a graphics driver with Direct3D 12 or Vulkan. It was developed and tested on one machine
 (Windows 11, NVIDIA graphics). **Not tested yet**: a clean Windows (including Windows Sandbox), Windows 10, other
@@ -137,7 +138,7 @@ recompiled game code, which is derived from the original game and is not license
 
 ```
 py -3 tools/gcextract/build.py
-py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc-setup-<commit>.exe
+py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc-setup-<version>.exe
 ```
 
 By default it takes `build/chibi-robo-<ID>-Release` for every version that is built (`--build ID=DIR` to choose).
@@ -148,6 +149,10 @@ see "Credits and third-party software"). That was checked on the development mac
 is missing has not been tested, and a PC without a GPU only through a test switch (see "Graphics backend").
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
+The game icon (`games/chibi-robo/chibi-robo.ico`: executable, game window and taskbar, shortcuts, installer and
+uninstaller) is an original pictogram drawn by `tools/make_icon.py` from `games/chibi-robo/icon.toml`; nothing in it
+comes from the game. `py -3 tools/make_icon.py games/chibi-robo/icon.toml games/chibi-robo/chibi-robo.ico --check`
+checks that the committed icon matches its description.
 
 What the player does: run the installer, choose the installation folder (per user, no administrator rights; a path
 of ASCII characters only; a new or empty folder, or an earlier installation of this installer: a folder that holds
@@ -156,8 +161,10 @@ GCZ, CISO, NKit), modified or unknown dumps are refused with an explanation. The
 installation folder as `game.iso`, `sys/` is extracted next to it, and a Start menu shortcut is created
 (desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache,
 then the installation folder if nothing else is left in it (also when it was an empty folder that existed before
-the installation; a folder that still holds other files is kept): saves and settings stay in
-`%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
+the installation; a folder that still holds other files is kept): settings stay in `%APPDATA%\Chibi Robo PC\Chibi Robo`
+and saves in `%USERPROFILE%\Saved Games\Chibi Robo PC\Chibi Robo`, unless the player ticks "Also delete my saves and
+settings" (unticked by default) and confirms it (default answer: No); a silent uninstall keeps them unless
+`/DELETEUSERDATA=1` is given. Running the installer again over an existing installation updates it (the
 image already installed is offered and not copied again). Free disk space is checked before anything is written:
 an update needs as much free space as a first installation (about 1.6 GB), because the previous disc image is kept
 until the new copy is in place. What happens when an installation does not complete:
@@ -421,7 +428,7 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Nine small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Eleven small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
@@ -443,7 +450,16 @@ line.
   the development machine and is not shown to fix issue 11 by itself; the eighth clamps the viewport depth range to
   [0, 1], as WebGPU requires: the SDK's depth scale puts the far plane a hair past 1, and Dawn's Direct3D 11 backend
   then ignored the whole viewport, which stretched the US picture (issue 38); the ninth tries a software (CPU) adapter,
-  such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture).
+  such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture);
+  the tenth keeps the copied descriptor of a deferred bind group (fifth patch) when Dawn returns no bind group, so
+  that the next use tries again instead of creating an empty one (it also passes the entries through Dawn's own
+  conversion operator instead of a size-checked cast), and brings the comments of the third and fifth patches up to
+  date with the seventh; the eleventh logs at debug level only, instead of as a warning, the staging
+  buffer maps that Dawn aborts because Aurora is shutting down ("Buffer mapping Aborted: Buffer was destroyed before
+  mapping was resolved", seen at the end of most runs); an abort while the game runs is still a warning.
+  `tools/build.py` finds how many of the patches a checkout already has by rebuilding each step of the series in a
+  temporary Git index (with its own temporary object directory, so the Aurora repository is not written to), since a
+  later patch may change lines that an earlier one added.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.

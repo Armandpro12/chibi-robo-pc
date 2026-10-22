@@ -16,7 +16,8 @@
  *   GCRT_FATAL_DIALOG  start-up errors (platform/gcrt_fatal.h): auto (default: message box on a player's launch only,
  *                      the rule of GCRT_SETUP_MENU=auto, and never with GCRT_NO_FOCUS or GCRT_SETUP_MENU_AUTO) | log
  *                      (no window; stderr says what the box would show; for tests) | off | show (always the box: a
- *                      human, or a test on a hidden desktop). The message always goes to stderr and the trace
+ *                      human, or a test on a hidden desktop). The message always goes to stderr and the trace.
+ *                      Values in any case ("Show")
  *   GCRT_LANGUAGE      SRAM language: 0 English (default), 1 German, 2 French, 3 Spanish,
  *                      4 Italian, 5 Dutch
  *   GCRT_DVD_RATE      simulated drive throughput in bytes/s (default 3145728; 0 = instantaneous)

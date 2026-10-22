@@ -1003,7 +1003,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   // knows sdl|off: translated here, in the process environment only.
   if (env("GCRT_AUDIO") == "wav") {
     set_process_env("GCRT_AUDIO", "off");
-    if (env("GCRT_AUDIO_WAV").empty()) {
+    if (env_path("GCRT_AUDIO_WAV").empty()) {
       set_process_env("GCRT_AUDIO_WAV", "audio.wav");
     }
   }

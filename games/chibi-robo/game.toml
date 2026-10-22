@@ -159,3 +159,11 @@ language = "PowerPC:BE:32:Gekko_Broadway"
 # first calls (found: GGTE01 r13 = 0x80661EC0, r2 = 0x80663D40; GGTP01 r13 = 0x80668D40, r2 = 0x8066ABE0),
 # "none" leaves them unset, "0x...,0x..." gives r13,r2 by hand. See tools/dol2elf.py.
 sda = "auto"
+
+[installer]
+# Version of the player installer (tools/installer/build.py): shown in the Programs list and in the installer's file
+# properties, and part of its file name (chibi-robo-pc-setup-<version>.exe).
+version = "0.1.1"
+# Icon of the installer and of the uninstaller (the executable embeds the same file: chibi-robo.rc). Original
+# pictogram drawn by tools/make_icon.py from icon.toml.
+icon = "chibi-robo.ico"
