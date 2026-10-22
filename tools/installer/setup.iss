@@ -17,8 +17,9 @@
 ; Uninstaller: the player's saves and settings (user folders, outside {app}) are kept unless the player ticks "Also
 ; delete my saves and settings" (unticked by default) AND confirms it. Silent uninstall: kept, unless
 ;   unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /DELETEUSERDATA=1        (an explicit request on the command line);
-; /TESTUSERDIR=<dir> (tests) puts the user folders under <dir> (<dir>\Roaming\..., <dir>\Saved Games\...) instead of
-; the player's real ones.
+; /TESTUSERDIR=<dir> (only with /TESTMODE=1, ignored otherwise, as /TESTFAIL) puts the user folders under <dir>
+; (<dir>\Roaming\..., <dir>\Saved Games\...) instead of the player's real ones: it must reach unins000.exe with
+; /TESTMODE=1 too.
 ; /TESTFAIL=<stage> (only with /TESTMODE=1, no effect otherwise) simulates a failure, to test that a failed (re)install
 ; keeps the previous installation, or leaves nothing behind in a new folder, and leaves no temporary file:
 ;   extract  the extraction (before anything is installed) is reported as failed after gcextract has run (exit code 7);
@@ -1291,8 +1292,16 @@ end;
 { ---------------------------------------------------------------------------------- uninstaller: player's files
   The player's folders, where the game keeps them (runtime/core/platform/gcrt_user_dir.h): settings and crash reports
   in <userappdata>\<UserSubDir> (SDL_GetPrefPath), saves in <usersavedgames>\<UserSubDir> (SDL_GetUserFolder with
-  SDL_FOLDER_SAVEDGAMES; without a Saved Games folder the game uses <settings folder>\saves). With /TESTUSERDIR=<dir>
-  (tests), the same sub-folders under <dir>\Roaming and <dir>\Saved Games instead: the real ones are not touched. }
+  SDL_FOLDER_SAVEDGAMES; without a Saved Games folder the game uses <settings folder>\saves). With /TESTMODE=1
+  /TESTUSERDIR=<dir> (tests), the same sub-folders under <dir>\Roaming and <dir>\Saved Games instead: the real ones
+  are not touched. /TESTUSERDIR without /TESTMODE=1 is ignored, so that no command line can redirect the deletion
+  of a normal uninstall.
+
+  DelTree (used below and by RemovePath) and reparse points (junctions, symbolic links). Inno Setup help, "Pascal
+  Scripting: DelTree" (https://jrsoftware.org/ishelp/topic_isxfunc_deltree.htm), Remarks: "This function will remove
+  directories that are reparse points" but "it will not recursively delete files/directories inside them". So a
+  junction or link met in the tree is removed itself and its target is left alone: no extra protection is needed.
+  The page does not name junctions or symbolic links apart from "reparse points". }
 var
   DeleteUserData: Boolean;  { the player asked for the saves and settings to be deleted too, and confirmed it }
 
@@ -1300,7 +1309,9 @@ function UserFolder(Saves: Boolean): String;
 var
   Test: String;
 begin
-  Test := ExpandConstant('{param:TESTUSERDIR|}');
+  Test := '';
+  if IsTestMode then
+    Test := ExpandConstant('{param:TESTUSERDIR|}');
   if (Test <> '') and Saves then
     Result := AddBackslash(Test) + 'Saved Games\{#UserSubDir}'
   else if Test <> '' then
