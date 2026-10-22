@@ -1,0 +1,45 @@
+diff --git a/lib/gfx/frame.cpp b/lib/gfx/frame.cpp
+index e005a60..5246174 100644
+--- a/lib/gfx/frame.cpp
++++ b/lib/gfx/frame.cpp
+@@ -49,6 +49,10 @@ enum class BufferMapState {
+ 
+ std::array<wgpu::Buffer, StagingBufferCount> g_stagingBuffers;
+ std::array<std::atomic<BufferMapState>, StagingBufferCount> g_mappingStates;
++// Set by shutdown(): from then on the staging buffers (and the device) are released on purpose, and Dawn aborts a map
++// still pending on one of them ("Buffer was destroyed before mapping was resolved"). Such an abort is expected and only
++// logged at debug level; an abort while the device runs is still a warning.
++std::atomic_bool g_releasingStagingBuffers{false};
+ uint32_t g_frameIndex = UINT32_MAX;
+ 
+ std::array<FramePacket, FrameSlotCount> g_framePackets;
+@@ -224,7 +228,11 @@ void map_staging_buffer(size_t slot, bool releaseSlotOnCompletion = false) {
+       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
+       [slot, releaseSlotOnCompletion](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+         if (status == wgpu::MapAsyncStatus::CallbackCancelled || status == wgpu::MapAsyncStatus::Aborted) {
+-          Log.warn("Buffer mapping {}: {}", magic_enum::enum_name(status), message);
++          if (g_releasingStagingBuffers.load(std::memory_order_acquire)) {
++            Log.debug("Buffer mapping {} at shutdown: {}", magic_enum::enum_name(status), message);
++          } else {
++            Log.warn("Buffer mapping {}: {}", magic_enum::enum_name(status), message);
++          }
+           g_mappingStates[slot].store(BufferMapState::Unmapped, std::memory_order_release);
+           if (releaseSlotOnCompletion) {
+             g_stagingSlots.release(slot);
+@@ -426,6 +434,7 @@ void initialize() {
+                "Shared Index Buffer");
+   createBuffer(g_resources.storageBuffer, wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst, StorageBufferSize,
+                "Shared Storage Buffer");
++  g_releasingStagingBuffers.store(false, std::memory_order_release);
+   for (size_t i = 0; i < g_stagingBuffers.size(); ++i) {
+     const auto label = fmt::format("Staging Buffer {}", i);
+     createBuffer(g_stagingBuffers[i], wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc, StagingBufferSize,
+@@ -527,6 +536,8 @@ void initialize() {
+ }
+ 
+ void shutdown() {
++  // Kept set after this function: the device itself is released later (webgpu::shutdown), which also aborts maps.
++  g_releasingStagingBuffers.store(true, std::memory_order_release);
+   render_worker::synchronize();
+   render_worker::shutdown();
+   g_processEventsQueued.store(false, std::memory_order_release);

@@ -427,7 +427,7 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Ten small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Eleven small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
@@ -452,7 +452,9 @@ line.
   such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture);
   the tenth keeps the copied descriptor of a deferred bind group (fifth patch) when Dawn returns no bind group, so
   that the next use tries again instead of creating an empty one, and brings the comments of the third and fifth
-  patches up to date with the seventh.
+  patches up to date with the seventh; the eleventh logs at debug level only, instead of as a warning, the staging
+  buffer maps that Dawn aborts because Aurora is shutting down ("Buffer mapping Aborted: Buffer was destroyed before
+  mapping was resolved", seen at the end of most runs); an abort while the game runs is still a warning.
   `tools/build.py` finds how many of the patches a checkout already has by rebuilding each step of the series in a
   temporary Git index, since a later patch may change lines that an earlier one added.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
