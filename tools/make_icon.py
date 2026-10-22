@@ -3,10 +3,14 @@
 Usage:
   py -3 tools/make_icon.py <design.toml> <out.ico>           write the icon
   py -3 tools/make_icon.py <design.toml> <out.ico> --check   exit 1 if <out.ico> differs from a fresh rendering
+                                                             (same bytes, or same decoded pixels, see below)
   py -3 tools/make_icon.py <design.toml> <out.ico> --png DIR also write one PNG per size into DIR (to look at it)
 
 Generic: the design (shapes and colours) comes from the game folder, e.g. games/<game>/icon.toml. The renderer is
-pure Python (no third-party module), so the output is deterministic: the same design always gives the same bytes.
+pure Python (no third-party module), so the output is deterministic: the same design always gives the same bytes
+with the same zlib build. The 256 x 256 PNG is compressed by zlib, whose output may differ between builds (same
+pixels, other bytes): --check therefore accepts a file whose bytes differ if every image decodes (PNG inflated and
+unfiltered, DIB read with its AND mask) to the same pixels, and the same sizes, as a fresh rendering.
 
 Design file:
   sizes = [16, 24, 32, 48, 64, 128, 256]     # square sizes, in pixels; 256 is stored as PNG, the others as BMP
@@ -153,6 +157,121 @@ def build_ico(design: dict) -> tuple[bytes, dict[int, list]]:
     return head + entries + b"".join(images), rendered
 
 
+def decode_png(data: bytes) -> tuple[int, int, list[tuple[int, int, int, int]]]:
+    """Pixels of an 8-bit RGBA, non-interlaced PNG (PNG specification, W3C, 2003: filter types 0 to 4)."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    pos, idat, ihdr = 8, bytearray(), None
+    while pos + 8 <= len(data):
+        length, tag = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if len(body) != length:
+            raise ValueError("truncated PNG chunk")
+        if tag == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif tag == b"IDAT":
+            idat += body
+        elif tag == b"IEND":
+            break
+        pos += 12 + length
+    if ihdr is None or ihdr[2:] != (8, 6, 0, 0, 0):
+        raise ValueError(f"unsupported PNG header {ihdr}")
+    w, h = ihdr[0], ihdr[1]
+    raw = zlib.decompress(bytes(idat))
+    stride = w * 4
+    if len(raw) != h * (stride + 1):
+        raise ValueError("PNG data has the wrong length")
+    prev = bytearray(stride)
+    pixels = []
+    for j in range(h):
+        ft = raw[j * (stride + 1)]
+        line = bytearray(raw[j * (stride + 1) + 1:(j + 1) * (stride + 1)])
+        for i in range(stride):
+            a = line[i - 4] if i >= 4 else 0
+            b = prev[i]
+            c = prev[i - 4] if i >= 4 else 0
+            if ft == 1:
+                line[i] = (line[i] + a) & 255
+            elif ft == 2:
+                line[i] = (line[i] + b) & 255
+            elif ft == 3:
+                line[i] = (line[i] + (a + b) // 2) & 255
+            elif ft == 4:
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                pred = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+                line[i] = (line[i] + pred) & 255
+            elif ft != 0:
+                raise ValueError(f"bad PNG filter type {ft}")
+        pixels += [tuple(line[i:i + 4]) for i in range(0, stride, 4)]
+        prev = line
+    return w, h, pixels
+
+
+def decode_dib(data: bytes) -> tuple[int, list[tuple[int, int, int, int]]]:
+    """Pixels of an icon DIB written by bmp_bytes (32-bit BGRA bottom-up + 1-bit AND mask, height doubled). The AND
+    mask must agree with the alpha channel (set where alpha is 0), as the encoder writes it."""
+    hdr, w, h2, planes, bpp, comp = struct.unpack("<IiiHHI", data[:20])
+    size = w
+    if hdr != 40 or h2 != 2 * w or planes != 1 or bpp != 32 or comp != 0:
+        raise ValueError(f"unsupported DIB header {(hdr, w, h2, planes, bpp, comp)}")
+    xor_len = size * size * 4
+    mask_stride = ((size + 31) // 32) * 4
+    if len(data) != 40 + xor_len + mask_stride * size:
+        raise ValueError("DIB data has the wrong length")
+    rows = []
+    for j in range(size):  # stored bottom-up
+        row = data[40 + j * size * 4:40 + (j + 1) * size * 4]
+        rows.append([(row[i + 2], row[i + 1], row[i], row[i + 3]) for i in range(0, size * 4, 4)])
+    rows.reverse()
+    mask = data[40 + xor_len:]
+    for j in range(size):
+        mrow = mask[(size - 1 - j) * mask_stride:(size - j) * mask_stride]
+        for i in range(size):
+            if bool(mrow[i // 8] & (0x80 >> (i % 8))) != (rows[j][i][3] == 0):
+                raise ValueError(f"AND mask disagrees with alpha at ({i}, {j})")
+    return size, [p for row in rows for p in row]
+
+
+def decode_ico(data: bytes) -> dict[int, list[tuple[int, int, int, int]]]:
+    """Per size, the RGBA pixels (top row first) of every image of an .ico file, in file order."""
+    reserved, kind, count = struct.unpack("<HHH", data[:6])
+    if reserved != 0 or kind != 1:
+        raise ValueError("not an .ico file")
+    out = {}
+    for n in range(count):
+        dim, _h, _c, _r, _planes, _bpp, length, offset = struct.unpack("<BBBBHHII", data[6 + 16 * n:22 + 16 * n])
+        img = data[offset:offset + length]
+        if len(img) != length:
+            raise ValueError("truncated image")
+        if img[:8] == b"\x89PNG\r\n\x1a\n":
+            size, h, px = decode_png(img)
+            if size != h:
+                raise ValueError("non-square PNG")
+        else:
+            size, px = decode_dib(img)
+        if size in out or (dim or 256) != size:
+            raise ValueError(f"image {n}: size {size} repeated or different from its directory entry ({dim})")
+        out[size] = px
+    return out
+
+
+def compare_ico(existing: bytes, rendered: dict[int, list]) -> str | None:
+    """None if every image of `existing` has the pixels of the fresh rendering (and the same sizes, same order);
+    else a message saying what differs."""
+    try:
+        have = decode_ico(existing)
+    except (ValueError, struct.error, zlib.error) as e:
+        return f"cannot decode the existing file: {e}"
+    if list(have) != list(rendered):
+        return f"sizes {list(have)} instead of {list(rendered)}"
+    for size, px in rendered.items():
+        if have[size] != px:
+            n = next(i for i, (a, b) in enumerate(zip(have[size], px)) if a != b)
+            return (f"size {size}: pixel ({n % size}, {n // size}) is {have[size][n]}, a fresh rendering gives "
+                    f"{px[n]}")
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("design")
@@ -169,9 +288,19 @@ def main() -> int:
         for s, px in rendered.items():
             (d / f"{out.stem}-{s}.png").write_bytes(png_bytes(px, s))
     if args.check:
-        same = out.is_file() and out.read_bytes() == data
-        print(f"{out}: {'up to date' if same else 'DIFFERS from the design (run without --check)'}")
-        return 0 if same else 1
+        if not out.is_file():
+            print(f"{out}: DIFFERS from the design (missing; run without --check)")
+            return 1
+        existing = out.read_bytes()
+        if existing == data:
+            print(f"{out}: up to date")
+            return 0
+        problem = compare_ico(existing, rendered)
+        if problem is None:
+            print(f"{out}: up to date (same pixels; the bytes differ, probably another zlib build)")
+            return 0
+        print(f"{out}: DIFFERS from the design (run without --check): {problem}")
+        return 1
     out.write_bytes(data)
     print(f"{out}: {len(data)} bytes, sizes {', '.join(str(s) for s in rendered)}")
     return 0
