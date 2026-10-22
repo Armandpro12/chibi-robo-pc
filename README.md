@@ -41,9 +41,9 @@ the installer put there; your saves and settings stay in your user folder.
 
 Needs a 64-bit Windows and a graphics driver with Direct3D 12 or Vulkan. It was developed and tested on one machine
 (Windows 11, NVIDIA graphics). **Not tested yet**: a clean Windows (including Windows Sandbox), Windows 10, other
-graphics hardware, a PC without a GPU (no software-renderer fallback yet), and playing through the whole game. See the
-release notes for the known problems, and please report any crash with its `crash-*.txt` report only, after reading
-it (see "Crash reports" below: the other files of a report hold game memory and must not be shared).
+graphics hardware, a PC without a GPU (the software renderer fallback was only checked by hiding the GPU with a
+test switch), and playing through the whole game. See the release notes for the known problems, and please
+report any crash with its `crash-*.txt` report only, after reading it (see "Crash reports" below: the other files of a report hold game memory and must not be shared).
 
 ## Current state (October 2026)
 
@@ -144,7 +144,7 @@ One installer holds both versions; the player's image selects which executable i
 the shortcuts start the game without `--disc` (executables that find `disc/` next to themselves). Neither
 `dxcompiler.dll` nor `dxil.dll` is needed or shipped: Direct3D 12 compiles its shaders with FXC (Aurora patch 0006,
 see "Credits and third-party software"). That was checked on the development machine only; a PC where `d3dcompiler_47.dll`
-is missing, or without a GPU, has not been tested.
+is missing has not been tested, and a PC without a GPU only through a test switch (see "Graphics backend").
 `tools/installer/notices.py` regenerates `THIRD_PARTY_LICENSES.txt` from the real licence files (the build checks
 that the committed copy is up to date).
 
@@ -235,12 +235,19 @@ the next time the game starts. `--backend d3d12|vulkan|auto` or `GCRT_BACKEND` c
 Auto uses Direct3D 12, with Vulkan as the alternative. Direct3D 12 compiles its shaders with FXC
 (`d3dcompiler_47.dll`, taken from the Windows system folder; present on the development machine, not established on
 every Windows), so no extra DLL is needed next to the executable. If the backend asked for cannot start, Aurora goes on
-by itself with its own order (Direct3D 12, Vulkan, then its last resorts Direct3D 11 and null), and the game says so on
-stderr and in the trace. A PC without a usable GPU (software adapter only) has not been tested. An unknown name falls
+by itself with its own order (Direct3D 12, Vulkan, then its last resort Direct3D 11), and the game says so on stderr and
+in the trace. When no GPU can be used at all, a software (CPU) adapter is tried as a last resort, before null (no
+picture): WARP, Microsoft's software renderer for Direct3D 12 (Aurora patch 0009). The game then says "no usable GPU:
+using the software renderer ..., the game will be slow" on stderr and in the trace. This was checked on the development
+machine with the test switch `AURORA_TEST_SKIP_HARDWARE=1` (hardware adapters ignored): both versions reach the title
+screen with the same sound, and the title-boot captures differ by 1 or 2 colour levels on under 1 % of the pixels (plus
+two isolated pixels on one PAL capture); a real PC without a GPU has not been tested. An unknown name falls
 back to Auto with a message. On the development machine, Direct3D 12 and Vulkan give the same picture up to tiny
 rounding differences: the title-boot captures of both versions are identical, and in some 3D scenes Vulkan differs by
-1 or 2 colour levels on at most 0.05 % of the pixels. Direct3D 11 is not offered: Dawn starts it, but its picture
-differs on the US version. The trace line `graphics backend: ... in use, requested ...` and crash reports name the
+1 or 2 colour levels on at most 0.05 % of the pixels. Direct3D 11 is not offered: it is only Aurora's last resort and
+is less tested (its US picture was stretched until Aurora patch 0008; the title-boot captures are now identical on both
+versions). For tests only, `GCRT_TEST_ALL_BACKENDS=1` lets `--backend` and `GCRT_BACKEND` name `d3d11` or `null`. The
+trace line `graphics backend: ... in use, requested ...` and crash reports name the
 backend actually used.
 
 ### Controls
@@ -375,7 +382,7 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Seven small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Nine small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
@@ -394,7 +401,10 @@ line.
   that Dawn serializes the calls made on its device by the game thread, Aurora's GX FIFO processor and its render
   worker with an internal lock (command encoding excepted; a warning is logged if the adapter does not offer the
   feature; `AURORA_IMPLICIT_DEVICE_SYNC=0` leaves it off, for comparisons). It was measured to cost nothing visible on
-  the development machine and is not shown to fix issue 11 by itself.
+  the development machine and is not shown to fix issue 11 by itself; the eighth clamps the viewport depth range to
+  [0, 1], as WebGPU requires: the SDK's depth scale puts the far plane a hair past 1, and Dawn's Direct3D 11 backend
+  then ignored the whole viewport, which stretched the US picture (issue 38); the ninth tries a software (CPU) adapter,
+  such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture).
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
