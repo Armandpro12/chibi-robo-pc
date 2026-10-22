@@ -208,11 +208,17 @@ void gcrt_trace_printf(GcrtTraceCat cat, const char* fmt, ...) {
      the in-memory tail; a message too long for the buffer is written directly and only its beginning is kept. */
   char line[1536];
   int len = 0;
+  double seconds = 0.0;
+  bool have_clock = false;
   spin_lock(&s_clock_lock);
   if (s_clock != NULL) {
-    len = snprintf(line, sizeof(line), "[%9.3f] ", s_clock(s_clock_user));
+    seconds = s_clock(s_clock_user);
+    have_clock = true;
   }
   spin_unlock(&s_clock_lock);
+  if (have_clock) {
+    len = snprintf(line, sizeof(line), "[%9.3f] ", seconds);
+  }
   len += snprintf(line + len, sizeof(line) - (size_t)len, "[%s] ", s_names[cat]);
   va_list ap;
   va_start(ap, fmt);

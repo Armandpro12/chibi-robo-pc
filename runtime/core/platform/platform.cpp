@@ -1296,6 +1296,9 @@ static void prepare_exit_boost() {
   g_boostStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (g_boostGo != nullptr && g_boostStop != nullptr) {
     g_boostThread = CreateThread(nullptr, 64 * 1024, raise_threads_loop, nullptr, 0, nullptr);
+    if (g_boostThread != nullptr) {
+      SetThreadDescription(g_boostThread, L"gcrt exit priority helper");
+    }
   }
   if (g_boostThread == nullptr) {
     gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: no thread priority helper (error %lu)",
