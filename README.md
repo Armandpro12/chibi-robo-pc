@@ -26,7 +26,7 @@
 
 - ✅ Boots and runs in real time with music and sound effects, on both versions: title screen, new game, the prologue
   up to and including the birthday party, the first save, and leaving the Chibi-House.
-- ✅ Scripted game sessions without a crash: 50 game minutes from a late save (US), 30 minutes from a new game (PAL).
+- ✅ Scripted game sessions without a crash: 50 game minutes from a late save (US), 30 minutes from a new-game save started in the backyard (PAL).
 - ✅ Native saves like a PC game (`.gci` files, Dolphin-compatible) and configurable keyboard and gamepads.
 - ✅ A Windows installer: pick your disc image, per-user install without administrator rights, uninstall keeps your saves.
 - ✅ Images and sound compared with Dolphin on the key scenes; the known differences are listed in the ROADMAP.

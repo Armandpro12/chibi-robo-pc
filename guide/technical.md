@@ -25,7 +25,7 @@ itself: [RESEARCH.md](../games/chibi-robo/RESEARCH.md).
 - Runs on Windows, in real time with music and sound effects, from boot through the title screen, a new game, the
   prologue up to and including the birthday party, the first save, and the first exit from the Chibi-House with the
   first module load and unload, on both versions. Scripted game sessions run without a crash: 50 game minutes from a
-  late save (US) and 30 minutes from a new game (PAL).
+  late save (US) and 30 minutes from a new-game save started in the backyard (PAL).
 - Native saves, like a PC game: a memory card is always inserted; save files (`.gci`, Dolphin-compatible) live in
   `%USERPROFILE%\Saved Games\Chibi Robo PC\Chibi Robo\`.
 - Configurable keyboard and gamepads (`controls.ini`, see [settings-and-controls.md](settings-and-controls.md#controls)).
