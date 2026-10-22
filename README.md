@@ -38,7 +38,8 @@ Get the installer from the **[latest release](https://github.com/Armandpro12/chi
 Run it and pick **your own disc image** of the game (US or PAL; an uncompressed `.iso` or `.gcm` file: other formats
 must be converted first, for example with Dolphin). The installer checks the image, copies it into the installation
 folder (about 1.5 GB in total), and installs per user, without administrator rights. Uninstalling removes only what
-the installer put there; your saves and settings stay in your user folder.
+the installer put there; your saves and settings stay in your user folder, unless you tick "Also delete my saves and
+settings" in the uninstaller (unticked by default; it asks you to confirm).
 
 Needs a 64-bit Windows and a graphics driver with Direct3D 12 or Vulkan. It was developed and tested on one machine
 (Windows 11, NVIDIA graphics). **Not tested yet**: a clean Windows (including Windows Sandbox), Windows 10, other
@@ -160,8 +161,10 @@ GCZ, CISO, NKit), modified or unknown dumps are refused with an explanation. The
 installation folder as `game.iso`, `sys/` is extracted next to it, and a Start menu shortcut is created
 (desktop shortcut optional). Uninstalling removes only the files the installer put there and the game's GPU cache,
 then the installation folder if nothing else is left in it (also when it was an empty folder that existed before
-the installation; a folder that still holds other files is kept): saves and settings stay in
-`%APPDATA%\Chibi Robo PC\Chibi Robo`. Running the installer again over an existing installation updates it (the
+the installation; a folder that still holds other files is kept): settings stay in `%APPDATA%\Chibi Robo PC\Chibi Robo`
+and saves in `%USERPROFILE%\Saved Games\Chibi Robo PC\Chibi Robo`, unless the player ticks "Also delete my saves and
+settings" (unticked by default) and confirms it (default answer: No); a silent uninstall keeps them unless
+`/DELETEUSERDATA=1` is given. Running the installer again over an existing installation updates it (the
 image already installed is offered and not copied again). Free disk space is checked before anything is written:
 an update needs as much free space as a first installation (about 1.6 GB), because the previous disc image is kept
 until the new copy is in place. What happens when an installation does not complete:
