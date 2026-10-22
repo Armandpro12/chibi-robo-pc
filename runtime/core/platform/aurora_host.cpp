@@ -185,6 +185,12 @@ bool host_init(const HostConfig& config) {
   ac.logLevel = LOG_INFO;
   ac.windowWidth = config.width;
   ac.windowHeight = config.height;
+  // Window position left undefined: Aurora passes a negative position as SDL_WINDOWPOS_UNDEFINED (lib/window.cpp,
+  // create_window), which SDL 3.4 places centred on the usable area of the primary display (src/video/SDL_video.c,
+  // SDL_CreateWindowWithProperties). The zero-initialized AuroraConfig asked for (0, 0): the client area at the corner
+  // of the screen and the title bar above it, out of reach of the mouse (issue 44).
+  ac.windowPosX = -1;
+  ac.windowPosY = -1;
   ac.vsync = false; // pacing comes from the emulated VI (real time), not from vertical sync
   ac.mem1Size = 0;  // guest memory belongs to the runtime
   ac.mem2Size = 0;
@@ -317,7 +323,19 @@ bool host_init(const HostConfig& config) {
       }
       SDL_SetWindowFullscreen(info.window, fullscreen);
       if (!fullscreen) {
+        int oldWidth = 0;
+        int oldHeight = 0;
+        SDL_GetWindowSize(info.window, &oldWidth, &oldHeight);
         SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
+        if (oldWidth != gc->windowWidth || oldHeight != gc->windowHeight) {
+          // The window was centred for its first size (see windowPosX above): centred again for the saved size, on
+          // the display it is on now (the menu window may have been moved to another one), so that a larger window
+          // does not run off the bottom of the screen (issue 44). SDL_WINDOWPOS_CENTERED_DISPLAY: SDL 3.4
+          // include/SDL3/SDL_video.h; usable bounds of that display, src/video/SDL_video.c, SDL_SetWindowPosition.
+          const SDL_DisplayID display = SDL_GetDisplayForWindow(info.window);
+          SDL_SetWindowPosition(info.window, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+                                SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+        }
       }
     }
   }
