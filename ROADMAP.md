@@ -183,9 +183,9 @@ timing of the simulated disc.
   the 5 ms blocks; both sides insert a few very short runs of zero samples (at most 1.2 ms) at different moments.
   In PAL the picture scores 0.937 to 0.95 in SSIM with the same picture and geometry; the gap is probably resampling
   (Dolphin dumps it at 640x468 instead of 640x528).
-- **Video (basement, US).** Reached from a new game (scenario `basement-movie`): every frame of the silent movie is
-  shown, picture SSIM 0.98 to 1.0 against Dolphin. In Dolphin the movie repeats frames during its first ~23 s, and the
-  music playing over it is close to, not identical with, the native one. PAL and the second basement movie: not yet.
+- **Video (basement, US and PAL).** Reached from a new game (scenario `basement-movie`): every frame of the silent movie
+  is shown (PAL: 1150 frames in 46.0 s), picture SSIM 0.96 to 1.0 against Dolphin. In Dolphin the movie repeats frames
+  during its first ~23 s, and the music over it is close to, not identical with, the native one. Second movie: not yet.
 
 ## Known issues
 
