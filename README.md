@@ -291,8 +291,10 @@ folder is known. Only the 5 most recent reports are kept. A report has three fil
   contain game data and local paths. **Never publish them**; if a developer asks for them, send them privately.
 
 If the game loop stops progressing for 60 seconds (a freeze), a `hang-<date>-<time>-<pid>.txt` report is written in
-the same folder, followed by a `.dmp` if the game is still stopped by then. The game is not killed, but it is paused
-while the report copies the state of its threads (at most a few seconds) and while the `.dmp` is written.
+the same folder, followed by a `.dmp` if the game is still stopped by then. The game is not killed: it is paused
+while the report copies the state of its threads (at most a few seconds), and it may also be paused while a
+snapshot of the process is taken for the `.dmp` (a fraction of a second); the `.dmp` is then written from that
+snapshot without pausing the game.
 `GCRT_WATCHDOG=<seconds>` changes the delay (`0` turns off both watchdogs). The start-up (window, setup menu, game
 boot up to its first frame) is watched too, with `GCRT_WATCHDOG_STARTUP=<seconds>` (default: `GCRT_WATCHDOG`, at
 least 60; `0` turns it off); a start-up report is a `.txt` only, never a `.dmp`.

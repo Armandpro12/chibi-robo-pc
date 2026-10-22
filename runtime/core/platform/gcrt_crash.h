@@ -8,15 +8,16 @@
  *
  * Files written into the crash folder, never overwriting (a -2, -3... suffix if needed):
  *   crash-<date>-<pid>.txt           text report, written first and section by section (see notes below);
- *   crash-<date>-<pid>.dmp           minidump (MiniDumpWriteDump: threads and thread information, memory region list,
- *                                    indirectly referenced memory, unloaded modules, handles; comment stream = the
- *                                    whole native event ring);
+ *   crash-<date>-<pid>.dmp           minidump (MiniDumpWriteDump on a snapshot of the process, PssCaptureSnapshot:
+ *                                    threads and thread information, memory region list, indirectly referenced
+ *                                    memory, unloaded modules, handles; comment stream = the whole native event ring);
  *   crash-<date>-<pid>-guest-ram.bin guest main memory (MEM1 and the area of the REL modules), raw, big-endian;
- *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game is not killed, but every
+ *   hang-<date>-<pid>.txt / .dmp     hang report of the watchdog (no guest memory); the game is not killed: every
  *                                    other thread is suspended while their state is copied (at most
- *                                    GCRT_CRASH_SUSPEND_LIMIT, default 5 s) and, for a game-loop hang, again while the
- *                                    minidump is written, if it is; a start-up hang report is text only (no .dmp),
- *                                    see below;
+ *                                    GCRT_CRASH_SUSPEND_LIMIT, default 5 s), and the process is paused while the
+ *                                    snapshot of the minidump is taken (a fraction of a second), never while the dump
+ *                                    is written;
+ *                                    a start-up hang report is text only (no .dmp), see below;
  *   crash-signatures.txt             one line per crash (signature, date): recurrence detection.
  * Text report: cause, exception, faulting address (module + offset), recurrence ("same signature as the crash of
  * <date>"), executable (name, SHA-1, PE time stamp, build commit), processor, microcode revision and firmware (read
@@ -46,9 +47,11 @@
  * both off);
  * GCRT_CRASH_SUSPEND_LIMIT=<seconds> the other threads may stay suspended while a report copies their state (default
  * 5, at least 1): past it, a guard thread resumes them and the report says it was interrupted.
- * A start-up hang report is text only: an in-process minidump suspends every other thread for the whole dump and can
- * block for ever on a lock one of them holds, so it would turn a slow start-up into a freeze. A game-loop hang report
- * writes a minidump last, only if the game loop is still stopped then; that step is not bounded (same risk).
+ * Minidumps are written from a snapshot of the process (PssCaptureSnapshot, Windows 8.1+): MiniDumpWriteDump on the
+ * live process, from inside it, suspends every other thread for the whole dump and can block for ever on a heap or
+ * loader lock one of them holds. Without a snapshot, a crash report falls back to the live process (it ends anyway)
+ * and a hang report has no minidump. A start-up hang report is text only. A game-loop hang report writes a minidump
+ * last, only if the game loop is still stopped then.
  * Windows only; elsewhere the functions do nothing.
  */
 #ifndef GCRT_CRASH_H

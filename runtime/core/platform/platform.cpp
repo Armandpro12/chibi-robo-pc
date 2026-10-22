@@ -627,6 +627,49 @@ void crash_test(GcrtPlatform* p) {
     HeapUnlock(GetProcessHeap());
     crash_fault("read");
   }
+  if (kind == "hangchurn") {
+    // The game thread stops for GCRT_CRASH_TEST_HANG seconds, as with "hang", while a helper thread keeps a process
+    // lock busy, as a busy renderer or driver thread would: GCRT_CRASH_TEST_CHURN=heap (default) holds the process heap
+    // lock about 96 % of the time (5 ms held, 0.2 ms free), =loader loads and unloads a system library in a loop
+    // (loader lock). A hang report must not block on a lock held by a thread that the report, or the minidump writer,
+    // suspended: the report must be complete and the game go on.
+    p->crashTestFrame = 0;
+    const double seconds = std::strtod(env("GCRT_CRASH_TEST_HANG", "15").c_str(), nullptr);
+    const bool loader = env("GCRT_CRASH_TEST_CHURN", "heap") == "loader";
+    volatile LONG stop = 0;
+    volatile LONG64 rounds = 0;
+    std::thread churn([&stop, &rounds, loader] {
+      SetThreadDescription(GetCurrentThread(), L"gcrt crash test churn");
+      const auto spin = [](double us) {
+        const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double, std::micro>(us);
+        while (std::chrono::steady_clock::now() < end) {
+          YieldProcessor();
+        }
+      };
+      while (InterlockedCompareExchange(&stop, 0, 0) == 0) {
+        if (loader) {
+          HMODULE m = LoadLibraryExW(L"winhttp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+          if (m != nullptr) {
+            FreeLibrary(m);
+          }
+        } else {
+          HeapLock(GetProcessHeap());
+          spin(5000.0);
+          HeapUnlock(GetProcessHeap());
+          spin(200.0);
+        }
+        InterlockedIncrement64(&rounds);
+      }
+    });
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: game thread stopped for %.0f s, %s churn thread started",
+                      seconds, loader ? "loader" : "heap");
+    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    InterlockedExchange(&stop, 1);
+    churn.join();
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "GCRT_CRASH_TEST: game thread resumed (%lld churn rounds)",
+                      static_cast<long long>(rounds));
+    return;
+  }
 #endif
   if (kind == "hang") {
     // The game thread stops for GCRT_CRASH_TEST_HANG seconds (default 15), then the game goes on: the watchdog must

@@ -192,7 +192,9 @@ timing of the simulated disc.
     fault is explained by its instruction. They also give the microcode and firmware versions, the graphics driver,
     the memory regions, the call stacks of every thread at the time of the fault, the last native events and log
     lines, and whether the same crash already happened on that computer; a watchdog writes a report when the game
-    freezes. A second report, from the same kind of machine, faulted at the same instruction: no software cause
+    freezes. Its minidump is written from a snapshot of the process, so no thread stays suspended while it is
+    written, which removes the lock deadlock found in tests (issue 36). A second report, from the same kind of
+    machine, faulted at the same instruction: no software cause
     was found, and the crashing build was our current code. Two tools help players and testers tell an unstable
     machine from a bug: `tools/collect_diagnostics.cmd` (read-only, anonymized: hardware error events, BIOS,
     microcode, drivers, overlays, recent crash reports; nothing is sent) and `tools/cpustress/` (runs the
