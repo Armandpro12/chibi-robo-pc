@@ -137,7 +137,7 @@ recompiled game code, which is derived from the original game and is not license
 
 ```
 py -3 tools/gcextract/build.py
-py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc-setup-<commit>.exe
+py -3 tools/installer/build.py chibi-robo     # -> build/installer/chibi-robo-pc-setup-<version>.exe
 ```
 
 By default it takes `build/chibi-robo-<ID>-Release` for every version that is built (`--build ID=DIR` to choose).

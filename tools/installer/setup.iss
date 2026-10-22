@@ -14,6 +14,11 @@
 ; The /IMAGE= value fills the "disc image" page; an image that is not recognised makes Setup exit before installing.
 ; /TESTMODE=1 (automated tests on a developer machine): no Programs-list entry (registry) and no shortcuts, so that
 ; nothing is written outside the installation folder; uninstall by running {app}\unins000.exe.
+; Uninstaller: the player's saves and settings (user folders, outside {app}) are kept unless the player ticks "Also
+; delete my saves and settings" (unticked by default) AND confirms it. Silent uninstall: kept, unless
+;   unins000.exe /VERYSILENT /SUPPRESSMSGBOXES /DELETEUSERDATA=1        (an explicit request on the command line);
+; /TESTUSERDIR=<dir> (tests) puts the user folders under <dir> (<dir>\Roaming\..., <dir>\Saved Games\...) instead of
+; the player's real ones.
 ; /TESTFAIL=<stage> (only with /TESTMODE=1, no effect otherwise) simulates a failure, to test that a failed (re)install
 ; keeps the previous installation, or leaves nothing behind in a new folder, and leaves no temporary file:
 ;   extract  the extraction (before anything is installed) is reported as failed after gcextract has run (exit code 7);
@@ -68,21 +73,27 @@
 ; GameName       name of the game, for messages
 ; AppSlug        ASCII short name (default folder, output file)
 ; AppId          stable GUID (derived from the slug by build.py): reinstalling updates the same install
-; AppVersion     installer version, e.g. "2026.10.19+e9c72deec287" (the commit of the game executable)
+; AppVersion     installer version, e.g. "0.1.1" ([installer] version of game.toml)
+; AppVersionQuad the same as four numbers, e.g. "0.1.1.0" (version resource of the installer)
+; ProductText    version and commit(s) of the game executable(s), e.g. "0.1.1+e9c72deec287" (version resource)
+; IconFile       icon of the installer and of the uninstaller ([installer] icon of game.toml)
 ; ExeCommits     commit(s) of the game executable(s), shown on the disc image page
 ; ExeName        file name of the game executable
 ; PayloadDir     folder assembled by build.py (common\, <game ID>\, versions.iss)
 ; OutputDir      where the installer is written
 ; OutputName     installer file name without .exe
 ; ImageSize      size of a full disc image in bytes (disk space estimate for the copy)
-; IconFile       icon of the installer and of the uninstaller ([installer] icon of game.toml)
-; UserDataDir    where the game keeps saves and settings, e.g. "{userappdata}\Org\App"
+; UserSubDir     the game's user sub-folder, e.g. "Org\App": settings in {userappdata}\<it>, saves in
+;                {usersavedgames}\<it> (runtime/core/platform/gcrt_user_dir.h)
 ; SupportedList  human-readable list of the recognised versions
 ; PassDiscArg    1: shortcuts pass --disc "{app}\disc" (executables that do not find disc\ next to themselves)
 ; payload.iss (written by build.py into PayloadDir) defines:
 ;   PayloadNames  "|"-terminated list of the payload files installed into {app} (relative names)
 ;   PayloadBytes  total size of the payload in bytes (free disk space check)
 #include PayloadDir + "\payload.iss"
+#if UserSubDir == ""
+  #error UserSubDir is empty: the uninstaller would delete whole user folders.
+#endif
 
 ; Quotes doubled: the value is used inside quoted [Icons]/[Run] parameters.
 #define DiscArg PassDiscArg == "1" ? '--disc ""{app}\disc""' : ""
@@ -100,8 +111,8 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppName} contributors
-VersionInfoVersion=1.0.0.0
-VersionInfoProductTextVersion={#AppVersion}
+VersionInfoVersion={#AppVersionQuad}
+VersionInfoProductTextVersion={#ProductText}
 DefaultDirName={autopf}\{#AppSlug}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -189,6 +200,8 @@ const
   { RefusalText code of an unexpected error (exception) while putting the image files in place; gcextract's own exit
     codes are 0 to 7. }
   UnexpectedError = 100;
+  { RefusalText code: the image read now is not the version accepted on the disc image page (GameId). }
+  ImageChanged = 101;
 
 var
   ImagePage: TInputFileWizardPage;
@@ -447,6 +460,9 @@ begin
     6: Result := 'The disc image is damaged (its file table points outside the image). Make a new dump of your disc.';
     7: Result := 'The game files could not be written (disk full, or folder not writable).';
     UnexpectedError: Result := 'An unexpected error stopped the installation.';
+    ImageChanged: Result := 'The disc image is not the one that was checked a moment ago (it is now ' + GcxMatch +
+         ', the one checked was ' + GameId + '). Check that the file was not replaced or modified while Setup was ' +
+         'running, then run Setup again: the image will be checked again.';
   else
     Result := 'The disc image could not be checked.';
   end;
@@ -630,6 +646,14 @@ begin
       if FileOrDirExists(Old) then
         Result := False;
     end;
+    { A fallback copy cut by an interruption (BackUpExisting): <name> itself was not touched yet. }
+    if FileExists(Names[I] + '.old.tmp') then begin
+      DeleteFile(Names[I] + '.old.tmp');
+      if FileExists(Names[I] + '.old.tmp') then
+        Log('Cannot delete ' + Names[I] + '.old.tmp, left by an interrupted install')
+      else
+        Log('Deleted ' + Names[I] + '.old.tmp, left by an interrupted install');
+    end;
   end;
   for I := 0 to GetArrayLength(New) - 1 do
     RemovePath(New[I]);
@@ -738,11 +762,15 @@ end;
 { BeforeInstall of every payload entry (called for each file of a wildcard entry): Inno Setup's rollback does not
   restore a file that it has overwritten, so the previous file, if any, becomes <name>.old first (renamed; copied if it
   cannot be renamed, Inno Setup then writing over the original). Put back by RestoreBackups when the installation does
-  not complete, deleted by RemoveBackups when it does. }
+  not complete, deleted by RemoveBackups when it does.
+  The copy is written as <name>.old.tmp and renamed to <name>.old only once complete: an interruption (power loss)
+  during the copy leaves a <name>.old.tmp, never a cut <name>.old that the next run would put back in place of the
+  intact <name> (CleanUpTemporaryFiles deletes a leftover <name>.old.tmp). }
 procedure BackUpExisting;
 var
   F: String;
   N: Integer;
+  Kept: Boolean;
 begin
   F := ExpandConstant(CurrentFileName);
   if not FileExists(F) then
@@ -750,11 +778,22 @@ begin
   { A stale <name>.old was already handled by CleanUpTemporaryFiles; one left now is not a previous version. }
   if FileExists(F + '.old') then
     DeleteFile(F + '.old');
-  if RenameFile(F, F + '.old') or CopyFile(F, F + '.old', True) then begin
+  if FileExists(F + '.old.tmp') then
+    DeleteFile(F + '.old.tmp');
+  Kept := RenameFile(F, F + '.old');
+  if Kept then
+    Log('Kept the previous ' + F + ' as .old')
+  else begin
+    Kept := CopyFile(F, F + '.old.tmp', True) and RenameFile(F + '.old.tmp', F + '.old');
+    if Kept then
+      Log('Kept the previous ' + F + ' as .old (copied: it could not be renamed)')
+    else
+      DeleteFile(F + '.old.tmp');
+  end;
+  if Kept then begin
     N := GetArrayLength(Backups);
     SetArrayLength(Backups, N + 1);
     Backups[N] := F;
-    Log('Kept the previous ' + F + ' as .old');
   end else begin
     BackupFailed := True;
     Log('Cannot keep the previous ' + F + ': it cannot be put back if the installation fails');
@@ -974,7 +1013,7 @@ begin
   end;
   if (Code = 0) and (GcxMatch <> GameId) then begin
     GcxError := 'the image is now ' + GcxMatch + ', expected ' + GameId;
-    Code := 6;
+    Code := ImageChanged;
   end;
   if (Code = 0) and TestFailure('prepare') then
     RaiseException('simulated unexpected error in PrepareToInstall (/TESTFAIL=prepare)');
@@ -983,6 +1022,13 @@ begin
     RemoveTemporaryFiles(App);
     Log('Extraction failed: ' + GcxError);
     Result := 'The game files could not be prepared. Nothing was changed. ' + RefusalText(Code);
+    { The usual way to get here: the image chosen is the copy inside the installation folder (offered on the disc
+      image page), an earlier run that was changing the version (region) there did not complete, and the clean-up
+      above has just put back the copy of the version installed before it. }
+    if (Code = ImageChanged) and Interrupted and not ImageNeedsCopy then
+      Result := Result + #13#10#13#10 + 'The image chosen is the copy inside the installation folder. An earlier run ' +
+        'of Setup in this folder did not complete; undoing it has just put back the copy that was installed before ' +
+        'it (' + GcxMatch + '). To install ' + GameId + ', choose your own disc image file.';
   end;
 end;
 
@@ -1003,7 +1049,7 @@ begin
     end;
     if (Code = 0) and (GcxMatch <> GameId) then begin
       GcxError := 'the copy is ' + GcxMatch + ', expected ' + GameId;
-      Code := 6;
+      Code := ImageChanged;
     end;
   end;
   if (Code = 0) and TestFailure('copy') then begin
@@ -1242,14 +1288,144 @@ begin
     Result := Result + NewLine + NewLine + MemoTasksInfo;
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+{ ---------------------------------------------------------------------------------- uninstaller: player's files
+  The player's folders, where the game keeps them (runtime/core/platform/gcrt_user_dir.h): settings and crash reports
+  in <userappdata>\<UserSubDir> (SDL_GetPrefPath), saves in <usersavedgames>\<UserSubDir> (SDL_GetUserFolder with
+  SDL_FOLDER_SAVEDGAMES; without a Saved Games folder the game uses <settings folder>\saves). With /TESTUSERDIR=<dir>
+  (tests), the same sub-folders under <dir>\Roaming and <dir>\Saved Games instead: the real ones are not touched. }
+var
+  DeleteUserData: Boolean;  { the player asked for the saves and settings to be deleted too, and confirmed it }
+
+function UserFolder(Saves: Boolean): String;
+var
+  Test: String;
 begin
-  if CurUninstallStep = usPostUninstall then begin
+  Test := ExpandConstant('{param:TESTUSERDIR|}');
+  if (Test <> '') and Saves then
+    Result := AddBackslash(Test) + 'Saved Games\{#UserSubDir}'
+  else if Test <> '' then
+    Result := AddBackslash(Test) + 'Roaming\{#UserSubDir}'
+  else if Saves then
+    Result := ExpandConstant('{usersavedgames}\{#UserSubDir}')
+  else
+    Result := ExpandConstant('{userappdata}\{#UserSubDir}');
+end;
+
+{ The player's folders that exist, one per line (indented), or ''. }
+function ExistingUserFolders: String;
+begin
+  Result := '';
+  if DirExists(UserFolder(True)) then
+    Result := Result + '    ' + UserFolder(True) + #13#10;
+  if DirExists(UserFolder(False)) then
+    Result := Result + '    ' + UserFolder(False) + #13#10;
+end;
+
+{ Interactive uninstall: a window with the box "Also delete my saves and settings", unticked; ticked, a second,
+  explicit confirmation whose default answer is No. Silent uninstall: only /DELETEUSERDATA=1 deletes them. }
+procedure AskDeleteUserData;
+var
+  Folders: String;
+  Form: TSetupForm;
+  Info: TNewStaticText;
+  Box: TNewCheckBox;
+  OkButton: TNewButton;
+begin
+  DeleteUserData := False;
+  Folders := ExistingUserFolders;
+  if Folders = '' then begin
+    Log('No saves or settings found');
+    Exit;
+  end;
+  if UninstallSilent then begin
+    DeleteUserData := ExpandConstant('{param:DELETEUSERDATA|0}') = '1';
+    if DeleteUserData then
+      Log('Saves and settings to delete (/DELETEUSERDATA=1):' + #13#10 + Folders)
+    else
+      Log('Saves and settings kept (silent uninstall):' + #13#10 + Folders);
+    Exit;
+  end;
+  Form := CreateCustomForm(ScaleX(460), ScaleY(150), False, True);
+  try
+    Form.Caption := '{#AppName} Uninstall';
+    Info := TNewStaticText.Create(Form);
+    Info.Parent := Form;
+    Info.Left := ScaleX(12);
+    Info.Top := ScaleY(12);
+    Info.Width := Form.ClientWidth - ScaleX(24);
+    Info.WordWrap := True;
+    Info.AutoSize := True;
+    Info.Caption := 'Your saves and settings are kept, so that you can play again later. They are in:' + #13#10 +
+      Folders;
+    Box := TNewCheckBox.Create(Form);
+    Box.Parent := Form;
+    Box.Left := ScaleX(12);
+    Box.Top := Info.Top + Info.Height + ScaleY(10);
+    Box.Width := Form.ClientWidth - ScaleX(24);
+    Box.Height := ScaleY(20);
+    Box.Caption := 'Also delete my saves and settings (they cannot be recovered)';
+    Box.Checked := False;
+    OkButton := TNewButton.Create(Form);
+    OkButton.Parent := Form;
+    OkButton.Caption := SetupMessage(msgButtonOK);
+    OkButton.Width := Form.CalculateButtonWidth([OkButton.Caption]);
+    OkButton.Height := ScaleY(23);
+    OkButton.Top := Box.Top + Box.Height + ScaleY(14);
+    OkButton.Left := Form.ClientWidth - OkButton.Width - ScaleX(12);
+    OkButton.ModalResult := mrOk;
+    OkButton.Default := True;
+    OkButton.Cancel := True;
+    Form.ClientHeight := OkButton.Top + OkButton.Height + ScaleY(12);
+    Form.ActiveControl := OkButton;
+    Form.ShowModal;
+    if Box.Checked then
+      DeleteUserData := MsgBox('Delete your saves and settings for good?' + #13#10#13#10 + Folders + #13#10 +
+        'They cannot be recovered.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+  finally
+    Form.Free;
+  end;
+  if DeleteUserData then
+    Log('Saves and settings to delete (ticked and confirmed):' + #13#10 + Folders)
+  else
+    Log('Saves and settings kept:' + #13#10 + Folders);
+end;
+
+{ Deletes one of the player's folders (only the game's own sub-folder), then its parent if that is left empty. }
+procedure DeleteUserFolder(const Dir: String);
+begin
+  if not DirExists(Dir) then
+    Exit;
+  if DelTree(Dir, True, True, True) then
+    Log('Deleted ' + Dir)
+  else
+    Log('Could not delete all of ' + Dir);
+  if RemoveDir(ExtractFileDir(Dir)) then
+    Log('Removed the empty folder ' + ExtractFileDir(Dir));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Kept: String;
+begin
+  if CurUninstallStep = usUninstall then
+    AskDeleteUserData
+  else if CurUninstallStep = usPostUninstall then begin
     { PrepareToInstall creates the folder before Inno Setup does, so it is not in the uninstall log: remove it here
       (RemoveDir only removes an empty folder; an empty folder that the player had chosen before the installation
       goes too, as with any uninstaller: unlike a failed first install, the installation did complete in it). }
     RemoveDir(ExpandConstant('{app}'));
-    SuppressibleMsgBox('{#AppName} was removed. Your saves and settings were kept in:' + #13#10 +
-      ExpandConstant('{#UserDataDir}'), mbInformation, MB_OK, IDOK);
+    if DeleteUserData then begin
+      DeleteUserFolder(UserFolder(True));
+      DeleteUserFolder(UserFolder(False));
+    end;
+    Kept := ExistingUserFolders;
+    if Kept = '' then
+      SuppressibleMsgBox('{#AppName} was removed.', mbInformation, MB_OK, IDOK)
+    else if DeleteUserData then
+      SuppressibleMsgBox('{#AppName} was removed, but some of your saves and settings could not be deleted (a file ' +
+        'may be open in another program):' + #13#10 + Kept, mbInformation, MB_OK, IDOK)
+    else
+      SuppressibleMsgBox('{#AppName} was removed. Your saves and settings were kept in:' + #13#10 + Kept,
+        mbInformation, MB_OK, IDOK);
   end;
 end;
