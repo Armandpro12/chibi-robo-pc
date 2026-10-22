@@ -1,7 +1,7 @@
 # ============================================================
 # The repository only contains what is needed to
 # build and play the game from your own copy:
-# runtime/, games/, tools/, build files, README, license.
+# runtime/, games/, tools/, build files, README, guide/, license.
 # ============================================================
 
 # --- Claude's configuration and work (never published) ---
@@ -58,7 +58,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 
-# --- PGO profiles (never in the repository: they stay local in build/, see README.md) ---
+# --- PGO profiles (never in the repository: they stay local in build/, see guide/building.md) ---
 *.profraw
 *.profdata
 

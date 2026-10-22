@@ -2,13 +2,13 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-16.**
+**Last update: 2026-10-23.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
 ## The plan at a glance
 
-The project moves through five stages, **strictly one after the other**. A stage starts only once the previous
+The project moves through six stages, **strictly one after the other**. A stage starts only once the previous
 one has been validated.
 
 | # | Stage | Goal | State |
@@ -16,6 +16,7 @@ one has been validated.
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first public release | ⬜ |
 | 3 | Multiplayer | Two players in the same house | ⬜ |
+| 3b | PS Vita port | Planned, after multiplayer, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
 | 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack | ⬜ |
 | 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts | ⬜ |
 
@@ -26,7 +27,7 @@ published as a GitHub release (the first one, 0.1.0, before the clean-Windows te
 recompiled executable and its libraries but no game data, asks for the player's own disc image, and compiles
 nothing on the player's machine. The first release (0.1.0) is published on GitHub. The fully decompiled C++ version (stage 2,
 milestone D3) will later replace the recompiled executable in that installer. The game can also be built locally
-(see the [README](README.md)).
+(see [Building from source](guide/building.md)).
 
 ## Stage 1 — Faithful native port, with no emulated hardware 🟡
 
@@ -108,7 +109,7 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 
 - **Reverse engineering with REA** (`tools/rea.py`, `tools/dol2elf.py`): REA over Ghidra on the main executable of
   both versions, from the command line or as an MCP server, in a container with no network that runs as a non-root
-  user. Not needed to build or play; see the README, "Optional: reverse engineering with REA".
+  user. Not needed to build or play; see [Technical notes](guide/technical.md#optional-reverse-engineering-with-rea).
 
 ## Stage 2 — Full decompilation ⬜
 
