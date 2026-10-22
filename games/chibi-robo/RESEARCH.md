@@ -221,6 +221,10 @@ The 16 modules are stored in `qp.bin` under `rel/` `[verified: file]`:
 **Other libraries in the DOL**:
 - AXFX: HAL calls `AXFXSetHooks` `[verified: Ghidra]`.
 - The THP sample player (`THPSimple`), linked into the game `[verified: Ghidra]`.
+- Movies are started by the `movie` command of the stage event scripts. The credits stage (10) plays its movie as
+  soon as it starts, with no condition; the basement stage (3) plays its silent movie inside the event of the socket
+  on the big robot, the first time Chibi-Robo plugs into it (a story flag that a new game has not set yet)
+  `[verified: US scripts read with unplug, both movies reached by test in US]`.
 - No SDK function is in the REL modules `[verified: REL relocations]`.
 
 **Other code** `[verified: file]`:
