@@ -974,7 +974,8 @@ void configure(GcrtPlatform* p) {
 }
 } // namespace
 
-static void start_exit_boost(const char* when); // below, with gcrt_platform_detach
+static void prepare_exit_boost(); // below, with gcrt_platform_detach
+static void start_exit_boost(const char* when);
 static void finish_exit_boost();
 
 extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* game_id,
@@ -986,6 +987,7 @@ extern "C" GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, con
   gcrt_trace_set_clock(trace_clock, p);
   p->hostStart = std::chrono::steady_clock::now();
   configure(p);
+  prepare_exit_boost(); // issue 35: helper thread parked until the end of the game
 
   // No emulated hardware any more (step 10d): disc, controllers, display, card, OS, EXI bus, GX drawing, audio memory,
   // DSP and AI are native (hle/native*.c: the disc image is opened there, GCRT_DISC_IMAGE and GCRT_DVD_RATE are
@@ -1196,16 +1198,29 @@ static double seconds_since_game_end() {
 //     thread waited for it). On a helper thread because walking the system-wide thread list takes ~15-25 ms here,
 //     which the main thread does not wait for; finish_exit_boost stops it and waits for it (at most 2 s) before main
 //     returns, so that it is never ended in the middle of a pass by ExitProcess.
+//   - the helper thread is created when the platform starts (prepare_exit_boost) and waits, parked, for the end of
+//     the game. Created at the end, it could not start in time ([verified] by the thread states, the loader lock owner
+//     and the stacks of slow ends, fix-exit-residue): a new thread first runs the DLL_THREAD_ATTACH notifications of
+//     every loaded DLL under the loader lock. The graphics driver starts some of its threads at THREAD_PRIORITY_IDLE
+//     (priority 1 whatever the class); on busy cores such a thread, still in its DLL_THREAD_ATTACH, held the loader
+//     lock for minutes, ready but starved. Aurora's FIFO thread, ending, waited for that lock (DLL_THREAD_DETACH) while
+//     the main thread joined it, and the helper waited for it too, so nothing was raised (224 and 300 s). Parked since
+//     the start, the helper needs no loader lock for its passes (Toolhelp snapshot, OpenThread, SetThreadPriority) and
+//     raises that thread at once.
 // The exit itself stays the normal one. GCRT_EXIT_BOOST=0 turns all this off (diagnostic). Ending the process at once
 // instead (TerminateProcess, no DLL unloading) was tried and measured: it does not help, the process still waits for
 // the same threads to end (issue 35): the boost alone is kept.
 // Trace: "exit: priority raised ...", "exit: N threads of the process raised to the highest priority ...".
 #if defined(_WIN32)
 static HANDLE g_boostThread = nullptr;
+static HANDLE g_boostGo = nullptr;   // manual-reset event: set by start_exit_boost (the parked helper starts its passes)
 static HANDLE g_boostStop = nullptr; // manual-reset event: set by finish_exit_boost
+static std::chrono::steady_clock::time_point g_boostRequested; // written before g_boostGo is set
 
-// One pass over the threads of the process; traced when it raised one (or for the first pass).
+// One pass over the threads of the process; traced for the first pass, then when it raised a thread or could not
+// change more threads than the pass before (a thread that cannot be raised is the one to look for in a slow end).
 static void raise_threads_once(unsigned pass) {
+  static unsigned s_lastFailed = 0; // helper thread only
   const auto start = std::chrono::steady_clock::now();
   const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   if (snap == INVALID_HANDLE_VALUE) {
@@ -1239,16 +1254,24 @@ static void raise_threads_once(unsigned pass) {
     te.dwSize = sizeof(te);
   }
   CloseHandle(snap);
-  if (pass == 0 || raised != 0) {
+  const bool moreFailed = failed > s_lastFailed;
+  s_lastFailed = failed;
+  if (pass == 0 || raised != 0 || moreFailed) {
     gcrt_trace_printf(GCRT_TRACE_PLATFORM,
                       "exit: %u threads of the process raised to the highest priority, of %u (%u not changed: ended or "
-                      "refused), in %.1f ms (helper thread, pass %u)",
+                      "refused), in %.1f ms (helper thread, pass %u, started %.1f ms after the request)",
                       raised, seen, failed,
-                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), pass);
+                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(), pass,
+                      std::chrono::duration<double, std::milli>(start - g_boostRequested).count());
   }
 }
 
 static DWORD WINAPI raise_threads_loop(void*) {
+  // Parked until the end of the game (start_exit_boost), or stopped without having run (finish_exit_boost).
+  const HANDLE events[2] = {g_boostGo, g_boostStop};
+  if (WaitForMultipleObjects(2, events, FALSE, INFINITE) != WAIT_OBJECT_0) {
+    return 0;
+  }
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   unsigned pass = 0;
   do {
@@ -1263,18 +1286,37 @@ static bool exit_boost_wanted() {
   return v == nullptr || std::strcmp(v, "0") != 0;
 }
 
-static void start_exit_boost(const char* when) {
+// Creates the parked helper thread (start of the platform, long before the end of the game).
+static void prepare_exit_boost() {
 #if defined(_WIN32)
   if (!exit_boost_wanted() || g_boostThread != nullptr) {
     return;
   }
-  const bool classSet = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) != 0;
+  g_boostGo = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   g_boostStop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  g_boostThread =
-      g_boostStop != nullptr ? CreateThread(nullptr, 64 * 1024, raise_threads_loop, nullptr, 0, nullptr) : nullptr;
+  if (g_boostGo != nullptr && g_boostStop != nullptr) {
+    g_boostThread = CreateThread(nullptr, 64 * 1024, raise_threads_loop, nullptr, 0, nullptr);
+  }
+  if (g_boostThread == nullptr) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: no thread priority helper (error %lu)",
+                      static_cast<unsigned long>(GetLastError()));
+  }
+#endif
+}
+
+static void start_exit_boost(const char* when) {
+#if defined(_WIN32)
+  if (!exit_boost_wanted()) {
+    return;
+  }
+  const bool classSet = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) != 0;
+  if (g_boostThread != nullptr) {
+    g_boostRequested = std::chrono::steady_clock::now();
+    SetEvent(g_boostGo);
+  }
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "exit: priority raised for the end of the process (%s): %s, %s", when,
                     classSet ? "high priority class" : "priority class unchanged (failed)",
-                    g_boostThread != nullptr ? "helper thread raising each thread" : "no helper thread (failed)");
+                    g_boostThread != nullptr ? "helper thread raising each thread" : "no helper thread");
 #else
   (void)when;
 #endif
@@ -1293,6 +1335,10 @@ static void finish_exit_boost() {
   if (g_boostStop != nullptr) {
     CloseHandle(g_boostStop);
     g_boostStop = nullptr;
+  }
+  if (g_boostGo != nullptr) {
+    CloseHandle(g_boostGo);
+    g_boostGo = nullptr;
   }
 #endif
 }
