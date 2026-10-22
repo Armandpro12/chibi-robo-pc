@@ -179,7 +179,7 @@ GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* ga
 /* After gcrt_cpu_run: finishes the current frame, writes the pending screenshots and the report. */
 void gcrt_platform_detach(GcrtPlatform* platform);
 /* Last call of a launch whose game ran (after gcrt_platform_detach and the final prints), just before main returns:
-   waits for the end-of-process priority helper started by gcrt_platform_detach (GCRT_EXIT_BOOST; on a busy computer
+   waits for the end-of-process priority helper (created by gcrt_platform_attach, released by gcrt_platform_detach) (GCRT_EXIT_BOOST; on a busy computer
    the end of the process otherwise waited minutes for low-priority threads, issue 35), then the trace line
    "exit: code N, ...". Returns `code`. The exit itself stays the normal one. */
 int gcrt_platform_before_exit(int code);

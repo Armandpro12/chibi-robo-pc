@@ -28,7 +28,7 @@
   up to and including the birthday party, the first save, and leaving the Chibi-House.
 - ✅ Scripted game sessions without a crash: 50 game minutes from a late save (US), 30 minutes from a new-game save started in the backyard (PAL).
 - ✅ Native saves like a PC game (`.gci` files, Dolphin-compatible) and configurable keyboard and gamepads.
-- ✅ A Windows installer: pick your disc image, per-user install without administrator rights, uninstall keeps your saves.
+- ✅ A Windows installer: pick your disc image, per-user install without administrator rights, uninstall keeps your saves unless you tick a box to delete them.
 - ✅ Images and sound compared with Dolphin on the key scenes; the known differences are listed in the ROADMAP.
 - ⬜ Not verified yet: playing through the whole game, most video cutscenes, a clean Windows, Windows 10, other
   graphics hardware, a PC without a GPU (only simulated), and listening and playing by a human.

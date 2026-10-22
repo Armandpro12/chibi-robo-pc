@@ -17,7 +17,7 @@ and every Nintendo SDK function that talks to the console hardware is replaced b
 **Nothing is emulated at the hardware level any more**: no hardware registers, no cycle-driven devices, no
 interpreter. Drawing goes through [Aurora](https://github.com/encounter/aurora) (GX on top of Dawn, the WebGPU
 implementation, and SDL3 for the window and input). The long-term goal is a fully decompiled, readable C++ game,
-then multiplayer, a remaster and a modding platform ([ROADMAP.md](../ROADMAP.md)). Our findings about the game
+then multiplayer, a PS Vita port, a remaster and a modding platform ([ROADMAP.md](../ROADMAP.md)). Our findings about the game
 itself: [RESEARCH.md](../games/chibi-robo/RESEARCH.md).
 
 ## Current state in detail (October 2026)
