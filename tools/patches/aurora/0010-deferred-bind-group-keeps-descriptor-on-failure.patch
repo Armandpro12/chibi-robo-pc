@@ -1,0 +1,63 @@
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 332dd5a..4e3d189 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -682,8 +682,9 @@ void queue_texture_upload_data(const uint8_t* data, uint32_t bytesPerRow, uint32
+   }
+ 
+   // Too large for what is left of the staging buffer. This runs on the recording thread while the render worker
+-  // uses the device, and Dawn does not lock the device here (ImplicitDeviceSynchronization is not requested): keep a
+-  // CPU copy and let the render worker create, fill and unmap the buffer (encoding.cpp, copy_staging_to_high_water).
++  // uses the device, and Dawn locks the device only with ImplicitDeviceSynchronization (patch 0007: requested when the
++  // adapter offers it, unless AURORA_IMPLICIT_DEVICE_SYNC=0): keep a CPU copy and let the render worker create, fill
++  // and unmap the buffer (encoding.cpp, copy_staging_to_high_water).
+   const uint64_t uploadSize = copyBytesPerRow * rowsPerImage;
+   std::vector<uint8_t> overflowData(uploadSize);
+   auto* dst = overflowData.data();
+diff --git a/lib/gfx/resource_cache.cpp b/lib/gfx/resource_cache.cpp
+index 8b753da..d90b3aa 100644
+--- a/lib/gfx/resource_cache.cpp
++++ b/lib/gfx/resource_cache.cpp
+@@ -36,12 +36,14 @@ namespace {
+ 
+ constexpr Module Log{"aurora::gfx"};
+ 
+-// Dawn's device is not thread-safe without ImplicitDeviceSynchronization (not requested by Aurora), and its D3D12
+-// sampler heap cache (an unsynchronized hash set that every bind group with samplers looks up, inserts into, or erases
+-// from when it dies) is also used by the bind groups that the render worker creates and drops while it encodes (copy
+-// and palette conversions, present). bind_group_ref therefore runs no Dawn call: it keeps a copy of the descriptor
+-// (with references to its objects), and find_bind_group, called by the render worker at encode time, creates the bind
+-// group. A descriptor with extension structs is still created at once (its chains cannot be copied here).
++// Dawn's device is not thread-safe without ImplicitDeviceSynchronization (patch 0007 requests it when the adapter
++// offers it, unless AURORA_IMPLICIT_DEVICE_SYNC=0), and its D3D12 sampler heap cache (an unsynchronized hash set that
++// every bind group with samplers looks up, inserts into, or erases from when it dies) is also used by the bind groups
++// that the render worker creates and drops while it encodes (copy and palette conversions, present). bind_group_ref
++// therefore runs no Dawn call: it keeps a copy of the descriptor (with references to its objects), and
++// find_bind_group, called by the render worker at encode time, creates the bind group. This also keeps that work off
++// the GX FIFO thread when the device is locked. A descriptor with extension structs is still created at once (its
++// chains cannot be copied here).
+ struct CachedBindGroup {
+   wgpu::BindGroup bindGroup;
+   uint32_t lastUsedFrame = 0;
+@@ -85,15 +87,19 @@ CachedBindGroup deferred_bind_group(const WGPUBindGroupDescriptor& descriptor, u
+ }
+ 
+ void create_deferred_bind_group(CachedBindGroup& cached) {
+-  static_assert(sizeof(wgpu::BindGroupEntry) == sizeof(WGPUBindGroupEntry));
++  // Dawn's conversion operator (webgpu_cpp.h) gives the C struct of an entry; the header asserts that both structs
++  // have the same size, alignment and field offsets, so the vector is also an array of WGPUBindGroupEntry.
+   const WGPUBindGroupDescriptor descriptor{
+       .nextInChain = nullptr,
+       .label = {cached.label.data(), cached.label.size()},
+       .layout = cached.layout.Get(),
+       .entryCount = cached.entries.size(),
+-      .entries = reinterpret_cast<const WGPUBindGroupEntry*>(cached.entries.data()),
++      .entries = cached.entries.empty() ? nullptr : &static_cast<const WGPUBindGroupEntry&>(cached.entries.front()),
+   };
+   cached.bindGroup = wgpu::BindGroup::Acquire(wgpuDeviceCreateBindGroup(webgpu::g_device.Get(), &descriptor));
++  if (!cached.bindGroup) {
++    return; // keep the pending descriptor: the next find_bind_group tries again
++  }
+   cached.entries = {};
+   cached.layout = {};
+   cached.label = {};

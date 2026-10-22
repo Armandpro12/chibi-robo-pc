@@ -427,7 +427,7 @@ line.
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
   patch is kept in `tools/patches/dolrecomp/`.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Nine small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Ten small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`: the first lets the render target be taller than the
   displayed image (the console's 528-line EFB); the second snaps the viewport, scissor and copy edges to whole
   target pixels, so that a non-integer window scale does not leave a black line at the bottom of the shadow map;
@@ -449,7 +449,12 @@ line.
   the development machine and is not shown to fix issue 11 by itself; the eighth clamps the viewport depth range to
   [0, 1], as WebGPU requires: the SDK's depth scale puts the far plane a hair past 1, and Dawn's Direct3D 11 backend
   then ignored the whole viewport, which stretched the US picture (issue 38); the ninth tries a software (CPU) adapter,
-  such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture).
+  such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture);
+  the tenth keeps the copied descriptor of a deferred bind group (fifth patch) when Dawn returns no bind group, so
+  that the next use tries again instead of creating an empty one, and brings the comments of the third and fifth
+  patches up to date with the seventh.
+  `tools/build.py` finds how many of the patches a checkout already has by rebuilding each step of the series in a
+  temporary Git index, since a later patch may change lines that an earlier one added.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
