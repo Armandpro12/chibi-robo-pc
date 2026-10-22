@@ -451,12 +451,14 @@ line.
   then ignored the whole viewport, which stretched the US picture (issue 38); the ninth tries a software (CPU) adapter,
   such as WARP, only after every hardware adapter failed, instead of falling back to the null backend (no picture);
   the tenth keeps the copied descriptor of a deferred bind group (fifth patch) when Dawn returns no bind group, so
-  that the next use tries again instead of creating an empty one, and brings the comments of the third and fifth
-  patches up to date with the seventh; the eleventh logs at debug level only, instead of as a warning, the staging
+  that the next use tries again instead of creating an empty one (it also passes the entries through Dawn's own
+  conversion operator instead of a size-checked cast), and brings the comments of the third and fifth patches up to
+  date with the seventh; the eleventh logs at debug level only, instead of as a warning, the staging
   buffer maps that Dawn aborts because Aurora is shutting down ("Buffer mapping Aborted: Buffer was destroyed before
   mapping was resolved", seen at the end of most runs); an abort while the game runs is still a warning.
   `tools/build.py` finds how many of the patches a checkout already has by rebuilding each step of the series in a
-  temporary Git index, since a later patch may change lines that an earlier one added.
+  temporary Git index (with its own temporary object directory, so the Aurora repository is not written to), since a
+  later patch may change lines that an earlier one added.
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
   its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.

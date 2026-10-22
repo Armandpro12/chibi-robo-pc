@@ -125,7 +125,17 @@ def applied_patch_count(git: Path, repo: Path, patches: list[Path], files: list[
     later patch may change lines that an earlier one added: a reverse check of the earlier patch alone would then
     fail on a fully patched tree. None if the tree matches no state (other commit or local changes)."""
     with tempfile.TemporaryDirectory() as tmp:
-        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        # New objects (the blobs that `git apply --cached` writes) go to a temporary object directory; the repository's
+        # own objects stay readable through the alternates, so the real repository is not written to.
+        found = subprocess.run([str(git), "-C", str(repo), "rev-parse", "--git-path", "objects"], capture_output=True,
+                               text=True)
+        if found.returncode != 0 or not found.stdout.strip():
+            return None
+        real_objects = (repo / found.stdout.strip()).resolve()
+        (Path(tmp) / "objects").mkdir()
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index"),
+               "GIT_OBJECT_DIRECTORY": str(Path(tmp) / "objects"),
+               "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(real_objects)}
 
         def git_ok(*args: str) -> bool:
             return subprocess.run([str(git), "-C", str(repo), *args], env=env, capture_output=True).returncode == 0
