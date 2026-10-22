@@ -116,6 +116,42 @@ static char* narrow(const wchar_t* w) {
     return s;
 }
 
+static bool is_sep(wchar_t c) {
+    return c == L'\\' || c == L'/';
+}
+
+/* End of the next path component of w from i (index of the separator after it, or of the terminator). */
+static size_t component_end(const wchar_t* w, size_t i) {
+    while (w[i] && !is_sep(w[i]))
+        i++;
+    return i;
+}
+
+/* Length of the root of a path, which gcrt_sf_mkdirs never tries to create: "C:" (and the separator after it),
+ * "\\server\share", "\\?\C:", "\\?\UNC\server\share", a device "\\.\name", or a leading "\" (root of the current
+ * drive); 0 for a relative path. Path forms: Microsoft Learn, "File path formats on Windows systems". */
+static size_t root_length(const wchar_t* w) {
+    size_t i = 0;
+    if (is_sep(w[0]) && is_sep(w[1])) {
+        if ((w[2] == L'?' || w[2] == L'.') && is_sep(w[3])) {
+            i = 4; /* "\\?\" or "\\.\" */
+            if ((w[i] == L'U' || w[i] == L'u') && (w[i + 1] == L'N' || w[i + 1] == L'n') &&
+                (w[i + 2] == L'C' || w[i + 2] == L'c') && is_sep(w[i + 3])) {
+                i = component_end(w, i + 4); /* server */
+                return w[i] ? component_end(w, i + 1) : i; /* share */
+            }
+            if (w[i] && w[i + 1] == L':')
+                return is_sep(w[i + 2]) ? i + 3 : i + 2; /* drive */
+            return component_end(w, i); /* device or volume name */
+        }
+        i = component_end(w, 2); /* server */
+        return w[i] ? component_end(w, i + 1) : i; /* share */
+    }
+    if (w[0] && w[1] == L':')
+        return is_sep(w[2]) ? 3 : 2;
+    return is_sep(w[0]) ? 1 : 0;
+}
+
 bool gcrt_sf_mkdirs(const char* dir) {
     if (!dir || !dir[0])
         return false;
@@ -123,14 +159,17 @@ bool gcrt_sf_mkdirs(const char* dir) {
     if (!w)
         return false;
     size_t len = wcslen(w);
-    while (len > 1 && (w[len - 1] == L'\\' || w[len - 1] == L'/'))
+    while (len > 1 && is_sep(w[len - 1]))
         w[--len] = L'\0';
     bool ok = true;
-    for (size_t i = 1; i <= len && ok; i++) {
-        if (w[i] != L'\\' && w[i] != L'/' && w[i] != L'\0')
+    /* Each folder after the root, from the outermost: the root itself (drive, UNC share, \\?\ prefix) is not
+     * created, a CreateDirectoryW on "\\server" or "\\?" would fail and stop the loop. */
+    const size_t root = root_length(w);
+    for (size_t i = root + 1; i <= len && ok; i++) {
+        if (!is_sep(w[i]) && w[i] != L'\0')
             continue;
-        if (i == 2 && w[1] == L':')
-            continue; /* "C:" */
+        if (is_sep(w[i - 1]))
+            continue; /* doubled separator: empty component */
         const wchar_t saved = w[i];
         w[i] = L'\0';
         if (!CreateDirectoryW(w, NULL)) {
