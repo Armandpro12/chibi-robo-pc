@@ -2,13 +2,13 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-16.**
+**Last update: 2026-10-23.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
 ## The plan at a glance
 
-The project moves through five stages, **strictly one after the other**. A stage starts only once the previous
+The project moves through six stages, **strictly one after the other**. A stage starts only once the previous
 one has been validated.
 
 | # | Stage | Goal | State |
@@ -16,6 +16,7 @@ one has been validated.
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first public release | ⬜ |
 | 3 | Multiplayer | Two players in the same house | ⬜ |
+| 3b | PS Vita port | Planned, after multiplayer, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
 | 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack | ⬜ |
 | 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts | ⬜ |
 
@@ -26,7 +27,7 @@ published as a GitHub release (the first one, 0.1.0, before the clean-Windows te
 recompiled executable and its libraries but no game data, asks for the player's own disc image, and compiles
 nothing on the player's machine. The first release (0.1.0) is published on GitHub. The fully decompiled C++ version (stage 2,
 milestone D3) will later replace the recompiled executable in that installer. The game can also be built locally
-(see the [README](README.md)).
+(see [Building from source](guide/building.md)).
 
 ## Stage 1 — Faithful native port, with no emulated hardware 🟡
 
@@ -42,12 +43,12 @@ that touches the hardware is replaced, identified by signature, with a native im
 | 3 | Recompilation | ✅ | Whole game recompiled to C, builds without errors. |
 | 4 | Minimal runtime | ✅ | Window, main loop, keyboard and gamepads. |
 | 5 | Rendering | ✅ | PAL: the five boot screens, from the 50/60 Hz prompt to the title screen, match Dolphin captures above the documented SSIM threshold. US: the health and safety warning was compared first; the logos, title screen, file menus, loading screen, party, living room and backyard were compared later (milestone 9). |
-| 6 | Audio | 🟡 | Music and effects work. On the title screen, the party and the living room (PAL and US) the music has the same content as in Dolphin at a constant offset (matched block by block, many blocks identical to the sample) and it loops with the same period; the differences that remain are listed under "Known differences with Dolphin". The credits video has the same duration and the same sound in 99.8 to 99.9 % of the 5 ms blocks. Still to do: the other video cutscenes and a listening test. |
+| 6 | Audio | 🟡 | Music and effects work. On the title screen, the party and the living room (PAL and US) the music has the same content as in Dolphin at a constant offset (matched block by block, many blocks identical to the sample) and it loops with the same period; the differences that remain are listed under "Known differences with Dolphin". The credits video has the same duration and the same sound in 99.8 to 99.9 % of the 5 ms blocks. Still to do: the second basement video cutscene (not reached yet) and a listening test. |
 | 7 | Saves | ✅ | Native PC saves: card always inserted, crash-safe writes (temporary file, then rename). |
 | 8 | Playable game | 🟡 | Scripted play sessions of up to 50 minutes from late saves run without a crash; the prologue (new game through the birthday party), the first save, and the first load and unload of a REL module (`stage07.rel`, Chibi-House to living room and back) are replayed with scripted inputs on both US and PAL, three identical replays per version; open issues from player reports are listed under "Known issues". |
-| 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The credits video is compared (PAL: SSIM 0.937 to 0.95 because Dolphin dumps it at another height); the other video cutscenes are not compared yet. |
+| 9 | Comparison with Dolphin | 🟡 | Images of the key scenes (boot screens, title, menus, loading, party, living room, backyard) compared with Dolphin in PAL and US: above the SSIM threshold except for the cases explained under "Known differences with Dolphin". The credits video is compared (PAL: SSIM 0.937 to 0.95 because Dolphin dumps it at another height); the basement video is compared in US and PAL (see the video entries below); the second basement video is not compared yet. |
 | 10 | No emulated hardware | ✅ | See below. |
-| 11 | Player installer | 🟡 | Inno Setup installer (`tools/installer/`): the player picks their own disc image, checked by SHA-1 against `game.toml` and refused with a clear message otherwise; per-user install without administrator rights, progress bar, shortcut, uninstall that keeps saves and settings, reinstall to update; free disk space checked first; a failed or cancelled reinstall puts the previous installation back (disc image files, executable and DLLs, so a failed switch to the other region is expected to keep a consistent installation), and a failed first install leaves nothing behind; all of this was tested with simulated failures only (not with a real cancel, a locked file or a power loss). Installed and run to the title screen on US and PAL from a developer machine with no development tools in `PATH`. `dxcompiler.dll` and `dxil.dll` are not needed (Direct3D 12 compiles shaders with FXC, identical captures on the development machine); a PC without `d3dcompiler_47.dll` or without a GPU is untested. The setup menu lets the player choose the graphics backend (Auto, Direct3D 12 or Vulkan; same picture up to tiny rounding differences). A damaged installation (missing or unreadable disc image or manifest, missing game files, or a disc image or game files of the other version) gives a clear message box and exit code 1 instead of a black window; automated runs get the message on stderr only. The dialog was only tested on a hidden desktop (not with a real double-click), and non-Windows builds have never been compiled (stderr only). A run interrupted by a power loss or a crash is repaired by the next run (a progress file tells it whether the interrupted run had completed; tested by simulating the files such an interruption leaves). The final installer (31.5 MB) is built from the release-candidate executables (PGO, clean build of the current `main`) and passed the automated installer checks on US and PAL (installs, refusals, simulated failures, reinstalls, uninstall). The first release (0.1.0) was published before the clean-Windows test and the human installation test, which are still pending. |
+| 11 | Player installer | 🟡 | Inno Setup installer (`tools/installer/`): the player picks their own disc image, checked by SHA-1 against `game.toml` and refused with a clear message otherwise; per-user install without administrator rights, progress bar, shortcut, uninstall that keeps saves and settings, reinstall to update; free disk space checked first; a failed or cancelled reinstall puts the previous installation back (disc image files, executable and DLLs, so a failed switch to the other region is expected to keep a consistent installation), and a failed first install leaves nothing behind; all of this was tested with simulated failures only (not with a real cancel, a locked file or a power loss). Installed and run to the title screen on US and PAL from a developer machine with no development tools in `PATH`. `dxcompiler.dll` and `dxil.dll` are not needed (Direct3D 12 compiles shaders with FXC, identical captures on the development machine); a PC without `d3dcompiler_47.dll` is untested; without a usable GPU, the game falls back to Microsoft's software renderer (WARP, slow), checked only by hiding the GPU with a test switch. The setup menu lets the player choose the graphics backend (Auto, Direct3D 12 or Vulkan; same picture up to tiny rounding differences). A damaged installation (missing or unreadable disc image or manifest, missing game files, or a disc image or game files of the other version) gives a clear message box and exit code 1 instead of a black window; automated runs get the message on stderr only. The dialog was only tested on a hidden desktop (not with a real double-click), and non-Windows builds have never been compiled (stderr only). A run interrupted by a power loss or a crash is repaired by the next run (a progress file tells it whether the interrupted run had completed; tested by simulating the files such an interruption leaves). The final installer (31.5 MB) is built from the release-candidate executables (PGO, clean build of the current `main`) and passed the automated installer checks on US and PAL (installs, refusals, simulated failures, reinstalls, uninstall). The first release (0.1.0) was published before the clean-Windows test and the human installation test, which are still pending. Next installer, 0.1.1 (not released yet): the game has its own original icon (executable, game window and taskbar, shortcuts, installer and uninstaller), and the uninstaller deletes the saves and settings only if the player ticks a box (unticked by default) and confirms; checked automatically (icon read back from the executable and from the running game's window; the uninstall dialog driven on a hidden desktop), not yet looked at by a person. |
 
 ### Milestone 10 — no emulated hardware ✅
 
@@ -103,6 +104,12 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 4. **Milestone 9**: key-scene comparison with Dolphin.
 5. **Milestone 11**: the player installer (clean-Windows test, review, then GitHub release).
 6. Phase review, then validation by the project owner.
+
+### Optional tooling (outside the milestones)
+
+- **Reverse engineering with REA** (`tools/rea.py`, `tools/dol2elf.py`): REA over Ghidra on the main executable of
+  both versions, from the command line or as an MCP server, in a container with no network that runs as a non-root
+  user. Not needed to build or play; see [Technical notes](guide/technical.md#optional-reverse-engineering-with-rea).
 
 ## Stage 2 — Full decompilation ⬜
 
@@ -177,8 +184,9 @@ timing of the simulated disc.
   the 5 ms blocks; both sides insert a few very short runs of zero samples (at most 1.2 ms) at different moments.
   In PAL the picture scores 0.937 to 0.95 in SSIM with the same picture and geometry; the gap is probably resampling
   (Dolphin dumps it at 640x468 instead of 640x528).
-- **Not measured yet:** the other video cutscenes (a robot cutscene in the basement, whose conditions are known only
-  from the stage script).
+- **Video (basement, US and PAL).** Reached from a new game (scenario `basement-movie`): every frame of the silent movie
+  is shown (PAL: 1150 frames in 46.0 s), picture SSIM 0.96 to 1.0 in the body of the movie against Dolphin (the fade-in pairs are unreliable). In Dolphin the movie repeats frames
+  during its first ~23 s, and the music over it is close to, not identical with, the native one. Second movie: not yet.
 
 ## Known issues
 
@@ -192,7 +200,9 @@ timing of the simulated disc.
     fault is explained by its instruction. They also give the microcode and firmware versions, the graphics driver,
     the memory regions, the call stacks of every thread at the time of the fault, the last native events and log
     lines, and whether the same crash already happened on that computer; a watchdog writes a report when the game
-    freezes. A second report, from the same kind of machine, faulted at the same instruction: no software cause
+    freezes. Its minidump is written from a snapshot of the process, so no thread stays suspended while it is
+    written, which removes the lock deadlock found in tests (issue 36). A second report, from the same kind of
+    machine, faulted at the same instruction: no software cause
     was found, and the crashing build was our current code. Two tools help players and testers tell an unstable
     machine from a bug: `tools/collect_diagnostics.cmd` (read-only, anonymized: hardware error events, BIOS,
     microcode, drivers, overlays, recent crash reports; nothing is sent) and `tools/cpustress/` (runs the
@@ -212,7 +222,7 @@ timing of the simulated disc.
   there. Left as is.
 - The comparison with Dolphin is partial: images of the key scenes and sound of the title screen, party, living room
   and backyard in both versions, with the differences listed in "Known differences with Dolphin"; only the credits
-  video is compared, and the rest of the game is not.
+  video and the basement video are compared, and the rest of the game is not.
 
 ## How changes are validated
 

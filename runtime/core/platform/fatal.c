@@ -7,6 +7,7 @@
 #include "platform/gcrt_path.h"
 #include "platform/trace.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,15 +37,24 @@ bool gcrt_launched_by_tool(void) {
 
 typedef enum { MODE_AUTO, MODE_LOG, MODE_OFF, MODE_SHOW } DialogMode;
 
+/* ASCII comparison without regard to case ("Show", "LOG"): the values are plain English words. */
+static bool same_word(const char* a, const char* b) {
+    for (; *a && *b; a++, b++) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+            return false;
+    }
+    return *a == *b;
+}
+
 static DialogMode dialog_mode(void) {
     const char* v = getenv("GCRT_FATAL_DIALOG");
-    if (!v || !v[0] || !strcmp(v, "auto"))
+    if (!v || !v[0] || same_word(v, "auto"))
         return MODE_AUTO;
-    if (!strcmp(v, "log"))
+    if (same_word(v, "log"))
         return MODE_LOG;
-    if (!strcmp(v, "off") || !strcmp(v, "0"))
+    if (same_word(v, "off") || !strcmp(v, "0"))
         return MODE_OFF;
-    if (!strcmp(v, "show") || !strcmp(v, "1"))
+    if (same_word(v, "show") || !strcmp(v, "1"))
         return MODE_SHOW;
     fprintf(stderr, "gcrt: GCRT_FATAL_DIALOG=%s ignored (auto, log, off or show)\n", v);
     return MODE_AUTO;

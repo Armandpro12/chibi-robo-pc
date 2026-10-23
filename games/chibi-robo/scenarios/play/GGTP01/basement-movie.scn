@@ -1,0 +1,223 @@
+# Scenario "basement-movie" (PAL, milestones 6 and 9, issue 34): the silent THP movie of the basement (stage 3),
+# reached from a new game. The movie is played by the event of the socket on the big robot of the basement, the first
+# time Chibi-Robo plugs into it (story flag not set yet in a new game). tools/run.py --stage basement loads the save
+# into stage 3 (game.toml, [stage]): Chibi-Robo starts at the top of the stairs. The route goes down the stairs,
+# across the floor (a short cutscene without dialogue on the way), to the socket; A takes the plug in hand, A plugs
+# in, then A every 25 frames goes through the dialogue of the event. No A during the movie (46 s, 1150 frames at
+# 25 fps); the event goes on after it. The game runs at 25 frames per second in PAL: frame numbers and stick
+# durations differ from the US scenario, and the path after the cutscene is split differently (camera).
+# Run it with the user folder left by the "new-game" scenario (save in slot 1):
+#   py -3 tools/run.py chibi-robo --version GGTP01 --stage basement --user-seed <new-game folder>/user \
+#     --scenario games/chibi-robo/scenarios/play/GGTP01/basement-movie.scn
+# Checkpoints: every 2 frames at the start of the movie, every frame at its end, every 25 frames in between, 30
+# consecutive frames in the middle (each frame of the movie is shown).
+# Not run by tools/ab.py (progression scenario). No game data here: buttons, frame numbers and names only.
+# Recorded on GGTP01 (cycle clock, RTC 800000000). US version: play/GGTE01/basement-movie.scn.
+name basement-movie
+description New-game save loaded into the basement (--stage basement): walk to the socket of the big robot, plug in, the basement THP movie (PAL).
+version GGTP01
+after new-game     # preparation: user folder (save) left by "new-game"
+window 0
+input   150 A 10       # 60/50 Hz prompt: confirm the 50 Hz option
+input  1050 A 10       # health and safety warning
+input  2600 A 10       # title screen: Load Game
+input  2850 LEFT 5       # file selection: from file 1 to file 3 (the cursor wraps around)
+input  2900 RIGHT 5       # ... and back to file 1
+input  2950 A 10       # load file 1
+input  3150 SLEFT 80       # top of the stairs: down the first steps
+input  3230 SDOWN 340       # off the side of the stairs, then across the floor (a cutscene starts on the way)
+input  3950 SDOWN+SRIGHT 67       # after the cutscene: towards the wall
+input  4025 SLEFT 15       # turn along the big robot
+input  4040 SUP+SLEFT 25       # along the big robot
+input  4075 SUP+SRIGHT 42       # next to the socket
+input  4125 A       # take the plug in hand
+input  4267 A       # plug into the socket: the event starts
+# A every 25 frames from 4825 to 5650: dialogue of the event (each line waits for A)
+input  4825 A
+input  4850 A
+input  4875 A
+input  4900 A
+input  4925 A
+input  4950 A
+input  4975 A
+input  5000 A
+input  5025 A
+input  5050 A
+input  5075 A
+input  5100 A
+input  5125 A
+input  5150 A
+input  5175 A
+input  5200 A
+input  5225 A
+input  5250 A
+input  5275 A
+input  5300 A
+input  5325 A
+input  5350 A
+input  5375 A
+input  5400 A
+input  5425 A
+input  5450 A
+input  5475 A
+input  5500 A
+input  5525 A
+input  5550 A
+input  5575 A
+input  5600 A
+input  5625 A
+input  5650 A
+check 2800 load-file-select
+check 3100 basement-arrival
+check 3600 first-cutscene
+check 4120 at-the-socket
+check 4280 plugged-in
+check 4800 event-dialogue
+check 5900 before-movie
+check 5935 movie-start-5935
+check 5937 movie-start-5937
+check 5939 movie-start-5939
+check 5941 movie-start-5941
+check 5943 movie-start-5943
+check 5945 movie-start-5945
+check 5947 movie-start-5947
+check 5949 movie-start-5949
+check 5951 movie-start-5951
+check 5953 movie-start-5953
+check 5955 movie-start-5955
+check 5957 movie-start-5957
+check 5959 movie-start-5959
+check 5961 movie-start-5961
+check 5963 movie-start-5963
+check 5965 movie-start-5965
+check 5967 movie-start-5967
+check 5969 movie-start-5969
+check 5971 movie-start-5971
+check 5973 movie-start-5973
+check 5975 movie-start-5975
+check 5977 movie-start-5977
+check 5979 movie-start-5979
+check 5981 movie-start-5981
+check 5983 movie-start-5983
+check 5985 movie-start-5985
+check 5987 movie-start-5987
+check 5989 movie-start-5989
+check 5991 movie-start-5991
+check 5993 movie-start-5993
+check 5995 movie-start-5995
+check 5997 movie-start-5997
+check 5999 movie-start-5999
+check 6001 movie-start-6001
+check 6003 movie-start-6003
+check 6005 movie-start-6005
+check 6007 movie-start-6007
+check 6009 movie-start-6009
+check 6011 movie-start-6011
+check 6013 movie-start-6013
+check 6015 movie-start-6015
+check 7085 movie-end-7085
+check 7086 movie-end-7086
+check 7087 movie-end-7087
+check 7088 movie-end-7088
+check 7089 movie-end-7089
+check 7090 movie-end-7090
+check 7091 movie-end-7091
+check 7092 movie-end-7092
+check 7093 movie-end-7093
+check 7094 movie-end-7094
+check 7095 movie-end-7095
+check 7096 movie-end-7096
+check 7097 movie-end-7097
+check 7098 movie-end-7098
+check 7099 movie-end-7099
+check 7100 movie-end-7100
+check 7101 movie-end-7101
+check 7102 movie-end-7102
+check 7103 movie-end-7103
+check 7104 movie-end-7104
+check 7105 movie-end-7105
+check 7106 movie-end-7106
+check 7107 movie-end-7107
+check 7108 movie-end-7108
+check 7109 movie-end-7109
+check 7110 movie-end-7110
+check 7111 movie-end-7111
+check 7112 movie-end-7112
+check 7113 movie-end-7113
+check 7114 movie-end-7114
+check 7115 movie-end-7115
+check 6015 movie-6015
+check 6040 movie-6040
+check 6065 movie-6065
+check 6090 movie-6090
+check 6115 movie-6115
+check 6140 movie-6140
+check 6165 movie-6165
+check 6190 movie-6190
+check 6215 movie-6215
+check 6240 movie-6240
+check 6265 movie-6265
+check 6290 movie-6290
+check 6315 movie-6315
+check 6340 movie-6340
+check 6365 movie-6365
+check 6390 movie-6390
+check 6415 movie-6415
+check 6440 movie-6440
+check 6465 movie-6465
+check 6490 movie-6490
+check 6515 movie-6515
+check 6540 movie-6540
+check 6565 movie-6565
+check 6590 movie-6590
+check 6615 movie-6615
+check 6640 movie-6640
+check 6665 movie-6665
+check 6690 movie-6690
+check 6715 movie-6715
+check 6740 movie-6740
+check 6765 movie-6765
+check 6790 movie-6790
+check 6815 movie-6815
+check 6840 movie-6840
+check 6865 movie-6865
+check 6890 movie-6890
+check 6915 movie-6915
+check 6940 movie-6940
+check 6965 movie-6965
+check 6990 movie-6990
+check 7015 movie-7015
+check 7040 movie-7040
+check 7065 movie-7065
+check 6400 movie-consec-6400
+check 6401 movie-consec-6401
+check 6402 movie-consec-6402
+check 6403 movie-consec-6403
+check 6404 movie-consec-6404
+check 6405 movie-consec-6405
+check 6406 movie-consec-6406
+check 6407 movie-consec-6407
+check 6408 movie-consec-6408
+check 6409 movie-consec-6409
+check 6410 movie-consec-6410
+check 6411 movie-consec-6411
+check 6412 movie-consec-6412
+check 6413 movie-consec-6413
+check 6414 movie-consec-6414
+check 6416 movie-consec-6416
+check 6417 movie-consec-6417
+check 6418 movie-consec-6418
+check 6419 movie-consec-6419
+check 6420 movie-consec-6420
+check 6421 movie-consec-6421
+check 6422 movie-consec-6422
+check 6423 movie-consec-6423
+check 6424 movie-consec-6424
+check 6425 movie-consec-6425
+check 6426 movie-consec-6426
+check 6427 movie-consec-6427
+check 6428 movie-consec-6428
+check 6429 movie-consec-6429
+check 7200 after-movie-1
+check 7300 after-movie-2
+end 7310

@@ -1,6 +1,6 @@
 """Profile-guided optimization (PGO) profiles of our builds: production, verification, staleness (generic).
 
-The profiles (LLVM .profdata, .profraw) never go into Git (project policy, see README.md): they only serve our builds
+The profiles (LLVM .profdata, .profraw) never go into Git (project policy, see guide/building.md): they only serve our builds
 and stay local. The reference profile of a game version is the one that `train` writes into build/pgo/<game>-<ID>/
 (profile.profdata and profile-info.json); tools/build.py --pgo auto uses it if it is up to date.
 

@@ -25,7 +25,7 @@ Sources of the register names: Dolphin (Source/Core/Core/HW/*.h, GPL-2.0+, names
 public "YAGCD" documentation.
 
 License: GPL-3.0 only. Unlike the rest of tools/, this file is NOT offered under the MIT license, because its
-register names come from Dolphin's headers (see the license table in README.md).
+register names come from Dolphin's headers (see the license table in guide/distribution-and-license.md).
 """
 
 from __future__ import annotations

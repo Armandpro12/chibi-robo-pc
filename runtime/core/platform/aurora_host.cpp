@@ -88,16 +88,18 @@ void log_callback(AuroraLogLevel level, const char* module, const char* message,
 // right after aurora_initialize (about 0.35 s later: GPU and ImGui set-up):
 //   - at the bottom of the Z order (SetWindowPos HWND_BOTTOM with SWP_NOACTIVATE, Microsoft Learn "SetWindowPos");
 //   - not focusable (SDL_SetWindowFocusable: WS_EX_NOACTIVATE, Microsoft Learn "Extended Window Styles": does not
-//     become the foreground window when clicked, nor when the foreground window is minimized or closed), unless the
-//     window is to be minimized (GCRT_WINDOW=minimized): that style also removes the taskbar button, and a minimized
-//     window without one is drawn as a small bar above the taskbar (seen at the bottom left of the screen).
+//     become the foreground window when clicked, nor when the foreground window is minimized or closed; no taskbar
+//     button; [hypothesis] not offered by Alt+Tab either), in every window mode. With GCRT_WINDOW=minimized it used to be
+//     kept focusable, for its taskbar button: then a person's Alt+Tab or taskbar click, or the closing of the
+//     foreground window, could activate it (issue 39). A minimized window without a taskbar button is drawn as a
+//     small bar above the taskbar (seen at the bottom left of the screen): minimize_without_activation moves it off
+//     the screen.
 // Trace (GCRT_TRACE_PLATFORM): "no focus: ..." with the moment it was done.
 bool g_keptBehind = false;
-bool g_keepFocusable = false; // GCRT_WINDOW=minimized
 
 void keep_window_behind(SDL_Window* window, const char* when) {
   g_keptBehind = true;
-  const bool unfocusable = !g_keepFocusable && SDL_SetWindowFocusable(window, false);
+  const bool unfocusable = SDL_SetWindowFocusable(window, false);
   bool bottom = false;
 #ifdef _WIN32
   const auto hwnd = static_cast<HWND>(
@@ -106,10 +108,41 @@ void keep_window_behind(SDL_Window* window, const char* when) {
            SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 #endif
   gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window %s, %s (%s)",
-                    g_keepFocusable ? "kept focusable (to be minimized)"
-                    : unfocusable   ? "not focusable"
-                                    : "focusable (failed)",
+                    unfocusable ? "not focusable" : "focusable (failed)",
                     bottom ? "moved to the bottom of the Z order" : "Z order unchanged (failed)", when);
+}
+
+// "No focus" mode with GCRT_WINDOW=minimized: SDL_MinimizeWindow is ShowWindow(SW_MINIMIZE) (SDL 3.4
+// src/video/windows/SDL_windowswindow.c, WIN_MinimizeWindow), which "activates the next top-level window in the Z
+// order" (Microsoft Learn, "ShowWindow"). Instead: ShowWindow(SW_SHOWMINNOACTIVE) ("displays the window as a minimized
+// window ... the window is not activated"). A minimized window without a taskbar button (WS_EX_NOACTIVATE) is drawn
+// by Windows as a small title bar on the screen (seen at the bottom left, and at (-1, -1) with a minimized position
+// asked off the screen through SetWindowPlacement), so it is then moved to (-32000, -32000), where the minimized
+// window with a taskbar button was measured before (tests of issue 30): SetWindowPos with SWP_NOACTIVATE. SDL sees the
+// minimization from the window messages, as before. Returns false if not done (the caller then uses
+// SDL_MinimizeWindow).
+bool minimize_without_activation(SDL_Window* window) {
+#ifdef _WIN32
+  const auto hwnd = static_cast<HWND>(
+      SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+  if (hwnd == nullptr) {
+    return false;
+  }
+  ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+  if (!IsIconic(hwnd)) {
+    return false;
+  }
+  const bool moved = SetWindowPos(hwnd, HWND_BOTTOM, -32000, -32000, 0, 0,
+                                  SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER) != 0;
+  RECT r{};
+  GetWindowRect(hwnd, &r);
+  gcrt_trace_printf(GCRT_TRACE_PLATFORM, "no focus: window minimized without activation, at (%ld, %ld)%s",
+                    static_cast<long>(r.left), static_cast<long>(r.top), moved ? "" : " (move failed)");
+  return true;
+#else
+  (void)window;
+  return false;
+#endif
 }
 
 // Event watch (SDL_AddEventWatch), only during aurora_initialize: runs on the thread that shows the window.
@@ -152,9 +185,18 @@ bool host_init(const HostConfig& config) {
   ac.logLevel = LOG_INFO;
   ac.windowWidth = config.width;
   ac.windowHeight = config.height;
+  // Window position left undefined: Aurora passes a negative position as SDL_WINDOWPOS_UNDEFINED (lib/window.cpp,
+  // create_window), which SDL 3.4 places centred on the usable area of the primary display (src/video/SDL_video.c,
+  // SDL_CreateWindowWithProperties). The zero-initialized AuroraConfig asked for (0, 0): the client area at the corner
+  // of the screen and the title bar above it, out of reach of the mouse (issue 44).
+  ac.windowPosX = -1;
+  ac.windowPosY = -1;
   ac.vsync = false; // pacing comes from the emulated VI (real time), not from vertical sync
   ac.mem1Size = 0;  // guest memory belongs to the runtime
   ac.mem2Size = 0;
+  // No usable GPU: Aurora tries the CPU (software) adapters after every hardware one, before its null backend
+  // (Aurora patch 0009; allowCpuAdapter stays false so that a CPU adapter never comes before a GPU).
+  ac.cpuAdapterFallback = true;
   if (config.windowMode != 0) {
     // Automatic launches: the window does not steal the foreground (SDL 3.2+ hints, to be set
     // before Aurora shows the window in aurora_initialize).
@@ -163,7 +205,6 @@ bool host_init(const HostConfig& config) {
   }
   const bool noFocus = gcrt_no_focus();
   if (noFocus) {
-    g_keepFocusable = config.windowMode == 2;
     SDL_AddEventWatch(keep_behind_on_shown, nullptr);
   }
   // Graphics backend (gcrt_game_config.h): --backend, else GCRT_BACKEND, else the settings file on a player's launch
@@ -185,7 +226,7 @@ bool host_init(const HostConfig& config) {
     requestedName = gcrt_backend_name(gcrt_game_config()->backend);
     requestSource = "game_config.ini";
   }
-  int requested = gcrt_backend_from_name(requestedName.c_str());
+  int requested = gcrt_backend_from_test_name(requestedName.c_str());
   // What the trace line below says was asked for: the name as given when it was refused.
   std::string requestDesc;
   if (requested < 0 || !gcrt_backend_available(requested)) {
@@ -203,6 +244,13 @@ bool host_init(const HostConfig& config) {
   char* argv0 = const_cast<char*>(g_title.c_str());
   const AuroraInfo info = aurora_initialize(1, &argv0, &ac);
   gcrt_backend_set_active(info.backend);
+  if (info.cpuAdapter) {
+    gcrt_trace_printf(GCRT_TRACE_PLATFORM,
+                      "graphics backend: no usable GPU, %s on a CPU (software) adapter: the game will be slow",
+                      gcrt_backend_label(info.backend));
+    std::fprintf(stderr, "gcrt: no usable GPU: using the software renderer (%s), the game will be slow\n",
+                 gcrt_backend_label(info.backend));
+  }
   {
     std::string offered;
     size_t count = 0;
@@ -222,13 +270,15 @@ bool host_init(const HostConfig& config) {
       std::fprintf(stderr, "gcrt: graphics backend %s could not be started; using %s instead\n",
                    gcrt_backend_label(requested), gcrt_backend_label(info.backend));
     } else if (requested == BACKEND_AUTO && (info.backend == BACKEND_D3D11 || info.backend == BACKEND_NULL)) {
-      // Last resort of Aurora's own order: neither Direct3D 12 nor Vulkan could be started. Not a player's choice, and
-      // the picture may be wrong (measured on one of the two supported versions with Direct3D 11).
+      // Last resort of Aurora's own order: neither Direct3D 12 nor Vulkan could be started. Not a player's choice:
+      // Direct3D 11 is less tested (title-boot identical on both versions since Aurora patch 0008, issue 38), and
+      // null draws nothing.
       gcrt_trace_printf(GCRT_TRACE_PLATFORM,
                         "graphics backend: neither Direct3D 12 nor Vulkan could be started, Aurora fell back to %s",
                         gcrt_backend_label(info.backend));
-      std::fprintf(stderr, "gcrt: neither Direct3D 12 nor Vulkan could be started; using %s, the picture may be wrong\n",
-                   gcrt_backend_label(info.backend));
+      std::fprintf(stderr, "gcrt: neither Direct3D 12 nor Vulkan could be started; using %s%s\n",
+                   gcrt_backend_label(info.backend),
+                   info.backend == BACKEND_D3D11 ? ", less tested than Direct3D 12 and Vulkan" : "");
     }
   }
   gcrt_diag_startup_beat();
@@ -240,7 +290,9 @@ bool host_init(const HostConfig& config) {
     }
   }
   if (config.windowMode == 2 && info.window != nullptr) {
-    SDL_MinimizeWindow(info.window);
+    if (!(noFocus && minimize_without_activation(info.window))) {
+      SDL_MinimizeWindow(info.window);
+    }
   }
   static const char* const kWindowModes[] = {"normal", "no activation", "minimized"};
   gcrt_diag_event(GCRT_EV_WINDOW, GCRT_EVW_OPENED,
@@ -271,7 +323,19 @@ bool host_init(const HostConfig& config) {
       }
       SDL_SetWindowFullscreen(info.window, fullscreen);
       if (!fullscreen) {
+        int oldWidth = 0;
+        int oldHeight = 0;
+        SDL_GetWindowSize(info.window, &oldWidth, &oldHeight);
         SDL_SetWindowSize(info.window, gc->windowWidth, gc->windowHeight);
+        if (oldWidth != gc->windowWidth || oldHeight != gc->windowHeight) {
+          // The window was centred for its first size (see windowPosX above): centred again for the saved size, on
+          // the display it is on now (the menu window may have been moved to another one), so that a larger window
+          // does not run off the bottom of the screen (issue 44). SDL_WINDOWPOS_CENTERED_DISPLAY: SDL 3.4
+          // include/SDL3/SDL_video.h; usable bounds of that display, src/video/SDL_video.c, SDL_SetWindowPosition.
+          const SDL_DisplayID display = SDL_GetDisplayForWindow(info.window);
+          SDL_SetWindowPosition(info.window, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+                                SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+        }
       }
     }
   }

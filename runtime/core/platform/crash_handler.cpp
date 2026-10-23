@@ -19,8 +19,12 @@
 //    to stderr, marks the .txt as incomplete and lets the process end as usual;
 //  - the text report is written first, section by section (whatever was composed is on disk if a later step hangs or
 //    faults), then the minidump, then the guest memory; the risky steps of phase 2 are guarded by SEH;
-//  - the in-process minidump suspends every other thread for the whole dump and is not bounded: none in a start-up
-//    hang report, none in a game-loop hang report if the game loop progressed again meanwhile (see do_report);
+//  - the minidump is written from a snapshot of the process (PssCaptureSnapshot), never by MiniDumpWriteDump on the
+//    live process from inside it, which suspends every other thread for the whole dump and then waits for the heap
+//    and loader locks they may hold: a hang report has no minidump when no snapshot can be taken or the dump from it
+//    fails, a crash report then falls back to the live process (the process ends anyway); the snapshot is always
+//    freed; none in a start-up hang report, none in a game-loop
+//    hang report if the game loop progressed again meanwhile (see do_report);
 //  - a report reads the guest state and the platform context under g_state_lock, and the end of the game forgets them
 //    under it before they are freed; a fault of the reporting thread itself only cuts its report (guarded_do_report);
 //  - if the folder cannot be written, the temporary folder is tried, then the report goes to stderr only; if the
@@ -50,6 +54,7 @@ extern "C" {
 #include <bcrypt.h>
 #include <dbghelp.h>
 #include <intrin.h>
+#include <processsnapshot.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <winternl.h>
@@ -1074,6 +1079,9 @@ DWORD g_watchdog_tid = 0;
 // > 0 sleep that many ms, -1 ("heap") a 1 MiB allocation on the process heap (the defect the guard protects against),
 // -2 ("fault") a fault of the reporting thread (the report is cut, the threads resumed, the game left running).
 long g_test_suspended = 0;
+// Test (GCRT_CRASH_TEST_DUMP): the minidump from a snapshot fails after writing a few bytes into the file, 1 ("false")
+// as if MiniDumpWriteDump returned FALSE, 2 ("fault") by an exception inside it; 0 normal.
+long g_test_dump = 0;
 // Result of the last capture.
 int g_suspended_count = 0;
 double g_suspended_ms = 0.0;
@@ -1083,6 +1091,13 @@ uint64_t g_events_upto = UINT64_MAX;
 // GetThreadDescription (Windows 10 1607+), resolved at installation (no loader lock after a crash).
 using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
 GetThreadDescriptionFn g_get_thread_description = nullptr;
+
+// Process snapshots (PssCaptureSnapshot / PssFreeSnapshot, kernel32, Windows 8.1+; Microsoft Learn), resolved at
+// installation like GetThreadDescription: the minidump is written from a snapshot (see write_minidump).
+using PssCaptureSnapshotFn = DWORD(WINAPI*)(HANDLE, PSS_CAPTURE_FLAGS, DWORD, HPSS*);
+using PssFreeSnapshotFn = DWORD(WINAPI*)(HANDLE, HPSS);
+PssCaptureSnapshotFn g_pss_capture = nullptr;
+PssFreeSnapshotFn g_pss_free = nullptr;
 
 void thread_name(DWORD tid, char* buf, size_t size) {
   buf[0] = 0;
@@ -1405,10 +1420,10 @@ alignas(16) CONTEXT g_capture_ctx; // context captured by abort/terminate/pureca
 EXCEPTION_RECORD g_capture_rec;
 EXCEPTION_POINTERS g_capture_ptrs;
 
-void write_file(const wchar_t* path, const void* data, size_t size) {
+bool write_file(const wchar_t* path, const void* data, size_t size) {
   HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (f == INVALID_HANDLE_VALUE) {
-    return;
+    return false;
   }
   const char* p = static_cast<const char*>(data);
   while (size > 0) {
@@ -1420,7 +1435,10 @@ void write_file(const wchar_t* path, const void* data, size_t size) {
     p += written;
     size -= written;
   }
+  const DWORD error = size == 0 ? ERROR_SUCCESS : GetLastError();
   CloseHandle(f);
+  SetLastError(error);
+  return size == 0;
 }
 
 // Opens <dir><prefix><date>-<pid>[-n].txt without overwriting. First without the heap: NtCreateFile relative to the
@@ -1489,14 +1507,147 @@ bool open_report_file(const wchar_t* prefix, const SYSTEMTIME& st) {
   return false;
 }
 
-// Phase 2 helpers guarded by SEH: a fault there (corrupt heap, dbghelp) must not lose what is already written.
-bool guarded_minidump(HANDLE process, HANDLE dump, MINIDUMP_TYPE type, MINIDUMP_EXCEPTION_INFORMATION* mei,
-                      MINIDUMP_USER_STREAM_INFORMATION* user) {
+// Minidump writer (issue 36). MiniDumpWriteDump on the live process, called inside it, suspends every other thread of
+// the process for the whole dump (the suspension guard included) and then needs the process heap and the loader lock
+// itself: a thread it suspended while holding one of them blocks it, and the whole process, for ever (a standalone
+// probe: 6 of 7 dumps blocked in RtlAllocateHeap with a thread holding the heap lock, 5 of 5 in LoadLibraryExW with a
+// thread loading libraries; Microsoft Learn, MiniDumpWriteDump, Remarks: loader deadlock).
+// The dump is written from a snapshot of the process instead: PssCaptureSnapshot with a virtual-address clone, then
+// MiniDumpWriteDump on the snapshot handle, which the minidump callback identifies (IsProcessSnapshotCallback answered
+// S_FALSE; Microsoft Learn, "Generate Dump File from a Process Snapshot"). dbgcore then reads the clone and suspends
+// nothing in the running process: a thread holding a lock goes on and releases it (same probe: 15 of 15 written, the
+// other threads never suspended during the dump; test GCRT_CRASH_TEST=hangchurn: no blocked hang report). The capture
+// takes 0.2 to 0.4 s in the game (15 to 70 ms in the probe), and the process seems paused meanwhile [hypothesis: in
+// the probe a busy thread made no progress for as long as the capture took] and it uses no process heap
+// (PSS_CREATE_USE_VM_ALLOCATIONS). Handle names are not captured: a name query may wait on a file handle with
+// a synchronous I/O in progress [hypothesis], and the reports never use them.
+constexpr DWORD kPssCaptureFlags =
+    PSS_CAPTURE_VA_CLONE | PSS_CAPTURE_HANDLES | PSS_CAPTURE_HANDLE_BASIC_INFORMATION |
+    PSS_CAPTURE_HANDLE_TYPE_SPECIFIC_INFORMATION | PSS_CAPTURE_THREADS | PSS_CAPTURE_THREAD_CONTEXT |
+    PSS_CAPTURE_THREAD_CONTEXT_EXTENDED | PSS_CREATE_BREAKAWAY | PSS_CREATE_BREAKAWAY_OPTIONAL |
+    PSS_CREATE_USE_VM_ALLOCATIONS | PSS_CREATE_RELEASE_SECTION;
+
+enum class DumpSource { None, Snapshot, Live };
+
+BOOL CALLBACK snapshot_dump_callback(PVOID, PMINIDUMP_CALLBACK_INPUT input, PMINIDUMP_CALLBACK_OUTPUT output) {
+  if (input->CallbackType == IsProcessSnapshotCallback) {
+    output->Status = S_FALSE; // the process handle given to MiniDumpWriteDump is a snapshot handle
+  }
+  return TRUE;
+}
+
+// What write_minidump did. `source`: where the written (or failed) dump comes from; `pss_error`: why no snapshot (0 if
+// one was taken; ERROR_UNHANDLED_EXCEPTION if the capture faulted); `capture_ms`: time of the capture;
+// `snapshot_error`: when a snapshot was taken but the dump from it failed, GetLastError of MiniDumpWriteDump, or the
+// exception code if it faulted (`snapshot_fault`), else 0. With `snapshot_error` != 0 and `source` == Live, the dump
+// comes from the live process after the snapshot dump failed (crash reports only). `free_error`: what PssFreeSnapshot
+// returned (0 also when no snapshot was taken).
+struct DumpOutcome {
+  DumpSource source;
+  DWORD pss_error;
+  double capture_ms;
+  DWORD snapshot_error;
+  bool snapshot_fault;
+  DWORD free_error;
+};
+
+// Each SEH-guarded step is its own function (no C++ object to unwind in a function with __try), as unwind_stack and
+// guarded_copy above. A fault in the capture returns ERROR_UNHANDLED_EXCEPTION; a fault in the dump returns false
+// with the exception code in `*fault`; a fault in the release is ignored.
+DWORD guarded_pss_capture(HPSS* snapshot) {
   __try {
-    return MiniDumpWriteDump(process, GetCurrentProcessId(), dump, type, mei, user, nullptr) != FALSE;
+    return g_pss_capture(GetCurrentProcess(), static_cast<PSS_CAPTURE_FLAGS>(kPssCaptureFlags), CONTEXT_ALL,
+                         snapshot);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
+    *snapshot = nullptr;
+    return ERROR_UNHANDLED_EXCEPTION;
+  }
+}
+
+// `test`: g_test_dump for the dump from a snapshot, 0 otherwise.
+bool guarded_dump(HANDLE process, HANDLE dump, MINIDUMP_TYPE type, MINIDUMP_EXCEPTION_INFORMATION* mei,
+                  MINIDUMP_USER_STREAM_INFORMATION* user, MINIDUMP_CALLBACK_INFORMATION* callback, long test,
+                  DWORD* fault) {
+  *fault = 0;
+  __try {
+    if (test != 0) {
+      DWORD n = 0;
+      WriteFile(dump, "partial", 7, &n, nullptr); // what a failed dump may leave in the file
+      if (test == 2) {
+        RaiseException(0xE0000036u, 0, 0, nullptr);
+      }
+      SetLastError(ERROR_GEN_FAILURE);
+      return false;
+    }
+    return MiniDumpWriteDump(process, GetCurrentProcessId(), dump, type, mei, user, callback) != FALSE;
+  } __except (*fault = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
     return false;
   }
+}
+
+// Returns what PssFreeSnapshot returned (ERROR_UNHANDLED_EXCEPTION if it faulted).
+DWORD guarded_pss_free(HPSS snapshot) {
+  __try {
+    return g_pss_free(GetCurrentProcess(), snapshot);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return ERROR_UNHANDLED_EXCEPTION;
+  }
+}
+
+// Writes the minidump into `dump`, from a snapshot when one can be taken, otherwise from the live process only if
+// `live_allowed`; with `live_allowed`, a failed dump from the snapshot (MiniDumpWriteDump returning FALSE, or a fault
+// in it) also falls back to the live process, the file emptied first. A hang report never does (`live_allowed`
+// false). Every step is guarded by SEH (a fault there, corrupt heap or dbghelp, must not lose what is already
+// written), and a snapshot that was taken is always freed, after a fault of the dump too.
+bool write_minidump(HANDLE dump, MINIDUMP_TYPE type, MINIDUMP_EXCEPTION_INFORMATION* mei,
+                    MINIDUMP_USER_STREAM_INFORMATION* user, bool live_allowed, DumpOutcome* r) {
+  r->source = DumpSource::None;
+  r->pss_error = ERROR_PROC_NOT_FOUND;
+  r->capture_ms = 0.0;
+  r->snapshot_error = 0;
+  r->snapshot_fault = false;
+  r->free_error = 0;
+  if (g_pss_capture != nullptr && g_pss_free != nullptr) {
+    HPSS snapshot = nullptr;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+    r->pss_error = guarded_pss_capture(&snapshot);
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    r->capture_ms = static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart);
+    if (r->pss_error == ERROR_SUCCESS) {
+      r->source = DumpSource::Snapshot;
+      MINIDUMP_CALLBACK_INFORMATION callback{snapshot_dump_callback, nullptr};
+      DWORD fault = 0;
+      const bool ok =
+          guarded_dump(reinterpret_cast<HANDLE>(snapshot), dump, type, mei, user, &callback, g_test_dump, &fault);
+      const DWORD error = fault != 0 ? fault : GetLastError();
+      r->free_error = guarded_pss_free(snapshot);
+      if (ok) {
+        return true;
+      }
+      r->snapshot_error = error != 0 ? error : ERROR_GEN_FAILURE;
+      r->snapshot_fault = fault != 0;
+      if (!live_allowed) {
+        SetLastError(r->snapshot_error);
+        return false;
+      }
+      // Fall back to the live process, on an emptied file (the failed dump may have written part of it).
+      LARGE_INTEGER zero{};
+      SetFilePointerEx(dump, zero, nullptr, FILE_BEGIN);
+      SetEndOfFile(dump);
+    }
+  }
+  if (!live_allowed) {
+    return false;
+  }
+  r->source = DumpSource::Live;
+  DWORD fault = 0;
+  const bool ok = guarded_dump(GetCurrentProcess(), dump, type, mei, user, nullptr, 0, &fault);
+  if (!ok && fault != 0) {
+    SetLastError(fault);
+  }
+  return ok;
 }
 
 void symbolized_stack(HANDLE process, const CONTEXT* ctx, DWORD tid) {
@@ -1582,10 +1733,10 @@ void do_report() {
           "state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT), and a start-up report is text only (no minidump)\n",
           g_in.hang_seconds);
     } else {
-      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is not killed, but the "
-          "other threads are suspended while their state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT) and again, "
-          "without bound, while the minidump is written (last, and only if the game loop is still stopped then; see "
-          "the minidump line)\n",
+      out("no exception: the game loop made no progress for %u s (GCRT_WATCHDOG); the game is not killed: the "
+          "other threads are suspended while their state is copied (bounded by GCRT_CRASH_SUSPEND_LIMIT), and the "
+          "minidump (last, only if the game loop is still stopped then) is written from a snapshot of the process, "
+          "which pauses it only while the snapshot is taken (see the minidump line)\n",
           g_in.hang_seconds);
     }
   }
@@ -1708,10 +1859,9 @@ void do_report() {
   // Phase 2 (may allocate; guarded): symbolized stack, modules, minidump, guest memory, signature history.
   SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_FAIL_CRITICAL_ERRORS);
   SymInitialize(process, nullptr, TRUE); // may fail if already initialized (host profiler): symbols still usable
-  // Kept for hang reports too, though they have no faulting thread to symbolize: it allocates on the process heap,
-  // so a thread holding the heap lock (still running here) is waited for before the minidump suspends it; without
-  // it, the hangheap test froze for ever in MiniDumpWriteDump (it suspends every other thread, the suspension guard
-  // included, then needs the heap). Not a guarantee: the lock can be taken again just before the dump.
+  // Also done in hang reports, which have no faulting thread to symbolize: it used to make the in-process minidump
+  // wait for a running thread holding the heap lock; the minidump no longer suspends threads (write_minidump), the
+  // call is kept as it was.
   if (ctx != nullptr) {
     out("\n== Host call stack of the faulting thread (dbghelp, function names when a PDB is present)\n");
     if (!guarded_symbolized_stack(process, ctx, g_in.thread)) {
@@ -1728,23 +1878,20 @@ void do_report() {
   flush_text();
   close_threads();
 
-  // An in-process MiniDumpWriteDump suspends every other thread of the process for the whole dump (seen: suspend
-  // count 1 and no progress of a counting thread, read from a minidump callback) and then needs the heap and the
-  // loader lock itself (version
-  // resources, module list): a thread it suspended while holding one of those locks blocks it, and the game, for
-  // ever (seen in start-up reports: the main thread suspended inside RtlAllocateHeap or the delay-load resolver).
-  // Microsoft Learn (MiniDumpWriteDump, Remarks) advises against calling it in the target process for that reason.
-  // A crash report keeps it (the process ends anyway, the faulting thread waits at most kReportWaitMs). A hang report
-  // must leave a running game running: none for the start-up (it is alive in almost every case, a slow window
-  // creation or setup menu, and its threads allocate all the time; the raw stacks above are what matters), and none
-  // for the game loop either if it progressed again while the text was written (the game is running again).
+  // The minidump comes from a snapshot of the process (write_minidump): no thread stays suspended while it is
+  // written. Without a snapshot, a crash report falls back to MiniDumpWriteDump on the live process (the process ends
+  // anyway, the faulting thread waits at most kReportWaitMs), a hang report writes none: on the live process it
+  // suspends every thread for the whole dump and blocks for ever on a lock one of them holds (issue 36), and a hang
+  // report must leave a running game running. None for the start-up (text only since the in-process dump could
+  // freeze a slow start-up; the raw stacks above are what matters), and none for the game loop either if it
+  // progressed again while the text was written (the dump would not show the hang).
   const char* no_dump = nullptr;
+  bool dump_written = false;
+  bool guest_written = false;
   if (hang && g_hang_in_startup) {
-    no_dump = "start-up hang report: an in-process minidump suspends every other thread while it is written, and a "
-              "thread suspended while holding the heap or loader lock would block it and the game for ever; the raw "
-              "stacks of every thread are above";
+    no_dump = "start-up hang report: text only; the raw stacks of every thread are above";
   } else if (hang && g_gcrt_heartbeat != g_hang_beat) {
-    no_dump = "the game loop progressed again while this report was written: a minidump would suspend a running game";
+    no_dump = "the game loop progressed again while this report was written: the dump would not show the hang";
   }
   if (g_in.stem[0] != 0 && no_dump != nullptr) {
     out("\nminidump: not written (%s)\n", no_dump);
@@ -1769,6 +1916,7 @@ void do_report() {
     bool dumped = false;
     DWORD dump_error = 0;
     LARGE_INTEGER dump_size{};
+    DumpOutcome d{};
     if (dump != INVALID_HANDLE_VALUE) {
       MINIDUMP_EXCEPTION_INFORMATION mei{};
       mei.ThreadId = g_in.thread;
@@ -1784,29 +1932,62 @@ void do_report() {
       const auto type = static_cast<MINIDUMP_TYPE>(MiniDumpWithThreadInfo | MiniDumpWithFullMemoryInfo |
                                                    MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithUnloadedModules |
                                                    MiniDumpWithHandleData | MiniDumpWithProcessThreadData);
-      dumped = guarded_minidump(process, dump, type, g_in.info != nullptr ? &mei : nullptr, &user);
+      dumped = write_minidump(dump, type, g_in.info != nullptr ? &mei : nullptr, &user, !hang, &d);
+      dump_written = dumped;
       if (!dumped) {
         dump_error = GetLastError();
       }
       GetFileSizeEx(dump, &dump_size);
       CloseHandle(dump);
+      if (!dumped) {
+        // No dump: no live dump for a hang report without a snapshot (it could block the game for ever), or a failed
+        // one, of which the file holds at most a part.
+        DeleteFileW(path);
+      }
     } else {
       dump_error = GetLastError();
     }
-    out("\nminidump: %s", dumped ? "written" : "FAILED");
+    const char* from = d.source == DumpSource::Snapshot ? "a process snapshot"
+                       : d.source == DumpSource::Live   ? "the live process"
+                                                        : "nothing";
+    const bool after_snapshot = d.source == DumpSource::Live && d.snapshot_error != 0;
     if (dumped) {
-      out(" (%.2f MiB, with the region list, thread information and the whole event ring)\n",
+      out("\nminidump: written from %s%s (%.2f MiB, with the region list, thread information and the whole event "
+          "ring)\n",
+          from, after_snapshot ? " after the snapshot dump failed" : "",
           static_cast<double>(dump_size.QuadPart) / 1048576.0);
+    } else if (hang && d.source == DumpSource::None && dump != INVALID_HANDLE_VALUE) {
+      out("\nminidump: not written (no process snapshot: PssCaptureSnapshot %s %lu; a minidump of the live process "
+          "could block the game for ever)\n",
+          g_pss_capture != nullptr ? "error" : "unavailable, error", static_cast<unsigned long>(d.pss_error));
     } else {
-      out(" (error %lu)\n", static_cast<unsigned long>(dump_error));
+      out("\nminidump: FAILED (error 0x%08lX, from %s%s)\n", static_cast<unsigned long>(dump_error), from,
+          after_snapshot ? " after the snapshot dump failed" : "");
+    }
+    if (d.snapshot_error != 0) {
+      out("(snapshot dump: %s 0x%08lX; snapshot released: %s %lu)\n",
+          d.snapshot_fault ? "exception" : "MiniDumpWriteDump error", static_cast<unsigned long>(d.snapshot_error),
+          d.free_error == ERROR_SUCCESS ? "yes, error" : "NO, error", static_cast<unsigned long>(d.free_error));
+    } else if (d.pss_error != ERROR_SUCCESS && d.source == DumpSource::Live) {
+      out("(no process snapshot: PssCaptureSnapshot %s %lu)\n", g_pss_capture != nullptr ? "error" : "unavailable, error",
+          static_cast<unsigned long>(d.pss_error));
     }
     flush_text();
+    if (hang) { // not after a crash: the faulting thread may hold a lock of the trace output (see above)
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "hang report: minidump %s from %s (snapshot taken in %.1f ms)",
+                        dumped ? "written" : "not written",
+                        d.source == DumpSource::Snapshot ? "a process snapshot" : "nothing", d.capture_ms);
+    }
     if (!hang) {
       state_lock();
       if (g_cpu != nullptr && g_cpu->state.ram != nullptr) {
         swprintf_s(path, L"%s-guest-ram.bin", g_in.stem);
-        write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
-        out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
+        guest_written = write_file(path, g_cpu->state.ram, g_cpu->state.ram_size);
+        if (guest_written) {
+          out("guest memory: %u bytes from 0x80000000\n", g_cpu->state.ram_size);
+        } else {
+          out("guest memory: FAILED (error 0x%08lX)\n", static_cast<unsigned long>(GetLastError()));
+        }
       }
       state_unlock();
     }
@@ -1824,8 +2005,12 @@ void do_report() {
   }
   char where_files[MAX_PATH * 2];
   WideCharToMultiByte(CP_UTF8, 0, g_in.stem, -1, where_files, sizeof(where_files), nullptr, nullptr);
-  std::fprintf(stderr, "gcrt: %s report written: %s.txt (%s)\n", hang ? "hang" : "crash", where_files,
-               no_dump != nullptr ? "text only" : hang ? ".dmp" : ".dmp, -guest-ram.bin");
+  // The files actually written besides the .txt.
+  const char* written = dump_written && guest_written ? ".dmp, -guest-ram.bin"
+                        : dump_written                ? ".dmp"
+                        : guest_written               ? "-guest-ram.bin"
+                                                      : "text only";
+  std::fprintf(stderr, "gcrt: %s report written: %s.txt (%s)\n", hang ? "hang" : "crash", where_files, written);
   std::fflush(stderr);
 }
 
@@ -2071,7 +2256,7 @@ DWORD WINAPI watchdog_main(LPVOID) {
                         : startup ? ", writing a hang report, text only (the game is not killed; its threads are "
                                     "suspended while their state is copied)"
                                   : ", writing a hang report (the game is not killed; its threads are suspended while "
-                                    "their state is copied and while the minidump, if any, is written)");
+                                    "their state is copied; the minidump, if any, comes from a process snapshot)");
       if (reports < kMaxHangReports) {
         reports++;
         g_hang_in_startup = startup;
@@ -2119,6 +2304,10 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
   load_signatures();
   g_get_thread_description = reinterpret_cast<GetThreadDescriptionFn>(
       reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "GetThreadDescription")));
+  g_pss_capture = reinterpret_cast<PssCaptureSnapshotFn>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PssCaptureSnapshot")));
+  g_pss_free = reinterpret_cast<PssFreeSnapshotFn>(
+      reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PssFreeSnapshot")));
   read_machine_info();
   read_exe_and_cpus();
   read_environment();
@@ -2145,6 +2334,11 @@ extern "C" void gcrt_crash_handler_install(GcrtCpu* g) {
     g_test_suspended = _wcsicmp(buf, L"heap") == 0    ? -1
                        : _wcsicmp(buf, L"fault") == 0 ? -2
                                                       : static_cast<long>(wcstoul(buf, nullptr, 10));
+  }
+  if (env_set(L"GCRT_CRASH_TEST_DUMP", buf, 32)) {
+    g_test_dump = _wcsicmp(buf, L"false") == 0 ? 1 : _wcsicmp(buf, L"fault") == 0 ? 2 : 0;
+    if (g_test_dump != 0)
+      gcrt_trace_printf(GCRT_TRACE_PLATFORM, "crash handler: GCRT_CRASH_TEST_DUMP set, minidumps will fail on purpose");
   }
   g_suspend_begin = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   g_suspend_end = CreateEventW(nullptr, TRUE, FALSE, nullptr);

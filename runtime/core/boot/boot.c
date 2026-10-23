@@ -508,8 +508,7 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         fprintf(stderr, "gcrt: DOL not found: %s\n", dol_path);
         char shown[2048];
         gcrt_path_display(dol_path, shown, sizeof(shown));
-        start_error("The game files were not found (DOL not found).\n\nThe game looked for:\n%s\n\n%s", shown,
-                    k_reinstall);
+        start_error("The game files are missing or damaged.\n\nThe game looked for:\n%s\n\n%s", shown, k_reinstall);
     }
     u64 fnv = gcrt_fnv1a64(dol_data, dol_size);
     if (info->dol_fnv64 && fnv != info->dol_fnv64) {
@@ -642,7 +641,10 @@ int gcrt_main(int argc, char** argv, const GcrtGameDesc* game) {
         fclose(guest_log);
     gcrt_cpu_free(g);
     /* 0 = normal stop (limit reached, window closed or stop requested by the launcher);
-     * 2 = abnormal stop (exception, unhandled access, game halted by OSPanic/PPCHalt...). */
-    return (reason == GCRT_STOP_BLOCK_LIMIT || reason == GCRT_STOP_TIME_LIMIT ||
-            reason == GCRT_STOP_REQUESTED) ? 0 : 2;
+     * 2 = abnormal stop (exception, unhandled access, game halted by OSPanic/PPCHalt...).
+     * gcrt_platform_before_exit: stops and waits for the exit priority helper thread (created by gcrt_platform_attach,
+     * released by gcrt_platform_detach; issue 35; the high priority class stays until the process ends), then writes
+     * the "exit: code" trace line. */
+    return gcrt_platform_before_exit((reason == GCRT_STOP_BLOCK_LIMIT || reason == GCRT_STOP_TIME_LIMIT ||
+                                      reason == GCRT_STOP_REQUESTED) ? 0 : 2);
 }

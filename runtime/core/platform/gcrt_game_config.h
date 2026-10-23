@@ -19,10 +19,14 @@ typedef struct GcrtGameConfig {
 } GcrtGameConfig;
 
 /* Graphics backend names, as written in game_config.ini, given to --backend and to GCRT_BACKEND: "auto", "d3d12",
- * "vulkan" (case is ignored). Returns the AuroraBackend value, or -1 for any other name. Direct3D 11 is not offered:
- * Dawn starts it here, but the picture differs from the other two in one of the two supported versions (A/B title-boot
- * comparison, 2026-10-19). */
+ * "vulkan" (case is ignored). Returns the AuroraBackend value, or -1 for any other name. Direct3D 11 is not offered: it
+ * is only Aurora's last resort and is less tested (its US picture was wrong until Aurora patch 0008, issue 38; since
+ * then the A/B title-boot captures are identical on both versions, 2026-10-20). */
 int gcrt_backend_from_name(const char* name);
+/* Same, for --backend and GCRT_BACKEND: with the test switch GCRT_TEST_ALL_BACKENDS=1 (off by default, for tests
+ * only), the names that are not offered ("d3d11", "null"...) are accepted too, and gcrt_backend_available() accepts
+ * their values. The menu and game_config.ini never offer them. */
+int gcrt_backend_from_test_name(const char* name);
 /* Short name ("auto", "d3d12"...) and label for people ("Auto", "Direct3D 12"...) of an AuroraBackend value; "?" for
  * a value without a name here. */
 const char* gcrt_backend_name(int backend);

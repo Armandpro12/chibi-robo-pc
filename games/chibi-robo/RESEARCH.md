@@ -221,6 +221,11 @@ The 16 modules are stored in `qp.bin` under `rel/` `[verified: file]`:
 **Other libraries in the DOL**:
 - AXFX: HAL calls `AXFXSetHooks` `[verified: Ghidra]`.
 - The THP sample player (`THPSimple`), linked into the game `[verified: Ghidra]`.
+- Movies are started by the `movie` command of the stage event scripts. The credits stage (10) plays its movie as
+  soon as it starts, with no condition; the basement stage (3) plays its silent movie inside the event of the socket
+  on the big robot, the first time Chibi-Robo plugs into it (a story flag that a new game has not set yet)
+  `[verified: US scripts read with unplug, both movies reached by test in US; the basement movie also reached by test
+  in PAL, where it is the 25 fps file: 1150 frames shown in 46.0 s at 50 Hz]`.
 - No SDK function is in the REL modules `[verified: REL relocations]`.
 
 **Other code** `[verified: file]`:
@@ -456,6 +461,13 @@ THPSimple and the game each add their own AI DMA callback in front of AX's.
 **Music by place** `[verified: native DVD trace + Dolphin audio dump, US, a 47-minute save, night]`:
 - Inside the Chibi-House no `.hps` stream is read: the output is a mono low-frequency loop (main energy near 42 Hz, left = right), the same in Dolphin and in the native port.
 - In the living room at night the game streams `qp/streaming/bgm_night.hps` (envelope correlation 0.80 native, 0.86 Dolphin, with sound effects mixed in).
+
+**Pitch modulation of the basement music** `[verified: native AX voice trace (GCRT_TRACE=axvoice) + Dolphin audio dump, US, basement-movie scenario]`:
+- The basement music is a stereo `.hps` stream (two ADPCM voices, polyphase resampling) at a nominal ratio of `0x160CC` (44.1 kHz into 32 kHz). From about 91 s into the scenario, game or HAL code (neither the code nor its trigger identified) changes the ratio of both voices in steps of about `0x34` (11 distinct values), from `0x15FC8` to `0x161D2` and back (about +/-0.29 %), in a periodic pattern of exactly 6.0 s.
+- The modulation keeps running when the music changes: the next stream starts with the ratio the pattern has at that instant, not at the start of a cycle.
+- No AUX effect is involved: the AUX A and B callbacks are null during this music (RAM dump), in line with the effect setup above.
+- Consequence for comparisons: when one side starts the new stream later (here Dolphin: a measured step of 65 ms, i.e. 13 AX frames, the best fit of the model; the cause of this step is not established), it starts at another phase of the same modulation. The two outputs then drift apart and back with the 6 s period (+/-4.5 samples, SNR 14-34 dB), although both apply the same modulation. A model fed only with the native ratio sequence and a 13-frame later start predicts the measured lag curve to 0.34 samples RMS. The model predicts that, without the modulation on the Dolphin side, the swing would be about 210 samples peak to peak (a prediction, not a measurement).
+- When the stream starts depends on the disc read time: with a slower native drive (`--dvd-rate 1500000`) the new stream starts at another phase of the modulation.
 
 **AUX effects**: the HAL effect setup (US `0x801E8D84` / PAL `0x801EB778`) takes an effect type from 0 to 4 and a bus (A or B); type 0 installs no effect. Its only caller passes type 0, and no pointer to it exists in the DOL or the RELs `[verified: Ghidra, REL relocations]`.
 

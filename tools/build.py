@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zlib
 from pathlib import Path
@@ -118,9 +119,44 @@ REL_AUTO_ALIGN = 0x10000  # DolRecomp, src/app/pipeline.h
 TAIL_ALIGN = 32
 
 
+def applied_patch_count(git: Path, repo: Path, patches: list[Path], files: list[str]) -> int | None:
+    """Number of leading patches of the series already in the working tree of repo: the files they touch equal HEAD
+    plus patches[:k]. Each state is built in a temporary index (`git apply --cached`, one patch after the other), so a
+    later patch may change lines that an earlier one added: a reverse check of the earlier patch alone would then
+    fail on a fully patched tree. None if the tree matches no state (other commit or local changes)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # New objects (the blobs that `git apply --cached` writes) go to a temporary object directory; the repository's
+        # own objects stay readable through the alternates, so the real repository is not written to.
+        found = subprocess.run([str(git), "-C", str(repo), "rev-parse", "--git-path", "objects"], capture_output=True,
+                               text=True)
+        if found.returncode != 0 or not found.stdout.strip():
+            return None
+        real_objects = (repo / found.stdout.strip()).resolve()
+        (Path(tmp) / "objects").mkdir()
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp) / "index"),
+               "GIT_OBJECT_DIRECTORY": str(Path(tmp) / "objects"),
+               "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(real_objects)}
+
+        def git_ok(*args: str) -> bool:
+            return subprocess.run([str(git), "-C", str(repo), *args], env=env, capture_output=True).returncode == 0
+
+        if not git_ok("read-tree", "HEAD"):
+            return None
+        # `git diff --quiet` compares the working tree with the temporary index (contents, after the checkout's
+        # line-end conversion); untracked files that a patch adds are in that index once the patch is applied.
+        matched = 0 if git_ok("diff", "--quiet", "--", *files) else None
+        for k, patch in enumerate(patches, 1):
+            if not git_ok("apply", "--cached", str(patch)):
+                break
+            if git_ok("diff", "--quiet", "--", *files):
+                matched = k
+        return matched
+
+
 def apply_patches(repo: Path, patch_dir: Path, name: str) -> set[Path] | None:
-    """Applies the patches patch_dir/*.patch to the checkout repo when they are missing (a patch that can be
-    reversed is already there). Returns the files they touch, or None without patches or without Git."""
+    """Applies the patches patch_dir/*.patch, in name order, to the checkout repo when they are missing: the leading
+    patches already in the tree are found by applied_patch_count, the next ones are applied. Returns the files they
+    touch, or None without patches or without Git."""
     git = tc.find_git()
     patches = sorted(patch_dir.glob("*.patch"))
     if not patches or not git:
@@ -130,14 +166,17 @@ def apply_patches(repo: Path, patch_dir: Path, name: str) -> set[Path] | None:
         # current folder and report every patch as already applied.
         raise SystemExit(f"{repo} is not a Git checkout: clone it with Git so that the {name} patches can be applied.")
     touched: set[Path] = set()
+    files: list[str] = []
     for patch in patches:
         for line in patch.read_text(encoding="utf-8").splitlines():
             if line.startswith("+++ b/"):
                 touched.add(repo / line[6:])
-        applied = subprocess.run([str(git), "-C", str(repo), "apply", "--reverse", "--check", str(patch)],
-                                 capture_output=True).returncode == 0
-        if applied:
-            continue
+                files.append(line[6:])
+    done = applied_patch_count(git, repo, patches, sorted(set(files)))
+    if done is None:
+        raise SystemExit(f"The {name} patches do not match {repo}: neither the files they touch at HEAD nor after "
+                         f"any number of them (different commit or local changes?).")
+    for patch in patches[done:]:
         if subprocess.run([str(git), "-C", str(repo), "apply", "--check", str(patch)], capture_output=True).returncode:
             raise SystemExit(f"Patch {patch.name} does not apply to {repo} "
                              f"(different commit or local changes?).")

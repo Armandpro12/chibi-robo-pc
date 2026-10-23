@@ -28,12 +28,46 @@ static const char* const s_aliases[][2] = {{"di", "dvd"}, {"si", "pad"}};
 
 static FILE* s_out = NULL;
 static bool s_init = false;
+
+/* Tiny spin locks (held for a few instructions). After a few spins the waiter gives its processor away, so that a
+   holder preempted on the same processor by a waiter of higher priority can finish (busy computer, end of process). */
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void spin_lock(volatile long* lock) {
+  for (unsigned n = 0; InterlockedExchange(lock, 1) != 0; n++) {
+    if (n < 64) {
+      YieldProcessor();
+    } else {
+      SwitchToThread();
+    }
+  }
+}
+static void spin_unlock(volatile long* lock) { InterlockedExchange(lock, 0); }
+#else
+#include <sched.h>
+static void spin_lock(volatile long* lock) {
+  for (unsigned n = 0; __atomic_exchange_n(lock, 1, __ATOMIC_ACQUIRE) != 0; n++) {
+    if (n >= 64) {
+      sched_yield();
+    }
+  }
+}
+static void spin_unlock(volatile long* lock) { __atomic_store_n(lock, 0, __ATOMIC_RELEASE); }
+#endif
+
+/* Clock of the line prefix. Read and called under s_clock_lock: once gcrt_trace_set_clock has returned, no thread is
+   still calling the previous clock with its user data (the platform frees that data right after setting the clock to
+   NULL at the end of a run, while other threads, such as the exit priority helper, may still write trace lines). */
 static double (*s_clock)(void*) = NULL;
 static void* s_clock_user = NULL;
+static volatile long s_clock_lock = 0;
 
 void gcrt_trace_set_clock(double (*seconds)(void* user), void* user) {
+  spin_lock(&s_clock_lock);
   s_clock = seconds;
   s_clock_user = user;
+  spin_unlock(&s_clock_lock);
 }
 
 FILE* gcrt_trace_stream(void) {
@@ -123,22 +157,8 @@ static char s_tail[kTailSize];
 static volatile long s_tail_pos = 0; /* total bytes ever appended, modulo 2^31 (kTailSize divides it) */
 static volatile long s_tail_lock = 0;
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-static void tail_lock(void) {
-  while (InterlockedExchange(&s_tail_lock, 1) != 0) {
-    YieldProcessor();
-  }
-}
-static void tail_unlock(void) { InterlockedExchange(&s_tail_lock, 0); }
-#else
-static void tail_lock(void) {
-  while (__atomic_exchange_n(&s_tail_lock, 1, __ATOMIC_ACQUIRE) != 0) {
-  }
-}
-static void tail_unlock(void) { __atomic_store_n(&s_tail_lock, 0, __ATOMIC_RELEASE); }
-#endif
+static void tail_lock(void) { spin_lock(&s_tail_lock); }
+static void tail_unlock(void) { spin_unlock(&s_tail_lock); }
 
 static void tail_append(const char* text, size_t n) {
   tail_lock();
@@ -188,8 +208,16 @@ void gcrt_trace_printf(GcrtTraceCat cat, const char* fmt, ...) {
      the in-memory tail; a message too long for the buffer is written directly and only its beginning is kept. */
   char line[1536];
   int len = 0;
+  double seconds = 0.0;
+  bool have_clock = false;
+  spin_lock(&s_clock_lock);
   if (s_clock != NULL) {
-    len = snprintf(line, sizeof(line), "[%9.3f] ", s_clock(s_clock_user));
+    seconds = s_clock(s_clock_user);
+    have_clock = true;
+  }
+  spin_unlock(&s_clock_lock);
+  if (have_clock) {
+    len = snprintf(line, sizeof(line), "[%9.3f] ", seconds);
   }
   len += snprintf(line + len, sizeof(line) - (size_t)len, "[%s] ", s_names[cat]);
   va_list ap;

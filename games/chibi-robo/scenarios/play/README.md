@@ -26,6 +26,8 @@ Scenarios (same name in `GGTE01/` and `GGTP01/`):
 - `house-exit` (`after party`): Load Game, file 1, out of the Chibi-House to the living room (stage 7: first link
   of `stage07.rel`), back into the Chibi-House (unlink), out again (second link).
 - `staff-credits`: loads any save into the credits movie with `--stage staff-credit` (see the header of the file).
+- `basement-movie`: loads the `new-game` save into the basement with `--stage basement`, walks to the socket of the
+  big robot and plugs in: the basement movie (see the header of the file; the PAL path after the cutscene differs).
 
 Hints for writing a route: the stick directions are relative to the camera, which turns while Chibi-Robo walks;
 A with the stick pushed jumps; in these runs, A next to a "!" icon did nothing until B had put the Chibi-Copter away (that the equipped

@@ -16,7 +16,8 @@
  *   GCRT_FATAL_DIALOG  start-up errors (platform/gcrt_fatal.h): auto (default: message box on a player's launch only,
  *                      the rule of GCRT_SETUP_MENU=auto, and never with GCRT_NO_FOCUS or GCRT_SETUP_MENU_AUTO) | log
  *                      (no window; stderr says what the box would show; for tests) | off | show (always the box: a
- *                      human, or a test on a hidden desktop). The message always goes to stderr and the trace
+ *                      human, or a test on a hidden desktop). The message always goes to stderr and the trace.
+ *                      Values in any case ("Show")
  *   GCRT_LANGUAGE      SRAM language: 0 English (default), 1 German, 2 French, 3 Spanish,
  *                      4 Italian, 5 Dutch
  *   GCRT_DVD_RATE      simulated drive throughput in bytes/s (default 3145728; 0 = instantaneous)
@@ -51,10 +52,14 @@
  *   GCRT_NO_FOCUS      1: "no focus" test mode, for launches on a computer someone is using (platform/gcrt_focus.h;
  *                      tools/run.py sets it unless the caller did): the game window is never activated nor raised
  *                      (shown without activation behind the other windows and not focusable, "normal" counting as
- *                      "background"; minimized if GCRT_WINDOW=minimized, then behind the others until minimized),
+ *                      "background"; with GCRT_WINDOW=minimized, minimized without activation off the screen,
+ *                      without a taskbar button),
  *                      the menu's fullscreen setting is not applied, a console opened by the console option is created
  *                      minimized without activation, the foreground is never handed to the game window, and Shift
  *                      held at launch no longer shows a skipped setup menu. Default 0
+ *   GCRT_EXIT_BOOST    1 (default): once the game is over, the process goes to the high priority class and each
+ *                      of its threads to the highest level, so that the end of the process does not wait for starved
+ *                      low-priority threads on a busy computer (platform.cpp, start_exit_boost); 0: unchanged
  *   GCRT_SETUP_MENU    setup menu before the game (window size, fullscreen, render scale, console; gcrt_game_config.h):
  *                      auto (default): on a direct launch only, i.e. none of GCRT_WINDOW, GCRT_USER_DIR, GCRT_INPUT,
  *                      GCRT_INPUT_FRAMES, GCRT_STOP_AT, GCRT_STOP_FRAME, GCRT_CAPTURE_DIR, GCRT_RTC, GCRT_NO_FOCUS is set;
@@ -137,7 +142,9 @@
  *                      heaplock (fault while the game thread holds the process heap lock), hangheap (the game thread
  *                      holds the heap lock for GCRT_CRASH_TEST_HANG seconds, then faults: hang report, then crash
  *                      report), hang (the game thread stops for GCRT_CRASH_TEST_HANG seconds, default 15, then goes on: test of
- *                      the watchdog). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap|fault: what a report does while the other
+ *                      the watchdog), hangchurn (as hang, while a helper thread keeps the heap lock, or with
+ *                      GCRT_CRASH_TEST_CHURN=loader the loader lock, busy: the hang report must neither block nor freeze
+ *                      the game). GCRT_CRASH_TEST_SUSPENDED=<ms>|heap|fault: what a report does while the other
  *                      threads are suspended (sleep, a 1 MiB allocation on the process heap, or a fault of the
  *                      reporting thread): test of the suspension guard (GCRT_CRASH_SUSPEND_LIMIT, platform/gcrt_crash.h)
  *                      and of the cut report
@@ -171,6 +178,11 @@ typedef struct GcrtPlatform GcrtPlatform;
 GcrtPlatform* gcrt_platform_attach(GcrtCpu* g, const char* title, const char* game_id, const char* disc_root);
 /* After gcrt_cpu_run: finishes the current frame, writes the pending screenshots and the report. */
 void gcrt_platform_detach(GcrtPlatform* platform);
+/* Last call of a launch whose game ran (after gcrt_platform_detach and the final prints), just before main returns:
+   waits for the end-of-process priority helper (created by gcrt_platform_attach, released by gcrt_platform_detach) (GCRT_EXIT_BOOST; on a busy computer
+   the end of the process otherwise waited minutes for low-priority threads, issue 35), then the trace line
+   "exit: code N, ...". Returns `code`. The exit itself stays the normal one. */
+int gcrt_platform_before_exit(int code);
 
 #ifdef __cplusplus
 }
