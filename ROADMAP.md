@@ -2,7 +2,7 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-23.**
+**Last update: 2026-10-24.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
@@ -213,8 +213,8 @@ timing of the simulated disc.
     parameters confirmed but not compared);
   - **missing music**: in the places checked so far (the Chibi-House, the living room at night) the port plays
     exactly what Dolphin plays.
-- An intermittent crash at the start of 3D rendering was seen early on; it has not been reproduced in more than
-  1,200 runs since.
+- An intermittent crash at the start of 3D rendering was seen early on; it has not been reproduced in 2,400
+  launches of the release executables (1,200 per version), which does not prove it fixed.
 - A few TEV color registers get other values than in Dolphin, because the game builds them partly from
   uninitialized stack memory and the native SDK functions do not leave the same bytes on the stack (issue 9). Checked:
   the values are the same from one run to the next, and frames do not change at all when that stack memory is
