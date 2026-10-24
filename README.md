@@ -12,6 +12,16 @@
   <a href="https://github.com/Armandpro12/chibi-robo-pc/issues">Issues</a>
 </p>
 
+## Table of contents
+
+- [What it is](#what-it-is)
+- [Current state](#current-state)
+- [Download and install](#download-and-install)
+- [Requirements](#requirements)
+- [Known problems](#known-problems)
+- [Guide](#guide) (installation, settings and controls, crash reports, building, technical notes)
+- [License and credits](#license-and-credits)
+
 ## What it is
 
 - The game's PowerPC code is recompiled to C, and every Nintendo SDK function that talks to the console hardware is
