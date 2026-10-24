@@ -134,6 +134,23 @@ and assets are read from the player's files.
 5. Multiplayer balancing.
 6. Real test between two PCs.
 
+## Stage 3b — PS Vita port ⬜
+
+A faithful port to the console (same behavior as the PC version, no remaster features), started once the game is decompiled
+(from milestone D3 at the earliest) and kept after the multiplayer stage so that the two-instance multiplayer test keeps
+passing. Tracking: [#43](https://github.com/Armandpro12/chibi-robo-pc/issues/43). Free tools only, nothing from the game in the
+package, and no protection is bypassed.
+
+1. Feasibility note: CPU and memory budget, size of the extracted game, storage, which graphics API to use (GXM or vitaGL) and the
+   estimated effort. Every figure is sourced or marked as a hypothesis (the console's specifications are not yet verified here).
+2. Keep the core portable during the decompilation: platform, rendering, audio, input and saves are separate, with no dependency on
+   Dawn, SDL or Windows outside their own backends.
+3. A graphics backend of its own for the console (the PC one, Aurora on Dawn, does not exist there), prototyped on the title screen.
+4. Build chain and a guided installation with the player's own disc image.
+5. The game itself: input, audio, saves, rendering, loading, and native memory on the console's 512 MB.
+6. Validation: reference scenarios, frame rate measured on the console, the two-instance multiplayer test, and a real test on a
+   PS Vita.
+
 ## Stage 4 — Remaster ⬜
 
 - **PC-style controls**: an in-game controls menu, actions named by what they do, mouse camera, button icons
