@@ -13,12 +13,14 @@
 //   CPU. Guest addresses of game globals are not in this header either: the game provides a table per version
 //   (`gc::set_global_table`).
 //
-// Public API (what decompiled code may use)
-//   gc::be<T>            big-endian scalar stored in guest memory (integers, enums, float, double; not bool)
+// Public API (what decompiled code may use; every name exists in both modes)
+//   gc::be<T>            big-endian scalar in guest memory (fixed-width integers, enums, float, double; not bool)
 //   gc::ptr<T>           32-bit guest pointer to T (T is a guest-layout type: be<...>, ptr<...>, guest structs, u8/s8)
 //   gc::array<T, N>      fixed-size array with the guest layout
 //   gc::bitword<U>       storage word of bit-fields, accessed with gc::bits<U, First, Width, T> descriptors
 //   gc::global<T, Id>    a game global, resolved through the game's per-version address table
+//   gc::load(x), gc::store(x, v), gc::load_raw(x), gc::store_raw(x, bits)
+//                        explicit read / write of a scalar field (value, or its bits in host order)
 //   gc::address_of(obj)  pointer to an object that lives in guest memory (C++ `&obj`)
 //   gc::to_host(p)       host pointer for a guest pointer (for host code that needs a T*)
 //   gc::ptr_cast<U>(p), gc::static_ptr_cast<U>(p)   pointer conversions (reinterpret / base-to-derived)
@@ -26,14 +28,54 @@
 //   gc::guest_address(p), gc::ptr_from_guest_address<T>(address), gc::init_guest_memory, gc::set_global_table
 // Everything in gc::detail is internal: decompiled code never uses it.
 //
+// Rules for decompiled code (the same source must compile and behave the same in both modes)
+//   - Fields are used like plain variables (`s->a + 1`, `s->a = v`, `s->a += v`), or through the free functions
+//     gc::load / gc::store / gc::load_raw / gc::store_raw. be<T> has no public member function: `x.load()` would not
+//     exist in native mode, where be<T> is T.
+//   - Varargs and conditional expressions need an explicit value: `printf("%u", gc::load(s->a))`, not
+//     `printf("%u", s->a)` (in guest mode that passes the big-endian object itself, i.e. byte-swapped bits; clang's
+//     -Wformat, on with /W4, warns only for functions declared with a format attribute; with GC_MEM_OBSERVER it does
+//     not compile); `c ? gc::load(s->a) : 0u`, not `c ? s->a : 0u` (refused in guest mode as ambiguous: be<u32>
+//     converts to u32 and u32 to be<u32>).
+//   - Structure assignment `*a = *b` copies field by field in both modes, never the padding bytes. The original code
+//     may have copied the whole block, padding included [hypothesis: not checked on CodeWarrior output]; the oracle
+//     may then see padding bytes that differ. Copy construction (`Thing local = *a;`) is trivial without
+//     GC_MEM_OBSERVER (the compiler may copy the whole block into the host local) and field by field with it: the
+//     values written back to guest memory are the same, only the observed reads differ.
+//   - Game structures are described by composition (`Base base;` as first member) or with explicit fields, not by
+//     C++ inheritance, unless the derived layout is checked (see "Layout" below).
+//   - Enums stored in guest memory declare their underlying type (`enum class Kind : u16`): the size CodeWarrior gives
+//     to an enum without one is not known here [hypothesis].
+//
 // Options (preprocessor)
 //   GC_NATIVE_MEMORY   native mode (final switch to native memory): plain host types, no guest RAM.
 //   GC_MEM_OBSERVER    guest mode only: every load and store of a gc::be (hence of ptr and bitword) that lies in
 //                      guest RAM is reported to the observer of the calling thread (oracle executable only).
 //
-// Layout rule: a struct made of these types has, in guest mode, the size, alignment and field offsets of the same
-// struct compiled for the console with natural alignment (each scalar aligned on its size). Games check their own
-// structures with static_assert(offsetof(...)) in guest mode only; in native mode pointers are 8 bytes.
+// Layout (guest mode)
+//   Intended rule: a struct made of these types has the size, alignment and field offsets of the same struct compiled
+//   for the console. [hypothesis] CodeWarrior uses natural alignment (each scalar aligned on its size, double and u64
+//   on 8) and allocates bit-fields from the most significant bit; neither is checked yet on a real structure of a game
+//   (US and PAL). The layer only fixes the size and alignment of each type (static_asserts at the end of this file);
+//   the rest is the host compiler's layout algorithm, so it also depends on the host C++ ABI:
+//   - Microsoft ABI (clang-cl, the compiler this project uses): a derived class starts its own members after the whole
+//     base, padding included. The Itanium ABI (GCC and clang on Linux, Android, MinGW; ARM targets such as the PS Vita
+//     use a variant of it) reuses the tail padding of a base that is not a C++03 POD, which be<T> makes every guest
+//     struct: `struct A { be<u32> x; be<u8> y; }; struct B : A { be<u8> z; };` puts z at 8 with clang-cl and at 5
+//     with Itanium. Guest mode therefore refuses to compile on an ABI that reuses tail padding (static_assert at the
+//     end of this file); a guest-mode port to such a host first describes derived game structures by composition.
+//     Which of the two CodeWarrior does is itself a [hypothesis] (no reuse expected; to check on a real derived class
+//     whose base has tail padding, US and PAL).
+//   - Games check their own structures with static_assert(sizeof / offsetof) in guest mode only (in native mode
+//     pointers are 8 bytes). offsetof is only valid on standard-layout structs, another reason to prefer composition.
+//   - Polymorphic classes (C++ virtual functions) and virtual bases are refused: their host layout has nothing to do
+//     with the console's. A game object with a vtable declares its vtable pointer as an explicit ptr field.
+//
+// Alignment of accesses: a guest pointer may be misaligned (the console accepts misaligned integer loads and stores
+// [hypothesis: not checked for every instruction], e.g. when a file parser reads a u32 at an odd offset). C++ formally
+// requires an object to be aligned; this layer reads and writes the bytes with memcpy through a byte pointer, which
+// clang-cl x64 compiles to ordinary loads and stores that accept any alignment (misaligned accesses are tested).
+// Other hosts with strict alignment (32-bit ARM) are not checked [hypothesis].
 #ifndef GC_MEM_H
 #define GC_MEM_H
 
@@ -44,6 +86,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 
@@ -67,13 +110,30 @@ using f64 = double;
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559, "float must be IEEE-754 binary32");
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559, "double must be IEEE-754 binary64");
 
-// Scalars that may live in guest memory. bool is excluded on purpose: a guest byte holding 2 read as a C++ bool
-// would come back as 1 when stored again; game booleans are declared as be<u8> (or u8) and compared explicitly.
+namespace detail {
+
+// Arithmetic types whose size is the same on every host (int, short and long long are int32_t, int16_t and int64_t
+// on the hosts we know of; long, wchar_t and char16_t are not accepted: their size or identity varies by host).
 template <class T>
-concept memory_scalar = (std::is_integral_v<T> || std::is_enum_v<T> || std::is_same_v<T, float> ||
-                         std::is_same_v<T, double>)&&!std::is_same_v<std::remove_cv_t<T>, bool> &&
-                        !std::is_const_v<T> && !std::is_volatile_v<T> &&
-                        (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8);
+inline constexpr bool is_fixed_width_arithmetic_v =
+    std::is_same_v<T, char> || std::is_same_v<T, signed char> || std::is_same_v<T, unsigned char> ||
+    std::is_same_v<T, std::int16_t> || std::is_same_v<T, std::uint16_t> || std::is_same_v<T, std::int32_t> ||
+    std::is_same_v<T, std::uint32_t> || std::is_same_v<T, std::int64_t> || std::is_same_v<T, std::uint64_t> ||
+    std::is_same_v<T, float> || std::is_same_v<T, double>;
+
+template <class T, bool = std::is_enum_v<T>>
+struct is_fixed_width_scalar : std::bool_constant<is_fixed_width_arithmetic_v<T>> {};
+template <class T>
+struct is_fixed_width_scalar<T, true> : std::bool_constant<is_fixed_width_arithmetic_v<std::underlying_type_t<T>>> {};
+
+} // namespace detail
+
+// Scalars that may live in guest memory: fixed-width integers, enums whose underlying type is one, float, double
+// (cv-qualified types are not scalars of memory: write `const be<T>`). bool is excluded on purpose: a guest byte
+// holding 2 read as a C++ bool would come back as 1 when stored again; game booleans are declared as be<u8> (or u8)
+// and compared explicitly.
+template <class T>
+concept memory_scalar = detail::is_fixed_width_scalar<T>::value;
 
 namespace detail {
 
@@ -84,18 +144,50 @@ template <> struct uint_of<4> { using type = u32; };
 template <> struct uint_of<8> { using type = u64; };
 template <std::size_t N> using uint_of_t = typename uint_of<N>::type;
 
+// Byte swap without compiler builtins (used when they are missing; clang and GCC turn it into one bswap anyway).
+template <class U> constexpr U byteswap_portable(U v) noexcept {
+    static_assert(std::is_unsigned_v<U>);
+    U result = 0;
+    for (std::size_t i = 0; i < sizeof(U); ++i) {
+        result = static_cast<U>((result << 8) | ((v >> (8 * i)) & 0xFFu));
+    }
+    return result;
+}
+
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_bswap16) && __has_builtin(__builtin_bswap32) && __has_builtin(__builtin_bswap64)
+#define GC_MEM_DETAIL_BSWAP_BUILTINS 1
+#endif
+#endif
+
 // Guest byte order (big-endian) <-> host value. Identity on a big-endian host.
 template <class U> constexpr U to_big_endian(U v) noexcept {
     static_assert(std::is_unsigned_v<U>);
     if constexpr (sizeof(U) == 1 || std::endian::native == std::endian::big) {
         return v;
-    } else if constexpr (sizeof(U) == 2) {
-        return static_cast<U>(__builtin_bswap16(v));
-    } else if constexpr (sizeof(U) == 4) {
-        return static_cast<U>(__builtin_bswap32(v));
     } else {
-        return static_cast<U>(__builtin_bswap64(v));
+#if defined(GC_MEM_DETAIL_BSWAP_BUILTINS)
+        if constexpr (sizeof(U) == 2) {
+            return static_cast<U>(__builtin_bswap16(v));
+        } else if constexpr (sizeof(U) == 4) {
+            return static_cast<U>(__builtin_bswap32(v));
+        } else {
+            return static_cast<U>(__builtin_bswap64(v));
+        }
+#else
+        return byteswap_portable(v);
+#endif
     }
+}
+
+// The bytes [p, p + size) read as a big-endian unsigned integer (what the console CPU sees).
+inline std::uint64_t big_endian_bytes(const void* p, std::uint32_t size) noexcept {
+    const auto* bytes = static_cast<const unsigned char*>(p);
+    std::uint64_t value = 0;
+    for (std::uint32_t i = 0; i < size; ++i) {
+        value = (value << 8) | bytes[i];
+    }
+    return value;
 }
 
 // Underlying unsigned representation of an integral or enum type (used by bit-fields).
@@ -197,10 +289,14 @@ inline std::uint32_t guest_of_checked(const void* p, std::uint32_t bytes) {
 } // namespace detail
 
 // Gives the layer the host buffer that holds guest RAM (set once by the runtime, before any decompiled code runs).
-// `size` is the size of main RAM, at most 1 GiB (the two mirrors must not overlap).
+// `size` is the size of main RAM, at most 1 GiB (the two mirrors must not overlap). The buffer must be aligned on 8
+// bytes, so that every naturally aligned guest object (up to double and u64) is aligned on the host too.
 inline void init_guest_memory(void* host_ram, std::uint32_t size) {
     if (host_ram == nullptr || size == 0 || size > detail::kMaxRamSize) {
         detail::fault("init_guest_memory: invalid guest RAM", 0, size);
+    }
+    if (reinterpret_cast<std::uintptr_t>(host_ram) % 8 != 0) {
+        detail::fault("init_guest_memory: guest RAM buffer not aligned on 8 bytes", 0, size);
     }
     detail::g_memory.host = static_cast<std::byte*>(host_ram);
     detail::g_memory.size = size;
@@ -241,10 +337,12 @@ inline void observe_read(const void* object, std::uint32_t size, std::uint64_t v
     }
 }
 
-inline void observe_write(const void* object, std::uint32_t size, std::uint64_t old_value, std::uint64_t new_value) {
+// Called before the store: the old value is read from guest RAM only once the object is known to be there (never
+// from a host local, which may be uninitialized).
+inline void observe_write(const void* object, std::uint32_t size, std::uint64_t new_value) {
     std::uint32_t address = 0;
     if (memory_observer* observer = g_observer; observer && guest_of(object, size, &address)) {
-        observer->on_write(address, size, old_value, new_value);
+        observer->on_write(address, size, big_endian_bytes(object, size), new_value);
     }
 }
 } // namespace detail
@@ -262,24 +360,27 @@ inline memory_observer* set_memory_observer(memory_observer* observer) noexcept 
 // be<T>: big-endian scalar
 // ---------------------------------------------------------------------------------------------------------------
 
+namespace detail {
+struct be_access;
+} // namespace detail
+
 template <memory_scalar T> struct be {
     using value_type = T;
     using raw_type = detail::uint_of_t<sizeof(T)>;
 
     be() = default; // trivial: guest structures overlay guest RAM without being constructed
     constexpr be(T value) noexcept : stored_(detail::to_big_endian(std::bit_cast<raw_type>(value))) {}
+#if defined(GC_MEM_OBSERVER)
+    // Copy construction reads the source: reported like any other read.
+    constexpr be(const be& other) noexcept : stored_(other.read_stored()) {}
+#else
+    // Trivial without the observer, so that ptr<T> and be<T> stay register-passed by value (Microsoft x64 ABI).
     be(const be&) = default;
+#endif
 
     // Copy between two be<T>: the bytes are copied as they are (a float NaN payload is kept bit for bit).
     constexpr be& operator=(const be& other) noexcept {
-        const raw_type stored = other.stored_;
-#if defined(GC_MEM_OBSERVER)
-        if (!std::is_constant_evaluated()) {
-            detail::observe_read(&other, sizeof(T), detail::to_big_endian(stored));
-            detail::observe_write(this, sizeof(T), detail::to_big_endian(stored_), detail::to_big_endian(stored));
-        }
-#endif
-        stored_ = stored;
+        write_stored(other.read_stored());
         return *this;
     }
 
@@ -290,112 +391,90 @@ template <memory_scalar T> struct be {
 
     constexpr operator T() const noexcept { return load(); }
 
-    constexpr T load() const noexcept { return std::bit_cast<T>(raw()); }
-
-    constexpr void store(T value) noexcept { set_raw(std::bit_cast<raw_type>(value)); }
-
-    // The bits of the value (for a float: its IEEE-754 encoding), in host order.
-    constexpr raw_type raw() const noexcept {
-        const raw_type value = detail::to_big_endian(stored_);
-#if defined(GC_MEM_OBSERVER)
-        if (!std::is_constant_evaluated()) {
-            detail::observe_read(this, sizeof(T), value);
-        }
-#endif
-        return value;
-    }
-
-    constexpr void set_raw(raw_type value) noexcept {
-#if defined(GC_MEM_OBSERVER)
-        if (!std::is_constant_evaluated()) {
-            detail::observe_write(this, sizeof(T), detail::to_big_endian(stored_), value);
-        }
-#endif
-        stored_ = detail::to_big_endian(value);
-    }
-
-    // Compound assignments: same result as the C++ operator on a T variable (promotion, then conversion to T).
-    constexpr be& operator+=(T v) noexcept
-        requires(!std::is_enum_v<T>)
-    {
+    // Compound assignments: the same as the C++ operator on a T variable. The operand keeps its own type, the usual
+    // arithmetic conversions apply to (T value, operand), and the result is converted back to T: a be<u8> holding 200
+    // `/= 300` gives 0, a be<s32> holding 10 `*= 0.5` gives 5, a be<f32> `+= 1.0` adds in double.
+    template <class V>
+        requires(!std::is_enum_v<T> && requires(T a, const V& b) { a + b; })
+    constexpr be& operator+=(const V& v) noexcept {
         store(static_cast<T>(load() + v));
         return *this;
     }
-    constexpr be& operator-=(T v) noexcept
-        requires(!std::is_enum_v<T>)
-    {
+    template <class V>
+        requires(!std::is_enum_v<T> && requires(T a, const V& b) { a - b; })
+    constexpr be& operator-=(const V& v) noexcept {
         store(static_cast<T>(load() - v));
         return *this;
     }
-    constexpr be& operator*=(T v) noexcept
-        requires(!std::is_enum_v<T>)
-    {
+    template <class V>
+        requires(!std::is_enum_v<T> && requires(T a, const V& b) { a * b; })
+    constexpr be& operator*=(const V& v) noexcept {
         store(static_cast<T>(load() * v));
         return *this;
     }
-    constexpr be& operator/=(T v) noexcept
-        requires(!std::is_enum_v<T>)
-    {
+    template <class V>
+        requires(!std::is_enum_v<T> && requires(T a, const V& b) { a / b; })
+    constexpr be& operator/=(const V& v) noexcept {
         store(static_cast<T>(load() / v));
         return *this;
     }
-    constexpr be& operator%=(T v) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a % b; })
+    constexpr be& operator%=(const V& v) noexcept {
         store(static_cast<T>(load() % v));
         return *this;
     }
-    constexpr be& operator&=(T v) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a & b; })
+    constexpr be& operator&=(const V& v) noexcept {
         store(static_cast<T>(load() & v));
         return *this;
     }
-    constexpr be& operator|=(T v) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a | b; })
+    constexpr be& operator|=(const V& v) noexcept {
         store(static_cast<T>(load() | v));
         return *this;
     }
-    constexpr be& operator^=(T v) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a ^ b; })
+    constexpr be& operator^=(const V& v) noexcept {
         store(static_cast<T>(load() ^ v));
         return *this;
     }
-    constexpr be& operator<<=(int n) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a << b; })
+    constexpr be& operator<<=(const V& n) noexcept {
         store(static_cast<T>(load() << n));
         return *this;
     }
-    constexpr be& operator>>=(int n) noexcept
-        requires std::is_integral_v<T>
-    {
+    template <class V>
+        requires(std::is_integral_v<T> && requires(T a, const V& b) { a >> b; })
+    constexpr be& operator>>=(const V& n) noexcept {
         store(static_cast<T>(load() >> n));
         return *this;
     }
     constexpr be& operator++() noexcept
-        requires std::is_integral_v<T>
+        requires(!std::is_enum_v<T>)
     {
         store(static_cast<T>(load() + 1));
         return *this;
     }
     constexpr be& operator--() noexcept
-        requires std::is_integral_v<T>
+        requires(!std::is_enum_v<T>)
     {
         store(static_cast<T>(load() - 1));
         return *this;
     }
     constexpr T operator++(int) noexcept
-        requires std::is_integral_v<T>
+        requires(!std::is_enum_v<T>)
     {
         const T old = load();
         store(static_cast<T>(old + 1));
         return old;
     }
     constexpr T operator--(int) noexcept
-        requires std::is_integral_v<T>
+        requires(!std::is_enum_v<T>)
     {
         const T old = load();
         store(static_cast<T>(old - 1));
@@ -403,9 +482,70 @@ template <memory_scalar T> struct be {
     }
 
 private:
+    // Member accessors are private on purpose: decompiled code uses gc::load / gc::store / gc::load_raw /
+    // gc::store_raw, which also exist in native mode (where be<T> is T and has no members).
+    friend struct detail::be_access;
+
+    constexpr T load() const noexcept { return std::bit_cast<T>(raw()); }
+    constexpr void store(T value) noexcept { set_raw(std::bit_cast<raw_type>(value)); }
+    // The bits of the value (for a float: its IEEE-754 encoding), in host order.
+    constexpr raw_type raw() const noexcept { return detail::to_big_endian(read_stored()); }
+    constexpr void set_raw(raw_type value) noexcept { write_stored(detail::to_big_endian(value)); }
+
+    // The stored bytes (guest order), read or written through a byte pointer (no alignment assumed, see the top of
+    // this file); the observer, if any, sees the access.
+    constexpr raw_type read_stored() const noexcept {
+        if (std::is_constant_evaluated()) {
+            return stored_;
+        }
+        raw_type stored;
+        std::memcpy(&stored, reinterpret_cast<const unsigned char*>(&stored_), sizeof(stored));
+#if defined(GC_MEM_OBSERVER)
+        detail::observe_read(this, sizeof(T), detail::to_big_endian(stored));
+#endif
+        return stored;
+    }
+    constexpr void write_stored(raw_type stored) noexcept {
+        if (std::is_constant_evaluated()) {
+            stored_ = stored;
+            return;
+        }
+#if defined(GC_MEM_OBSERVER)
+        detail::observe_write(this, sizeof(T), detail::to_big_endian(stored));
+#endif
+        std::memcpy(reinterpret_cast<unsigned char*>(&stored_), &stored, sizeof(stored));
+    }
+
     // The value's bytes in guest order. Alignment of T, so that structures keep the console's natural layout.
     alignas(alignof(T)) raw_type stored_;
 };
+
+namespace detail {
+struct be_access {
+    template <class T> static constexpr T load(const be<T>& x) noexcept { return x.load(); }
+    template <class T> static constexpr void store(be<T>& x, T value) noexcept { x.store(value); }
+    template <class T> static constexpr typename be<T>::raw_type raw(const be<T>& x) noexcept { return x.raw(); }
+    template <class T> static constexpr void set_raw(be<T>& x, typename be<T>::raw_type bits) noexcept {
+        x.set_raw(bits);
+    }
+};
+} // namespace detail
+
+// Explicit access to a guest scalar (guest-mode overloads; the plain-scalar overloads after the native-mode section
+// serve both modes).
+template <memory_scalar T> constexpr T load(const be<T>& x) noexcept {
+    return detail::be_access::load(x);
+}
+template <memory_scalar T> constexpr void store(be<T>& x, std::type_identity_t<T> value) noexcept {
+    detail::be_access::store(x, value);
+}
+template <memory_scalar T> constexpr detail::uint_of_t<sizeof(T)> load_raw(const be<T>& x) noexcept {
+    return detail::be_access::raw(x);
+}
+template <memory_scalar T>
+constexpr void store_raw(be<T>& x, std::type_identity_t<detail::uint_of_t<sizeof(T)>> bits) noexcept {
+    detail::be_access::set_raw(x, bits);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // ptr<T>: 32-bit guest pointer
@@ -429,20 +569,31 @@ template <class T>
 inline constexpr bool is_host_only_v = std::is_pointer_v<std::remove_cv_t<T>> ||
                                        std::is_same_v<std::remove_cv_t<T>, bool> || is_multibyte_scalar<T>::value;
 
+// Guest size of the object a pointer designates (dereference, arithmetic, address_of). The type is complete here.
 template <class T> constexpr std::uint32_t object_size() noexcept {
     if constexpr (std::is_void_v<T>) {
         return 1;
     } else {
+        static_assert(!std::is_polymorphic_v<T>,
+                      "gc: a class with virtual functions has a host layout (vtable pointer), not the guest one; "
+                      "declare the guest vtable pointer as an explicit gc::ptr field instead");
         return static_cast<std::uint32_t>(sizeof(T));
     }
 }
 
 // Offset added when converting a pointer to Derived into a pointer to Base (non-virtual inheritance): computed on a
-// suitably aligned dummy buffer, never on a real object, so converting a wild guest pointer does not fault.
+// suitably aligned dummy buffer, never on a real object, so converting a wild guest pointer does not fault. It is the
+// host layout's offset: see "Layout" at the top of this file.
 template <class Base, class Derived> std::uint32_t base_offset() noexcept {
-    if constexpr (std::is_void_v<std::remove_cv_t<Base>> || std::is_same_v<std::remove_cv_t<Base>, std::remove_cv_t<Derived>>) {
+    using base_type = std::remove_cv_t<Base>;
+    using derived_type = std::remove_cv_t<Derived>;
+    if constexpr (std::is_void_v<base_type> || std::is_same_v<base_type, derived_type>) {
         return 0;
     } else {
+        static_assert(!std::is_polymorphic_v<base_type> && !std::is_polymorphic_v<derived_type>,
+                      "gc::ptr conversion: classes with virtual functions have no guest layout");
+        static_assert(requires(base_type* b) { static_cast<derived_type*>(b); },
+                      "gc::ptr conversion: virtual (or ambiguous) base classes have no guest layout");
         alignas(Derived) static unsigned char buffer[sizeof(Derived)];
         auto* derived = reinterpret_cast<Derived*>(buffer);
         Base* base = derived;
@@ -470,10 +621,7 @@ public:
     // Implicit upcast / to-const / to-void conversion, adjusted like the C++ pointer conversion (null stays null).
     template <class U>
         requires(!std::is_same_v<U, T> && std::is_convertible_v<U*, T*>)
-    ptr(const ptr<U>& other) noexcept {
-        const std::uint32_t address = other.address_;
-        address_ = address == 0 ? 0u : address + detail::base_offset<T, U>();
-    }
+    ptr(const ptr<U>& other) noexcept : address_(upcast_address(other)) {}
 
     explicit operator bool() const noexcept { return address_ != 0u; }
 
@@ -552,10 +700,10 @@ public:
     }
 
     // Comparisons on the 32-bit address, unsigned (cmplw), as the console does.
-    friend bool operator==(const ptr& a, const ptr& b) noexcept { return a.address_.load() == b.address_.load(); }
-    friend bool operator==(const ptr& a, std::nullptr_t) noexcept { return a.address_.load() == 0u; }
+    friend bool operator==(const ptr& a, const ptr& b) noexcept { return gc::load(a.address_) == gc::load(b.address_); }
+    friend bool operator==(const ptr& a, std::nullptr_t) noexcept { return gc::load(a.address_) == 0u; }
     friend std::strong_ordering operator<=>(const ptr& a, const ptr& b) noexcept {
-        return a.address_.load() <=> b.address_.load();
+        return gc::load(a.address_) <=> gc::load(b.address_);
     }
 
 private:
@@ -564,10 +712,15 @@ private:
 
     static constexpr std::uint32_t stride() noexcept { return detail::object_size<T>(); }
 
-    static ptr from_address(std::uint32_t address) noexcept {
-        ptr p;
-        p.address_ = address;
-        return p;
+    struct address_tag {};
+    constexpr ptr(address_tag, std::uint32_t address) noexcept : address_(address) {}
+
+    // Built directly from the address (no store into an uninitialized local, hence nothing for the observer).
+    static ptr from_address(std::uint32_t address) noexcept { return ptr(address_tag{}, address); }
+
+    template <class U> static std::uint32_t upcast_address(const ptr<U>& other) noexcept {
+        const std::uint32_t address = other.address_; // read once
+        return address == 0 ? 0u : address + detail::base_offset<T, U>();
     }
 
     T* host() const {
@@ -656,6 +809,22 @@ Derived* static_ptr_cast(Base* p) noexcept {
 
 #endif // GC_NATIVE_MEMORY
 
+// Explicit access to a plain scalar (a local, a u8/s8 field in guest mode, any scalar field in native mode, where
+// be<T> is T): the same calls compile in both modes. The be<T> overloads of guest mode are above.
+template <memory_scalar T> constexpr T load(const T& x) noexcept {
+    return x;
+}
+template <memory_scalar T> constexpr void store(T& x, std::type_identity_t<T> value) noexcept {
+    x = value;
+}
+template <memory_scalar T> constexpr detail::uint_of_t<sizeof(T)> load_raw(const T& x) noexcept {
+    return std::bit_cast<detail::uint_of_t<sizeof(T)>>(x);
+}
+template <memory_scalar T>
+constexpr void store_raw(T& x, std::type_identity_t<detail::uint_of_t<sizeof(T)>> bits) noexcept {
+    x = std::bit_cast<T>(bits);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // array<T, N>
 // ---------------------------------------------------------------------------------------------------------------
@@ -665,6 +834,7 @@ Derived* static_ptr_cast(Base* p) noexcept {
 template <class T, std::size_t N> struct array {
 #if !defined(GC_NATIVE_MEMORY)
     static_assert(!detail::is_host_only_v<T>, "gc::array<T, N>: T must have the guest layout");
+    static_assert(!std::is_polymorphic_v<T>, "gc::array<T, N>: a class with virtual functions has no guest layout");
 #endif
     static_assert(N > 0, "gc::array<T, 0> has no console equivalent");
 
@@ -701,6 +871,7 @@ template <std::unsigned_integral U, unsigned First, unsigned Width, class T = U>
     static_assert(std::is_integral_v<T> || std::is_enum_v<T>, "gc::bits: T must be an integer or an enum");
     static_assert(!std::is_same_v<T, bool>, "gc::bits: use an unsigned 1-bit field instead of bool");
     static_assert(Width >= 1 && First + Width <= 8 * sizeof(U), "gc::bits: field outside its storage word");
+    static_assert(Width <= 8 * sizeof(detail::underlying_of_t<T>), "gc::bits: field wider than its type T");
 
     using storage_type = U;
     using value_type = T;
@@ -854,8 +1025,26 @@ static_assert(sizeof(ptr<void>) == 4 && alignof(ptr<void>) == 4);
 static_assert(sizeof(bitword<u32>) == 4 && alignof(bitword<u32>) == 4);
 static_assert(std::is_standard_layout_v<be<u32>> && std::is_trivially_default_constructible_v<be<u32>>);
 static_assert(std::is_standard_layout_v<ptr<void>> && std::is_trivially_default_constructible_v<ptr<void>>);
+
+// Host ABI check (see "Layout" at the top): a derived class must not reuse the tail padding of its base. True with
+// the Microsoft ABI (clang-cl); false with the Itanium ABI, where guest structures described by inheritance would
+// get offsets the console does not use.
+namespace detail::layout_probe {
+struct base {
+    be<u32> word;
+    be<u8> byte; // followed by 3 bytes of tail padding
+};
+struct derived : base {
+    be<u8> extra; // offset 8 (whole base first) or 5 (tail padding reused)
+};
+} // namespace detail::layout_probe
+static_assert(sizeof(detail::layout_probe::derived) == 12,
+              "gc_mem.h guest mode: this host C++ ABI puts derived members in the tail padding of a base (Itanium "
+              "ABI); guest structures described by inheritance would get wrong offsets. See Layout in gc_mem.h.");
 #endif
 
 } // namespace gc
+
+#undef GC_MEM_DETAIL_BSWAP_BUILTINS
 
 #endif // GC_MEM_H
