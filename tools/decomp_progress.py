@@ -9,10 +9,12 @@ Usage:
   --json              machine-readable output (same content)
   --root              checkout holding the untracked inputs (external/, generated/); default: this checkout.
                       game.toml and the decompiled code are always read from this checkout.
-  --table, --decomp-dir  read another table / code folder instead of the configured ones (tests)
+  --table, --decomp-dir, --map-dir  read another table / code folder / symbol map folder instead of the
+                      configured ones (tests)
   --require-complete  exit code 1 unless every version is at 100 % (functions and bytes, DOL and every REL),
                       every function has an address in every version, and no automatic name is left in the
-                      decompiled code (the stage's final criterion)
+                      decompiled code (the stage's final criterion). Always computed on every version and every
+                      module of game.toml: --version and --module only filter what is printed.
 
 Exit codes: 0 report printed; 1 --require-complete not met; 2 usage or configuration error.
 
@@ -51,12 +53,25 @@ Table of the decompiled functions (format still open; this reader is tolerant):
   - addresses in hexadecimal (with or without 0x); "-" or empty = no address in that version. A REL function is
     "<module>:<offset>" (offset inside the module's code section, as in <ID>-rel.tsv), or an offset with a
     "module" column. Other lines starting with "#" are comments.
-  Rows that match no function, an excluded function, a different address than the transposition, or another
-  size, are reported as warnings.
+  - size (optional): "0x"-prefixed = hexadecimal ("0x20" = 32 bytes), digits only = decimal ("20" = 20 bytes);
+    bare hexadecimal ("2F4") is refused. A row whose size differs from the inventory, or cannot be read, does
+    not count in any version.
+  A row counts in a version only when it gives that version's address and the address is established:
+    - equal to the transposition (DOL) or matcher (REL) address, when there is one; a different one does not
+      count;
+    - when there is none (absent, ambiguous, collision), only if it is not already the address of another
+      function in that version, and either the only matcher candidate of that function (code equal to the
+      reference, relocations masked) not held by another function, or the start of a function of the same size
+      in that version's symbol map (<ID>.map, <ID>-rel.tsv) with no contradicting name. Two rows giving the
+      same such address: neither counts. Anything else does not count: the address goes first through
+      symbols/supplement.tsv (verified) and the transposition.
+  Every row that is not counted, fully or in one version, is reported as a warning with the reason.
 
-Automatic names: placeholders of dtk, Ghidra and m2c (fn_8001234, FUN_..., DAT_..., uVar1, local_10, param_1,
-var_r31, sp1C, unk1C...). Counted (1) in the decompiled code folder and the names of the table, and (2) among
-the functions left to decompile, from the symbol maps (<ID>.map, <ID>-rel.tsv) and the dtk names.
+Automatic names: placeholders of dtk, Ghidra and m2c (fn_80012345, fn_1_264, FUN_..., PTR_FUN_..., _DAT_...,
+s_text_80003000, uRam80001234, UNRECOVERED_JUMPTABLE, uVar1, local_10, param_1, var_r31, sp1C, arg0, unk1C...):
+the patterns and their limits are in AUTO_PATTERNS below. Counted (1) in the decompiled code folder, comments
+and string literals left out, and in the names of the table, and (2) among the functions left to decompile,
+from the symbol maps (<ID>.map, <ID>-rel.tsv) and the dtk names (also with the dtk filter of tools/symbols.py).
 Read-only: the script writes nothing.
 """
 
@@ -76,20 +91,52 @@ import symbols as sy  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 CODE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp"}
-# Automatic names produced by the usual tools (kind, regular expression). Generic: no game in here.
+# Automatic names produced by the usual tools (kind, regular expression, optional check of the match).
+# Generic: no game in here. Rules, so that ordinary names do not match:
+#  - a name starts after a character that is neither a letter nor a digit (an underscore is allowed, so
+#    "_DAT_80004000" and "PTR_FUN_80001234" are found: Ghidra adds such prefixes);
+#  - the number of an address placeholder is either 8 hexadecimal digits with at least one decimal digit (a
+#    32-bit address: "sub_facade" is not one) or the dtk REL form <module>_<offset> ("fn_1_264");
+#  - a match must end at a word boundary (no letter or digit right after the number);
+#  - comments and string or character literals are not scanned (see strip_comments): a name quoted there for
+#    traceability ("was fn_800B26BC") is not code.
+# Deliberate choices: "arg0" (m2c's argument names) and "unkA"/"unk1C" (dtk/m2c field names) count, as in the
+# tools' output there is no way to tell them from a hand-written name; "envVar2", "spEED", "local_face" do not.
+NB = r"(?<![A-Za-z0-9])"                          # start of a name (underscore allowed before)
+END = r"(?![A-Za-z0-9])"                          # end of the number part
+HEX8 = r"(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{8}"  # 8 hexadecimal digits, at least one decimal digit
+GHIDRA_TYPES = "abcdfhilpqsuvwxz"                  # letters of Ghidra's type prefixes (uVar, pcVar, auStack...)
+
+
+def _m2c_stack(m: re.Match) -> bool:
+    """sp<offset>: m2c writes the stack offset in upper-case hexadecimal; without a decimal digit it is only
+    taken when it is a multiple of 4 (spC, spAC: yes; spEED: no)."""
+    off = m.group(0)[2:]
+    return any(c.isdigit() for c in off) or int(off, 16) % 4 == 0
+
+
 AUTO_PATTERNS = [
-    ("address placeholder", r"\b(?:fn|func|sub|lbl|zz|jumptable|jtbl)_(?:0x)?[0-9A-Fa-f]{6,8}\w*"),
-    ("Ghidra label", r"\b(?:thunk_)?(?:FUN|DAT|LAB|PTR|SUB|UNK|BYTE|WORD|DWORD|QWORD|FLOAT|DOUBLE|switchD|caseD"
-                     r"|code_r0x)_[0-9A-Fa-f]{4,}\w*"),
-    ("Ghidra variable", r"\b[a-z]{1,5}Var\d+\b"),
-    ("Ghidra local/param", r"\blocal_(?:res)?[0-9A-Fa-f]+\b|\bparam_\d+\b|\b(?:unaff|extraout)_\w+"
-                           r"|\b[a-z]{1,5}Stack_[0-9A-Fa-f]+\b|\bin_(?:r\d+|f\d+|cr\d+|lr|ctr|xer|stack_\w+)\b"),
-    ("raw field", r"\bfield\d*_0x[0-9A-Fa-f]+\b|\b_?unk_?(?:0x)?[0-9A-Fa-f]+\b"),
-    ("m2c temporary", r"\b(?:var|temp|phi|saved_reg)_(?:r|f|cr|lr|ctr)\d*(?:_\d+)?\b|\bsp[0-9A-F]{1,4}\b"
-                      r"|\barg\d+\b|\bM2C_\w+"),
+    ("address placeholder", NB + r"_*(?:fn|func|sub|lbl|zz|loc|off|jumptable|jtbl)_(?:0x)?(?:" + HEX8
+     + r"|\d+_(?:(?:text|data|rodata|bss|sdata2?|sbss2?|ctors|dtors)_)?[0-9A-Fa-f]+)" + END + r"\w*", None),
+    ("Ghidra label", NB + r"_*(?:PTR_)*(?:thunk_)?(?:(?:FUN|DAT|LAB|PTR|SUB|UNK|EXT|OFF|BYTE|WORD|DWORD|QWORD"
+     r"|FLOAT|DOUBLE|switchD|caseD)_|code_r0x)(?:0x)?(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{4,8}" + END + r"\w*",
+     None),
+    ("Ghidra string label", NB + r"_*(?:PTR_)*[su]_\w*?_" + HEX8 + END, None),
+    ("Ghidra global", NB + r"_*[" + GHIDRA_TYPES + r"]{1,6}Ram" + HEX8 + END, None),   # type + space "ram"
+    ("Ghidra pseudo-name", NB + r"UNRECOVERED_JUMPTABLE\w*", None),
+    ("Ghidra variable", NB + r"[" + GHIDRA_TYPES + r"]{1,5}Var\d+" + END, None),
+    ("Ghidra local/param", NB + r"local_(?:res)?(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]+" + END + r"|" + NB
+     + r"param_\d+" + END + r"|" + NB + r"(?:unaff|extraout)_\w+|" + NB + r"[" + GHIDRA_TYPES
+     + r"]{1,5}Stack_(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]+" + END + r"|" + NB
+     + r"in_(?:r\d+|f\d+|cr\d+|lr|ctr|xer|stack_\w+)" + END, None),
+    ("raw field", NB + r"field\d*_0x[0-9A-Fa-f]+" + END + r"|" + NB + r"_?unk_?(?:0x)?[0-9A-F]+" + END, None),
+    ("m2c temporary", NB + r"(?:var|temp|phi|saved_reg)_(?:r\d+|f\d+|cr\d+|lr|ctr)(?:_\d+)?" + END + r"|" + NB
+     + r"arg\d+" + END + r"|" + NB + r"M2C_\w+", None),
+    ("m2c stack slot", NB + r"sp[0-9A-F]{1,4}" + END, _m2c_stack),
 ]
 REGION_ALIASES = {"ntsc-u": "us", "ntsc-j": "jp", "pal": "pal", "ntsc-k": "kr"}
 NO_ADDRESS = {"", "-", "0", "none", "n/a", "absent"}
+TRANSPOSITION_CANDIDATES = 8   # tools/symbols.py writes at most 8 candidates per function in its report
 
 
 @dataclass
@@ -102,6 +149,7 @@ class Fn:
     addr: dict = field(default_factory=dict)     # version -> address/offset or None
     how: dict = field(default_factory=dict)      # version -> mapping status
     done: dict = field(default_factory=dict)     # version -> status text of the table row
+    cands: dict = field(default_factory=dict)    # version -> (starts whose code equals the reference, full list?)
 
     def label(self, vid: str) -> str:
         a = self.addr.get(vid)
@@ -123,21 +171,49 @@ def fmt_pct(p: float | None) -> str:
     return "  n/a  " if p is None else f"{p:6.2f} %"
 
 
-def is_auto(name: str, extra: list[re.Pattern]) -> bool:
-    if not name or sy.AUTO_RE.match(name):
+def is_auto(name: str, extra: list[re.Pattern], dtk_name: bool = True) -> bool:
+    """`dtk_name`: a name from the symbol maps or dtk, also tested with the broader dtk filter of
+    tools/symbols.py (sub_<any hex>...); the names written by hand in the table only go through AUTO_PATTERNS."""
+    if not name or (dtk_name and sy.AUTO_RE.match(name)):
         return True
-    return any(p.search(name) for _, p in compiled_patterns(extra))
+    return any(True for _ in auto_matches(name, extra))
 
 
 _PATTERN_CACHE: dict = {}
 
 
-def compiled_patterns(extra: list[re.Pattern]) -> list[tuple[str, re.Pattern]]:
+def compiled_patterns(extra: list[re.Pattern]) -> list[tuple[str, re.Pattern, object]]:
     key = tuple(p.pattern for p in extra)
     if key not in _PATTERN_CACHE:
-        _PATTERN_CACHE[key] = [(k, re.compile(r)) for k, r in AUTO_PATTERNS] + [("game.toml pattern", p)
-                                                                               for p in extra]
+        _PATTERN_CACHE[key] = ([(k, re.compile(r), chk) for k, r, chk in AUTO_PATTERNS]
+                               + [("game.toml pattern", p, None) for p in extra])
     return _PATTERN_CACHE[key]
+
+
+def auto_matches(text: str, extra: list[re.Pattern]):
+    """(kind, matched name) of every automatic name in `text`; a name found by two patterns counts once (the
+    first pattern of the list names its kind)."""
+    spans = []
+    for kind, pat, chk in compiled_patterns(extra):
+        for m in pat.finditer(text):
+            s, e = m.span()
+            if (chk is None or chk(m)) and not any(s < e1 and s1 < e for s1, e1 in spans):
+                spans.append((s, e))
+                yield kind, m.group(0)
+
+
+def strip_comments(text: str) -> str:
+    """C/C++ text with comments and string/character literals replaced by spaces (line breaks kept, so line
+    numbers do not move). A quote right after a letter or digit is a C++14 digit separator (1'000), not a
+    literal. Not handled (not used in the decompiled code): raw strings R"(...)", trigraphs, a backslash that
+    continues a // comment."""
+    return _NOT_CODE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+# Leftmost match wins, so a "//" inside a string stays in the string and a quote inside a comment stays in the
+# comment. An unterminated literal stops at the end of its line.
+_NOT_CODE = re.compile(r"//[^\n]*|/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\\n])*\"?|(?<![A-Za-z0-9])'(?:\\.|[^'\\\n])*'?",
+                       re.S)
 
 
 def rel_path(p: Path) -> str:
@@ -203,31 +279,36 @@ def load_config(slug: str, root: Path) -> dict:
 # Inventory, names, per-version addresses
 
 
-def read_map(path: Path) -> dict[int, str]:
+def read_map_entries(path: Path) -> dict[tuple[str, int], tuple[int, str]]:
+    """Symbol maps of tools/symbols.py: <ID>.map ("ADDRESS SIZE NAME") and <ID>-rel.tsv ("module_id module
+    section offset size name"), hexadecimal. (module, address or offset) -> (size, name)."""
     out = {}
     if not path.exists():
         return out
-    for line in path.read_text(encoding="utf-8").splitlines():
-        p = line.split()
-        if len(p) == 3 and not line.startswith("#"):
-            try:
-                out[int(p[0], 16)] = p[2]
-            except ValueError:
-                pass
-    return out
-
-
-def read_rel_names(path: Path) -> dict[tuple[str, int], str]:
-    out = {}
-    if not path.exists():
-        return out
+    rel = path.suffix == ".tsv"
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("#") or not line.strip():
             continue
-        p = line.split("\t")
-        if len(p) >= 6:
-            out[(p[1], int(p[3], 16))] = p[5]
+        try:
+            if rel:
+                p = line.split("\t")
+                if len(p) >= 6:
+                    out[(p[1], int(p[3], 16))] = (int(p[4], 16), p[5])
+            else:
+                p = line.split()
+                if len(p) == 3:
+                    out[("dol", int(p[0], 16))] = (int(p[1], 16), p[2])
+        except ValueError:
+            pass
     return out
+
+
+def read_map(path: Path) -> dict[int, str]:
+    return {a: name for (_m, a), (_s, name) in read_map_entries(path).items()}
+
+
+def read_rel_names(path: Path) -> dict[tuple[str, int], str]:
+    return {k: name for k, (_s, name) in read_map_entries(path).items()}
 
 
 def category_of(cfg: dict, addr: int) -> str:
@@ -292,6 +373,9 @@ def map_version(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]) -> dict
             tgt = int(p[1], 16)
             f.addr[vid] = tgt or None
             f.how[vid] = p[3]
+            if len(p) > 6 and p[6].strip():
+                c = [int(x, 16) for x in p[6].split(",")]
+                f.cands[vid] = (set(c), len(c) < TRANSPOSITION_CANDIDATES)
     else:
         src["dol"] = None
         warnings.append(f"{vid}: no DOL addresses ({rel} missing): run `py -3 tools/symbols.py {slug} transpose "
@@ -321,6 +405,8 @@ def map_version(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]) -> dict
             m = res.get(f.ref)
             f.addr[vid] = m.target if m else None
             f.how[vid] = m.status if m else "absent"
+            if m and m.candidates:
+                f.cands[vid] = (set(m.candidates), True)
     src["rel"] = "matcher" if not missing else f"matcher; no REL files for {', '.join(missing)}"
     if missing:
         warnings.append(f"{vid}: REL files missing for {len(missing)} modules under {dst_dir} or {ref_dir} "
@@ -396,6 +482,9 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
     index = {(f.module, f.ref): f for f in fns}
     by_version = {vid: {(f.module, f.addr[vid]): f for f in fns if f.addr.get(vid) is not None}
                   for vid, _ in cfg["versions"]}
+    maps = {vid: {**read_map_entries(cfg["map_dir"] / f"{vid}.map"),
+                  **read_map_entries(cfg["map_dir"] / f"{vid}-rel.tsv")} for vid, _ in cfg["versions"]}
+    pending = []
     seen = set()
     loc = f"{cfg['table'].name}"
     for row in rows:
@@ -428,10 +517,15 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
             continue
         if "size" in row and row["size"] not in ("", "-"):
             try:
-                if int(row["size"], 16) != f.size:
-                    warnings.append(f"{loc}:{n}: size {row['size']} differs from the inventory ({f.size:X})")
+                size = parse_size(row["size"])
             except ValueError:
-                warnings.append(f"{loc}:{n}: unreadable size {row['size']}")
+                warnings.append(f"{loc}:{n}: unreadable size {row['size']} (0x-prefixed hexadecimal or decimal "
+                                "digits): not counted")
+                continue
+            if size != f.size:
+                warnings.append(f"{loc}:{n}: size {row['size']} differs from the inventory (0x{f.size:X} = "
+                                f"{f.size}): not counted")
+                continue
         if not any(status.startswith(s) for s in cfg["done"]):
             if status:
                 warnings.append(f"{loc}:{n}: status '{status}' not in [decomp] done_statuses: not counted")
@@ -439,18 +533,79 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
         for vid, _ in cfg["versions"]:
             a = addrs.get(vid)
             if a is None:
+                warnings.append(f"{loc}:{n}: {row.get('name', '?')} has no {vid} address in the table: not "
+                                f"counted in {vid}")
                 continue
             want = f.addr.get(vid)
-            if want is not None and (f.module, want) != a:
-                warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} differs from the transposition ({want:X}): "
-                                "not counted")
+            if want is not None:
+                if (f.module, want) != a:
+                    warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} differs from the transposition "
+                                    f"({want:X}): not counted")
+                else:
+                    f.done[vid] = status
                 continue
-            if want is None:
-                warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} known only from the table (no transposed "
-                                "address): to verify")
-                f.addr[vid], f.how[vid] = a[1], "table"
-            f.done[vid] = status
+            why, how = check_table_address(cfg, f, vid, a, by_version[vid], maps[vid])
+            if why:
+                warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} of {row.get('name', '?')} not counted: {why}")
+            else:
+                pending.append((n, f, vid, a, how, status))
+    # The same table-only address given to two functions: neither counts (as the matcher's collisions).
+    claims = Counter((vid, a) for _n, _f, vid, a, _h, _s in pending)
+    for n, f, vid, a, how, status in pending:
+        if claims[(vid, a)] > 1:
+            warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} given to {claims[(vid, a)]} functions by the "
+                            "table: not counted")
+            continue
+        f.addr[vid], f.how[vid], f.done[vid] = a[1], how, status
     return stats
+
+
+def parse_size(text: str) -> int:
+    """Size column: "0x"-prefixed = hexadecimal (0x20 = 32), digits only = decimal (20 = 20). Anything else, such
+    as bare hexadecimal ("2F4"), is refused (ValueError) rather than guessed."""
+    t = text.strip()
+    if re.fullmatch(r"0[xX][0-9A-Fa-f]+", t):
+        return int(t, 16)
+    if re.fullmatch(r"[0-9]+", t):
+        return int(t, 10)
+    raise ValueError(t)
+
+
+def check_table_address(cfg: dict, f: Fn, vid: str, a: tuple[str, int], taken: dict,
+                        vmap: dict) -> tuple[str | None, str]:
+    """A version address given by the table for a function that has none from the transposition (absent,
+    ambiguous, collision...). It counts only when verified: (1) not already the address of another function in
+    that version, and (2) either the only one of the function's candidates (starts where the matcher found code
+    equal to the reference, relocations masked: same start, same size) that no other function holds, from a
+    complete candidate list (elimination, as the matcher's neighbors), or the start of a function of the same size in
+    that version's symbol map (<ID>.map / <ID>-rel.tsv) whose name does not contradict. Returns (reason it does
+    not count, or None; address status)."""
+    if a[0] != f.module:
+        return f"module {a[0]} is not the function's module ({f.module})", ""
+    other = taken.get(a)
+    if other is not None and other is not f:
+        return f"already the {vid} address of {other.name} ({other.label(cfg['ref'])} in {cfg['ref']})", ""
+    cands, full = f.cands.get(vid, (set(), True))
+    if a[1] in cands:
+        free = sorted(c for c in cands if taken.get((f.module, c)) in (None, f))
+        if not full:
+            return (f"{len(cands)} candidates listed, the transposition report keeps only the first "
+                    f"{TRANSPOSITION_CANDIDATES}: cannot tell which one is this function"), ""
+        if free != [a[1]]:
+            return (f"one of {len(free)} candidates not taken by another function "
+                    f"({', '.join(f'{c:X}' for c in free)}): which one is this function is not established"), ""
+        return None, "table-candidate"
+    entry = vmap.get(a)
+    if entry:
+        size, name = entry
+        if size != f.size:
+            return f"the {vid} symbol map gives a function of size 0x{size:X} there, not 0x{f.size:X}", ""
+        if name != f.name and not is_auto(name, []) and not is_auto(f.name, []):
+            return f"the {vid} symbol map names the function there {name}, not {f.name}", ""
+        return None, "table-map"
+    return (f"not verified (neither a candidate of the matcher, code equal to the reference, nor a function of "
+            f"that size in the {vid} symbol map); establish it in symbols/supplement.tsv (verified) and rerun "
+            f"`tools/symbols.py {cfg['slug']} transpose --to {vid}`"), ""
 
 
 # ---------------------------------------------------------------------------------------------
@@ -459,20 +614,18 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
 
 def scan_code(cfg: dict, table_names: list[tuple[int, str]]) -> dict:
     d = cfg["decomp_dir"]
-    pats = compiled_patterns(cfg["extra_patterns"])
     hits = []
     if d.exists():
         for p in sorted(d.rglob("*")):
             if p.suffix.lower() not in CODE_EXTENSIONS or not p.is_file():
                 continue
-            for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                for kind, pat in pats:
-                    for m in pat.finditer(line):
-                        hits.append({"file": rel_path(p), "line": n, "name": m.group(0),
-                                     "kind": kind})
+            code = strip_comments(p.read_text(encoding="utf-8", errors="replace"))
+            for n, line in enumerate(code.splitlines(), 1):
+                for kind, name in auto_matches(line, cfg["extra_patterns"]):
+                    hits.append({"file": rel_path(p), "line": n, "name": name, "kind": kind})
     table = rel_path(cfg["table"])
     for n, name in table_names:
-        if is_auto(name, cfg["extra_patterns"]):
+        if is_auto(name, cfg["extra_patterns"], dtk_name=False):
             hits.append({"file": table, "line": n, "name": name or "(empty)", "kind": "table name"})
     return {"path": rel_path(d), "present": d.exists(), "count": len(hits),
             "by_kind": dict(Counter(h["kind"] for h in hits)), "hits": hits}
@@ -535,14 +688,15 @@ def report(cfg: dict, fns: list[Fn] | None, versions: list[str], modules: set[st
                 v["modules"][m] = module_stats([f for f in work if f.module == m], vid, cfg["extra_patterns"])
             sel = [f for f in work if not modules or f.module in modules]
             v["total"] = module_stats(sel, vid, cfg["extra_patterns"])
-            t = v["total"]
-            complete = complete and t["functions_done"] == t["functions"] and t["no_address"] == 0
             if want_list:
                 v["remaining"] = [{"module": f.module, "address": f.label(vid), "reference": f"{f.ref:08X}"
                                    if f.module == "dol" else f"{f.module}:{f.ref:X}", "size": f.size,
                                    "category": f.category, "address_status": f.how.get(vid), "name": f.name}
                                   for f in sel if vid not in f.done]
             out["versions"][vid] = v
+        # Completeness ignores --version and --module: every version, every module, always.
+        for vid, _ in cfg["versions"]:
+            complete = complete and all(vid in f.done and f.addr.get(vid) is not None for f in work)
     out["complete"] = complete
     return out
 
@@ -588,7 +742,8 @@ def print_text(out: dict, want_list: bool) -> None:
         print(f"\nWarnings ({len(out['warnings'])}):")
         for w in out["warnings"]:
             print(f"  - {w}")
-    print(f"\nComplete (100 % everywhere, every address known, no automatic name): {'yes' if out['complete'] else 'no'}")
+    print("\nComplete (every version and module, whatever the filters: 100 %, every address known, no automatic "
+          f"name): {'yes' if out['complete'] else 'no'}")
 
 
 def main() -> int:
@@ -601,6 +756,7 @@ def main() -> int:
     ap.add_argument("--root", type=Path, help="checkout holding external/ and generated/ (default: this one)")
     ap.add_argument("--table", type=Path, help="table of the decompiled functions to read instead")
     ap.add_argument("--decomp-dir", type=Path, help="decompiled code folder to scan instead")
+    ap.add_argument("--map-dir", type=Path, help="folder of the symbol maps (<ID>.map, <ID>-rel.tsv) to read instead")
     ap.add_argument("--require-complete", action="store_true", help="exit 1 unless everything is decompiled")
     ns = ap.parse_args()
     root = (ns.root or tc.ROOT).resolve()
@@ -611,6 +767,8 @@ def main() -> int:
         return 2
     if ns.table:
         cfg["table"] = ns.table.resolve()
+    if ns.map_dir:
+        cfg["map_dir"] = ns.map_dir.resolve()
     if ns.decomp_dir:
         cfg["decomp_dir"] = ns.decomp_dir.resolve()
     all_ids = [v for v, _ in cfg["versions"]]
