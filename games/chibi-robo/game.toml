@@ -66,10 +66,15 @@ reference = "GGTE01"
 dir = "decomp"
 # Table of the decompiled functions (relative to games/<game>/); missing = nothing decompiled yet.
 functions = "decomp/functions.tsv"
-# Column of the table holding each version's address (other accepted spellings: see the script's header).
-columns = { GGTE01 = "us_addr", GGTP01 = "pal_addr" }
-# Status values (case-insensitive prefix, brackets ignored) that count a row as decompiled.
-done_statuses = ["verified", "hypothesis", "decompiled", "done", "replaced"]
+# Statuses of the table (compared whole, case-insensitive, surrounding brackets ignored; never by prefix):
+#   verified   = replaces its recompiled version and passed the oracle: the only status counted as decompiled
+#   unverified = replaces its recompiled version, not yet checked by the oracle: shown as "replaced, not
+#                verified", never in the percentages nor in --require-complete
+#   disabled   = listed, not built: not counted, no warning
+# Any other status is reported as a warning and not counted.
+done_statuses = ["verified"]
+replaced_statuses = ["unverified"]
+listed_statuses = ["disabled"]
 # Transposition report of tools/symbols.py, relative to the repository root ({slug}, {ref}, {id}).
 transposition = "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"
 # Categories of the partition left out of the decompilation (replaced by native code instead).
@@ -79,6 +84,13 @@ excluded = ["init", "library"]
 # disassembly of two modules registers and walks the chain of global destructors, and the copies of the other
 # modules have the same code (relocations masked) in GGTE01 and GGTP01.
 rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
+
+# Column of the table holding each version's address (other accepted spellings: see the header of
+# tools/decomp_progress.py). One [decomp] section only, and the columns always as this sub-table, never as an
+# inline "columns = { ... }" key (TOML refuses a table declared twice).
+[decomp.columns]
+GGTE01 = "us_addr"
+GGTP01 = "pal_addr"
 
 # DOL partition (notes/decomp.md section D1.4), in reference-version addresses, [start, end); a function
 # belongs to the range that holds its start address. Category "game" and "hsd" are decompiled.

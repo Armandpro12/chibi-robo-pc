@@ -22,8 +22,16 @@ Game-specific parameters: [decomp] section of `games/<game>/game.toml` (all path
   reference      version whose functions define the work (default: [symbols] reference)
   dir            folder of the decompiled code, relative to games/<game>/ (scanned for automatic names)
   functions      table of the decompiled functions, relative to games/<game>/ (missing = 0 % decompiled)
-  columns        { <version ID> = "<column name>" }: column of the table holding each version's address
-  done_statuses  status values that count a row as decompiled (case-insensitive prefix, "[]" ignored)
+  columns        sub-table [decomp.columns], <version ID> = "<column name>": column of the table holding each
+                 version's address (written as a [decomp.columns] table, never as an inline table: one form only)
+  done_statuses      statuses counted as decompiled: the function replaces its recompiled version and passed
+                     the oracle (default ["verified"])
+  replaced_statuses  statuses shown as "replaced, not verified" (in the build, not yet through the oracle):
+                     reported in their own column, never in the percentages nor in --require-complete
+                     (default ["unverified"])
+  listed_statuses    statuses of rows listed but not built (default ["disabled"]): not counted, no warning
+                 A status is compared whole (case-insensitive, surrounding "[]" and backquotes removed), never by
+                 prefix: "verified-failed" is not "verified". Any other status: warning, not counted.
   transposition  transposition report of tools/symbols.py for a non-reference version, relative to the
                  root ({slug}, {ref}, {id} replaced)
   excluded       partition categories not to decompile (e.g. libraries replaced by native code)
@@ -45,7 +53,9 @@ Inputs that are not in Git:
 
 Table of the decompiled functions (format still open; this reader is tolerant):
   - one row per function, columns separated by tabs (or by spaces when a row has no tab);
-  - a header row (optionally starting with "#") names the columns; recognized names: "name" (or function,
+  - a header row names the columns: a line with at least two recognized names; a line starting with "#" is a
+    header only when it has tabs or when every one of its words is a recognized name (so that a prose comment
+    quoting two column names, "#   name ... one line per name", is not taken for the header); recognized names: "name" (or function,
     symbol), "status" (or state), "size", "module" (or rel), and for each version the column given by
     [decomp] columns, or the version ID itself ("GGXX01", "ggxx01_addr", "ggxx01_address"), or the region
     ("us_addr", "pal_addr", "jp_addr", with or without "_addr"/"_address");
@@ -65,6 +75,9 @@ Table of the decompiled functions (format still open; this reader is tolerant):
       in that version's symbol map (<ID>.map, <ID>-rel.tsv) with no contradicting name. Two rows giving the
       same such address: neither counts. Anything else does not count: the address goes first through
       symbols/supplement.tsv (verified) and the transposition.
+      Limit of the symbol-map route: names "contradict" only when both are hand-written; while the reference
+      function still has an automatic name (fn_...), a same-size function there is accepted whatever its name in
+      that version's map (the size and "not taken" checks still apply).
   Every row that is not counted, fully or in one version, is reported as a warning with the reason.
 
 Automatic names: placeholders of dtk, Ghidra and m2c (fn_80012345, fn_1_264, FUN_..., PTR_FUN_..., _DAT_...,
@@ -100,12 +113,17 @@ CODE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".i
 #  - a match must end at a word boundary (no letter or digit right after the number);
 #  - comments and string or character literals are not scanned (see strip_comments): a name quoted there for
 #    traceability ("was fn_800B26BC") is not code.
+#  - a Ghidra type prefix (uVar1, pcVar2, ppuVar3, auStack_18, puRam80001234) is pointer/array letters ("p",
+#    "a", at most 4) then ONE base letter, so "hasVar2" or "envVar2" are not taken; not handled: struct pointer
+#    names made from a type's capital letter (pSVar1);
+#  - Ghidra's case labels "caseD_<case value>" have any number of hexadecimal digits (caseD_1, caseD_ff).
 # Deliberate choices: "arg0" (m2c's argument names) and "unkA"/"unk1C" (dtk/m2c field names) count, as in the
 # tools' output there is no way to tell them from a hand-written name; "envVar2", "spEED", "local_face" do not.
 NB = r"(?<![A-Za-z0-9])"                          # start of a name (underscore allowed before)
 END = r"(?![A-Za-z0-9])"                          # end of the number part
 HEX8 = r"(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{8}"  # 8 hexadecimal digits, at least one decimal digit
-GHIDRA_TYPES = "abcdfhilpqsuvwxz"                  # letters of Ghidra's type prefixes (uVar, pcVar, auStack...)
+GHIDRA_TYPES = "bcdfhilpqsuvwxz"                   # base letters of Ghidra's type prefixes (uVar, cVar, fVar...)
+GHIDRA_PREFIX = r"[pa]{0,4}[" + GHIDRA_TYPES + r"]"  # pointer/array letters, then one base letter (ppuVar, auStack)
 
 
 def _m2c_stack(m: re.Match) -> bool:
@@ -119,15 +137,15 @@ AUTO_PATTERNS = [
     ("address placeholder", NB + r"_*(?:fn|func|sub|lbl|zz|loc|off|jumptable|jtbl)_(?:0x)?(?:" + HEX8
      + r"|\d+_(?:(?:text|data|rodata|bss|sdata2?|sbss2?|ctors|dtors)_)?[0-9A-Fa-f]+)" + END + r"\w*", None),
     ("Ghidra label", NB + r"_*(?:PTR_)*(?:thunk_)?(?:(?:FUN|DAT|LAB|PTR|SUB|UNK|EXT|OFF|BYTE|WORD|DWORD|QWORD"
-     r"|FLOAT|DOUBLE|switchD|caseD)_|code_r0x)(?:0x)?(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{4,8}" + END + r"\w*",
-     None),
+     r"|FLOAT|DOUBLE|switchD|caseD)_|code_r0x)(?:0x)?(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{4,8}" + END + r"\w*"
+     + r"|" + NB + r"_*caseD_(?:0x)?[0-9A-Fa-f]+" + END, None),
     ("Ghidra string label", NB + r"_*(?:PTR_)*[su]_\w*?_" + HEX8 + END, None),
-    ("Ghidra global", NB + r"_*[" + GHIDRA_TYPES + r"]{1,6}Ram" + HEX8 + END, None),   # type + space "ram"
+    ("Ghidra global", NB + r"_*" + GHIDRA_PREFIX + r"Ram" + HEX8 + END, None),   # type + space "ram"
     ("Ghidra pseudo-name", NB + r"UNRECOVERED_JUMPTABLE\w*", None),
-    ("Ghidra variable", NB + r"[" + GHIDRA_TYPES + r"]{1,5}Var\d+" + END, None),
+    ("Ghidra variable", NB + GHIDRA_PREFIX + r"Var\d+" + END, None),
     ("Ghidra local/param", NB + r"local_(?:res)?(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]+" + END + r"|" + NB
-     + r"param_\d+" + END + r"|" + NB + r"(?:unaff|extraout)_\w+|" + NB + r"[" + GHIDRA_TYPES
-     + r"]{1,5}Stack_(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]+" + END + r"|" + NB
+     + r"param_\d+" + END + r"|" + NB + r"(?:unaff|extraout)_\w+|" + NB + GHIDRA_PREFIX
+     + r"Stack_(?=[0-9A-Fa-f]*[0-9])[0-9A-Fa-f]+" + END + r"|" + NB
      + r"in_(?:r\d+|f\d+|cr\d+|lr|ctr|xer|stack_\w+)" + END, None),
     ("raw field", NB + r"field\d*_0x[0-9A-Fa-f]+" + END + r"|" + NB + r"_?unk_?(?:0x)?[0-9A-F]+" + END, None),
     ("m2c temporary", NB + r"(?:var|temp|phi|saved_reg)_(?:r\d+|f\d+|cr\d+|lr|ctr)(?:_\d+)?" + END + r"|" + NB
@@ -148,7 +166,8 @@ class Fn:
     category: str
     addr: dict = field(default_factory=dict)     # version -> address/offset or None
     how: dict = field(default_factory=dict)      # version -> mapping status
-    done: dict = field(default_factory=dict)     # version -> status text of the table row
+    done: dict = field(default_factory=dict)     # version -> status of the row (done_statuses: verified)
+    replaced: dict = field(default_factory=dict)  # version -> status (replaced_statuses: replaced, not verified)
     cands: dict = field(default_factory=dict)    # version -> (starts whose code equals the reference, full list?)
 
     def label(self, vid: str) -> str:
@@ -264,7 +283,9 @@ def load_config(slug: str, root: Path) -> dict:
         "decomp_dir": gdir / dc.get("dir", "decomp"),
         "table": gdir / dc.get("functions", "decomp/functions.tsv"),
         "columns": dc.get("columns", {}),
-        "done": [s.lower() for s in dc.get("done_statuses", ["verified", "hypothesis", "decompiled", "done"])],
+        "done": {s.lower() for s in dc.get("done_statuses", ["verified"])},
+        "replaced": {s.lower() for s in dc.get("replaced_statuses", ["unverified"])},
+        "listed": {s.lower() for s in dc.get("listed_statuses", ["disabled"])},
         "transposition": dc.get("transposition", "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"),
         "excluded": set(dc.get("excluded", [])),
         "ranges": ranges,
@@ -458,12 +479,17 @@ def read_table(cfg: dict, warnings: list[str]) -> list[dict] | None:
     for n, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         if not line.strip():
             continue
-        cells = [c.strip() for c in (line.split("\t") if "\t" in line else line.split())]
+        tabbed = "\t" in line
+        cells = [c.strip() for c in (line.split("\t") if tabbed else line.split())]
+        comment = line.lstrip().startswith("#")
+        if comment and cells and cells[0] == "#":
+            cells = cells[1:]                     # "# name us_addr ...": the "#" alone is not a column
         head = [c.lstrip("#").strip().lower() for c in cells]
-        if cols is None and sum(h in aliases for h in head) >= 2:
+        if (cols is None and sum(h in aliases for h in head) >= 2
+                and (not comment or tabbed or all(h in aliases for h in head if h))):
             cols = [aliases.get(h) for h in head]
             continue
-        if line.lstrip().startswith("#"):
+        if comment:
             continue
         keys = cols or order
         row = {"line": n}
@@ -526,9 +552,14 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
                 warnings.append(f"{loc}:{n}: size {row['size']} differs from the inventory (0x{f.size:X} = "
                                 f"{f.size}): not counted")
                 continue
-        if not any(status.startswith(s) for s in cfg["done"]):
-            if status:
-                warnings.append(f"{loc}:{n}: status '{status}' not in [decomp] done_statuses: not counted")
+        if status in cfg["done"]:
+            kind = "done"
+        elif status in cfg["replaced"]:
+            kind = "replaced"
+        else:
+            if status not in cfg["listed"]:
+                warnings.append(f"{loc}:{n}: status '{status}' is not a recognized status ([decomp] done_statuses, "
+                                "replaced_statuses, listed_statuses): not counted")
             continue
         for vid, _ in cfg["versions"]:
             a = addrs.get(vid)
@@ -542,13 +573,13 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
                     warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} differs from the transposition "
                                     f"({want:X}): not counted")
                 else:
-                    f.done[vid] = status
+                    getattr(f, kind)[vid] = status
                 continue
             why, how = check_table_address(cfg, f, vid, a, by_version[vid], maps[vid])
             if why:
                 warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} of {row.get('name', '?')} not counted: {why}")
             else:
-                pending.append((n, f, vid, a, how, status))
+                pending.append((n, f, vid, a, how, (kind, status)))
     # The same table-only address given to two functions: neither counts (as the matcher's collisions).
     claims = Counter((vid, a) for _n, _f, vid, a, _h, _s in pending)
     for n, f, vid, a, how, status in pending:
@@ -556,7 +587,8 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
             warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} given to {claims[(vid, a)]} functions by the "
                             "table: not counted")
             continue
-        f.addr[vid], f.how[vid], f.done[vid] = a[1], how, status
+        f.addr[vid], f.how[vid] = a[1], how
+        getattr(f, status[0])[vid] = status[1]
     return stats
 
 
@@ -636,8 +668,8 @@ def scan_code(cfg: dict, table_names: list[tuple[int, str]]) -> dict:
 
 
 def module_stats(fns: list[Fn], vid: str, extra: list[re.Pattern]) -> dict:
-    s = {"functions": 0, "functions_done": 0, "functions_verified": 0, "bytes": 0, "bytes_done": 0,
-         "no_address": 0, "no_address_bytes": 0, "auto_names_left": 0, "address_status": Counter()}
+    s = {"functions": 0, "functions_done": 0, "bytes": 0, "bytes_done": 0, "functions_replaced": 0,
+         "bytes_replaced": 0, "no_address": 0, "no_address_bytes": 0, "auto_names_left": 0, "address_status": Counter()}
     for f in fns:
         s["functions"] += 1
         s["bytes"] += f.size
@@ -648,8 +680,11 @@ def module_stats(fns: list[Fn], vid: str, extra: list[re.Pattern]) -> dict:
         if vid in f.done:
             s["functions_done"] += 1
             s["bytes_done"] += f.size
-            s["functions_verified"] += f.done[vid].startswith("verified")
-        elif is_auto(f.name, extra):
+            continue
+        if vid in f.replaced:
+            s["functions_replaced"] += 1
+            s["bytes_replaced"] += f.size
+        if is_auto(f.name, extra):
             s["auto_names_left"] += 1
     s["percent_functions"] = pct(s["functions_done"], s["functions"])
     s["percent_bytes"] = pct(s["bytes_done"], s["bytes"])
@@ -716,12 +751,14 @@ def print_text(out: dict, want_list: bool) -> None:
                   f"{'excluded' if v['excluded'] else 'to decompile'}")
     for vid, v in out["versions"].items():
         print(f"\n{vid} ({v['region']}):")
-        print(f"  {'module':9s} {'functions':>22s} {'bytes':>27s} {'no address':>11s} {'auto names left':>16s}")
+        print(f"  {'module':9s} {'functions (verified)':>22s} {'bytes (verified)':>27s} "
+              f"{'replaced, not verified':>23s} {'no address':>11s} {'auto names left':>16s}")
         rows = list(v["modules"].items()) + [("total", v["total"])]
         for m, s in rows:
             fn = f"{s['functions_done']}/{s['functions']} {fmt_pct(s['percent_functions'])}"
             by = f"{s['bytes_done']}/{s['bytes']} {fmt_pct(s['percent_bytes'])}"
-            print(f"  {m:9s} {fn:>22s} {by:>27s} {s['no_address']:>11d} {s['auto_names_left']:>16d}")
+            rp = f"{s['functions_replaced']} fn {s['bytes_replaced']} B"
+            print(f"  {m:9s} {fn:>22s} {by:>27s} {rp:>23s} {s['no_address']:>11d} {s['auto_names_left']:>16d}")
         st = v["total"]["address_status"]
         if list(st) != ["reference"]:
             print("  address sources: " + ", ".join(f"{k} {n}" for k, n in sorted(st.items(), key=lambda x: -x[1])))

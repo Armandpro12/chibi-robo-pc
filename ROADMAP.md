@@ -133,7 +133,8 @@ measured by `tools/decomp_progress.py` (per version and per module; partition in
 US and PAL. Left out: 1,209 DOL functions (14 of the `.init` start-up section and 1,195 of the libraries: native
 replacement, or decision pending for THP) and 20 REL functions (the Metrowerks runtime's global destructor chain,
 in 10 modules). 362 of the functions to decompile have no PAL address yet, so they cannot count as decompiled in
-PAL.
+PAL. A function counts as decompiled only once it has passed the oracle (status `verified`); one that already
+replaces its recompiled version but is not verified yet (`unverified`) is shown in a separate column.
 
 ## Stage 3 — Multiplayer ⬜
 
