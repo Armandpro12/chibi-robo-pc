@@ -315,7 +315,36 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
                 hooks.setdefault(a, name)
     for a in game_cfg.get("hle", {}).get("hooks", {}).get(version, []):
         hooks.setdefault(parse_int(a), "game")
+    # Decompiled functions enabled in the game's table (tools/decomp_functions.py, which refuses an address that is not
+    # the start of a function of the listed size in this version's code). One name for all of them, so that renaming a
+    # decompiled function does not change the fingerprint (no regeneration of the C).
+    # A decompiled function at the address of an HLE catalog function (native replacement of the SDK) or of a
+    # game.toml hook is refused: the runtime registers both at the same address and the later one would silently
+    # replace the other (gcrt_hle_register).
+    if game_cfg.get("decomp"):
+        import decomp_functions  # noqa: E402
+        clash = []
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout):
+            if a in hooks:
+                clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
+            hooks[a] = "decomp"
+        if clash:
+            raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
+                             f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
+    # Measurements only (tools/build.py --extra-hooks): more entry points compiled with a hook, without replacement.
+    for a in game_cfg.get("_extra_hooks", []):
+        hooks.setdefault(a, "extra")
     return sorted(hooks.items())
+
+
+def read_hook_list(path: Path) -> list[int]:
+    """Hexadecimal addresses, one per line (`#` comments): measurement of hooks on many entry points."""
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(int(line.split()[0], 16))
+    return out
 
 
 def ensure_extracted(game: str, version: str, out: Path) -> dict:
@@ -442,6 +471,20 @@ def host_ram_size(state: dict) -> int:
     return size
 
 
+def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path) -> str:
+    """Registration table of the decompiled functions for `version` (tools/decomp_functions.py), written into the
+    build folder only if it changed (no recompilation otherwise); "" if the game has no [decomp] table."""
+    import decomp_functions  # noqa: E402
+    game_cfg = tc.load_game(game)
+    if not game_cfg.get("decomp"):
+        return ""
+    entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root))
+    path = build_dir / "decomp" / "decomp_registry.cpp"
+    decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries))
+    print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name})")
+    return path.as_posix()
+
+
 def configure_and_build(game: str, version: str, config: str, disc_root: Path, recomp_dir: Path,
                         state: dict, jobs: int | None, tag: str | None = None,
                         pgo: tuple[str, Path | None] = ("OFF", None), compiler: Path | None = None) -> Path:
@@ -488,6 +531,7 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         exe = llvm_bin / f"{tool}{tc.EXE}"
         if exe.exists():
             defs[var] = exe.as_posix()
+    defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir)
     cmd = [cmake, "-S", tc.ROOT, "-B", build_dir, "-G", "Ninja"] + [f"-D{k}={v}" for k, v in defs.items()]
     ensure_aurora_patches()
     print("== CMake configuration")
@@ -548,6 +592,9 @@ def prepare(game: str, game_cfg: dict, version: str, force_recomp: bool = False,
     disc_root = Path(manifest["disc_root"])
     recomp_dir = out / "recomp"
     args = argparse.Namespace(force_recomp=force_recomp, no_symbols=no_symbols, jobs=jobs)
+    extra = os.environ.get("GCRT_EXTRA_HOOKS")
+    if extra:
+        game_cfg = dict(game_cfg, _extra_hooks=read_hook_list(Path(extra)))
     return disc_root, recomp_dir, recompile(game_cfg, version, disc_root, recomp_dir, args)
 
 
@@ -594,7 +641,12 @@ def main() -> int:
     parser.add_argument("--pgo-dir", help="profile folder for --pgo use (profile.profdata + profile-info.json; default: "
                                           "build/pgo/<game>-<ID>/)")
     parser.add_argument("--pgo-scenarios", help="training scenarios for --pgo train (default: [pgo] from game.toml)")
+    parser.add_argument("--extra-hooks", metavar="FILE",
+                        help="measurements only: also compile these entry points (hexadecimal addresses, one per line) "
+                             "with an HLE hook, without any replacement (cost of hooks on many functions)")
     args = parser.parse_args()
+    if args.extra_hooks:
+        os.environ["GCRT_EXTRA_HOOKS"] = str(Path(args.extra_hooks).resolve())
 
     game_cfg = tc.load_game(args.game)
     version = args.version or game_cfg["game"]["default_version"]

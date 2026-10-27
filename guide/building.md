@@ -62,6 +62,12 @@ The build recompiles the game with DolRecomp, then compiles it with clang-cl. Th
 Dawn and SDL3 packages and ten source libraries); later builds in the same folder reuse them. `tools/build.py` also
 applies the Aurora patches of `tools/patches/aurora/` ([technical.md](technical.md#aurora-patches)).
 
+The decompiled functions enabled in `games/chibi-robo/decomp/functions.tsv` replace their recompiled versions. The
+build first checks each address against the symbol files of `games/chibi-robo/symbols/`, all in Git (maps, gap file
+and the transposition report `GGTE01-to-GGTP01.tsv`), so it needs no extra step: a missing file stops the build with
+the command that restores it. After a change of the reference symbols, `py -3 tools/symbols.py chibi-robo transpose
+--to GGTP01` rewrites the report (it needs the cbr_decomp symbols in `external/` and the Ghidra analysis of GGTP01).
+
 Run the game by launching the executable directly ([settings-and-controls.md](settings-and-controls.md)).
 
 ## Native extraction tool (gcextract)

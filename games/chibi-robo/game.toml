@@ -58,13 +58,15 @@ This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0
 # tools/decomp_progress.py: progress of the decompilation (stage 2), per version and per module.
 # The set of functions comes from the reference version's dtk symbols ([symbols] dtk_dir: every function with
 # its bounds, DOL and RELs); the other versions reach the same functions through the transposition report of
-# tools/symbols.py (`transposition` below, generated/, not in Git) and, for the RELs, by running the same
+# tools/symbols.py (`transposition` below, in Git next to the maps) and, for the RELs, by running the same
 # matcher on the two versions' REL files. A function without an address in a version never counts as
 # decompiled in that version (parity rule).
 reference = "GGTE01"
 # Folder of the decompiled code (relative to games/<game>/), scanned for automatic names.
 dir = "decomp"
-# Table of the decompiled functions (relative to games/<game>/); missing = nothing decompiled yet.
+# Table of the decompiled functions (relative to games/<game>/); missing = nothing decompiled yet. Also read by
+# tools/decomp_functions.py and tools/build.py (HLE hook and registration of each enabled function at its address
+# in the version being built).
 functions = "decomp/functions.tsv"
 # Statuses of the table (compared whole, case-insensitive, surrounding brackets ignored; never by prefix):
 #   verified   = replaces its recompiled version and passed the oracle: the only status counted as decompiled
@@ -75,8 +77,10 @@ functions = "decomp/functions.tsv"
 done_statuses = ["verified"]
 replaced_statuses = ["unverified"]
 listed_statuses = ["disabled"]
-# Transposition report of tools/symbols.py, relative to the repository root ({slug}, {ref}, {id}).
-transposition = "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"
+# Transposition report of tools/symbols.py transpose, relative to the repository root ({slug}, {ref}, {id}). In Git:
+# tools/decomp_functions.py (run by tools/build.py) checks the table's addresses against it, so a build needs neither
+# the dtk symbols nor generated/ symbol files.
+transposition = "games/{slug}/symbols/{ref}-to-{id}.tsv"
 # Categories of the partition left out of the decompilation (replaced by native code instead).
 excluded = ["init", "library"]
 # REL functions left out (category "rel-excluded"): the Metrowerks runtime's global destructor chain, linked
@@ -91,6 +95,13 @@ rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
 [decomp.columns]
 GGTE01 = "us_addr"
 GGTP01 = "pal_addr"
+
+# Optional column of the table, per version: "yes" once the decompilation oracle has passed on that version. An
+# address that symbols/<ID>-gaps.tsv places at the level position or sized is enabled (tools/decomp_functions.py)
+# and counted (tools/decomp_progress.py) only on a row with "yes" there; strong and graph need no mark (activation
+# lock, notes in tools/decomp_common.py). GGTE01 is the reference version: it has no gaps file.
+[decomp.oracle_columns]
+GGTP01 = "pal_oracle"
 
 # DOL partition (notes/decomp.md section D1.4), in reference-version addresses, [start, end); a function
 # belongs to the range that holds its start address. Category "game" and "hsd" are decompiled.

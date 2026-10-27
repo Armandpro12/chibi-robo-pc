@@ -31,9 +31,14 @@ Game-specific parameters: [decomp] section of `games/<game>/game.toml` (all path
                      (default ["unverified"])
   listed_statuses    statuses of rows listed but not built (default ["disabled"]): not counted, no warning
                  A status is compared whole (case-insensitive, surrounding "[]" and backquotes removed), never by
-                 prefix: "verified-failed" is not "verified". Any other status: warning, not counted.
+                 prefix: "verified-failed" is not "verified". Any other status: warning, not counted. Same
+                 reading as tools/decomp_functions.py (shared code: tools/decomp_common.py), which refuses the
+                 table instead of warning.
   transposition  transposition report of tools/symbols.py for a non-reference version, relative to the
-                 root ({slug}, {ref}, {id} replaced)
+                 repository of the tools (not --root: it is a file of the game, in Git, next to the maps; {slug},
+                 {ref}, {id} replaced; default games/{slug}/symbols/{ref}-to-{id}.tsv)
+  oracle_columns optional sub-table [decomp.oracle_columns], <version ID> = "<column name>": column of the
+                 table that says "yes" once the oracle has passed on that version (see the gaps below)
   excluded       partition categories not to decompile (e.g. libraries replaced by native code)
   ranges         [[decomp.ranges]] category, start, end (end optional = no upper bound): DOL partition in
                  reference addresses, [start, end); a function belongs to the range holding its start
@@ -49,6 +54,12 @@ Inputs that are not in Git:
     `tools/symbols.py <game> transpose --to <ID>`, and the REL offsets from the same matcher run here on the two
     versions' REL files (generated/<game>/<ID>/disc/, [code] rel_dir). A function with no address in a version
     never counts as decompiled in that version.
+  - then the gap file `<ID>-gaps.tsv` of `tools/symbols.py <game> gaps` (in Git, next to the symbol maps,
+    [symbols] map_dir), read through tools/decomp_common.py (activation lock): a function it places at the level
+    strong or graph gets that address; one at the level position or sized has NO established address (a sized
+    function loses the address of the transposition: its size there is not established), and counts in that
+    version only on a table row giving that same address with "yes" in the version's oracle column; any other
+    level gives no address.
   Byte figures always use the reference version's function sizes.
 
 Table of the decompiled functions (format still open; this reader is tolerant):
@@ -101,6 +112,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import symbols as sy  # noqa: E402
+import decomp_common as dcom  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 CODE_EXTENSIONS = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp"}
@@ -169,6 +181,7 @@ class Fn:
     done: dict = field(default_factory=dict)     # version -> status of the row (done_statuses: verified)
     replaced: dict = field(default_factory=dict)  # version -> status (replaced_statuses: replaced, not verified)
     cands: dict = field(default_factory=dict)    # version -> (starts whose code equals the reference, full list?)
+    gated: dict = field(default_factory=dict)    # version -> (address, level): gap address enabled by the oracle only
 
     def label(self, vid: str) -> str:
         a = self.addr.get(vid)
@@ -283,10 +296,8 @@ def load_config(slug: str, root: Path) -> dict:
         "decomp_dir": gdir / dc.get("dir", "decomp"),
         "table": gdir / dc.get("functions", "decomp/functions.tsv"),
         "columns": dc.get("columns", {}),
-        "done": {s.lower() for s in dc.get("done_statuses", ["verified"])},
-        "replaced": {s.lower() for s in dc.get("replaced_statuses", ["unverified"])},
-        "listed": {s.lower() for s in dc.get("listed_statuses", ["disabled"])},
-        "transposition": dc.get("transposition", "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"),
+        "statuses": dcom.status_sets(dc),
+        "oracle_columns": dcom.oracle_columns(dc),
         "excluded": set(dc.get("excluded", [])),
         "ranges": ranges,
         "overrides": {parse_int(o["addr"]): (o.get("name"), o["category"]) for o in dc.get("overrides", [])},
@@ -379,31 +390,35 @@ def map_version(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]) -> dict
     """Fills f.addr[vid] / f.how[vid]; returns the sources used."""
     ref, slug = cfg["ref"], cfg["slug"]
     src = {}
-    rel = cfg["transposition"].format(slug=slug, ref=ref, id=vid)
-    path = cfg["root"] / rel
+    # The report is a file of the game (in Git, next to the maps): read from the tools' tree, as map_dir.
+    path = dcom.transposition_path(cfg["game"], cfg["game"]["_dir"].parent.parent, vid)
+    rel = rel_path(path)
     dol = {f.ref: f for f in fns if f.module == "dol"}
+    trans = dcom.read_transposition(path)
     if path.exists():
         src["dol"] = rel
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            p = line.split("\t")
-            f = dol.get(int(p[0], 16))
-            if f is None:
-                continue
-            tgt = int(p[1], 16)
-            f.addr[vid] = tgt or None
-            f.how[vid] = p[3]
-            if len(p) > 6 and p[6].strip():
-                c = [int(x, 16) for x in p[6].split(",")]
-                f.cands[vid] = (set(c), len(c) < TRANSPOSITION_CANDIDATES)
     else:
         src["dol"] = None
         warnings.append(f"{vid}: no DOL addresses ({rel} missing): run `py -3 tools/symbols.py {slug} transpose "
-                        f"--to {vid}` (or pass --root)")
+                        f"--to {vid}`")
+    # Gap addresses (tools/symbols.py gaps), activation lock of tools/decomp_common.py: strong and graph are
+    # established; position and sized only through a table row marked by the oracle; other levels give nothing.
+    # Same pairing as tools/decomp_functions.py (decomp_common.paired_address).
+    gpath = cfg["map_dir"] / f"{vid}-gaps.tsv"
+    gaps = dcom.read_gaps(gpath)
+    if gaps:
+        src["gaps"] = rel_path(gpath)
+    gaps_by_ref = {g.ref: g for g in gaps if g.target}
     for f in dol.values():
-        f.how.setdefault(vid, "unknown")
-        f.addr.setdefault(vid, None)
+        t = trans.get(f.ref)
+        if t is not None and t.candidates:
+            f.cands[vid] = (set(t.candidates), len(t.candidates) < TRANSPOSITION_CANDIDATES)
+        addr, how = dcom.paired_address(f.ref, trans, gaps_by_ref)
+        if dcom.is_gated(how):
+            f.addr[vid], f.how[vid] = None, how
+            f.gated[vid] = (addr, how[4:])
+        else:
+            f.addr[vid], f.how[vid] = addr, how
     # RELs: same matcher as tools/symbols.py, module by module
     mods = defaultdict(list)
     for f in fns:
@@ -440,9 +455,11 @@ def map_version(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]) -> dict
 
 
 def column_aliases(cfg: dict) -> dict[str, str]:
-    """lower-case header name -> canonical key ("name", "status", "size", "module", "v:<ID>")."""
+    """lower-case header name -> canonical key ("name", "status", "size", "module", "v:<ID>", "o:<ID>")."""
     al = {"name": "name", "function": "name", "symbol": "name", "status": "status", "state": "status",
           "size": "size", "module": "module", "rel": "module"}
+    for vid, column in cfg.get("oracle_columns", {}).items():
+        al[column.lower()] = f"o:{vid}"
     for vid, region in cfg["versions"]:
         keys = {vid.lower(), f"{vid.lower()}_addr", f"{vid.lower()}_address"}
         reg = REGION_ALIASES.get(region.lower())
@@ -515,7 +532,7 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
     loc = f"{cfg['table'].name}"
     for row in rows:
         n = row["line"]
-        status = row.get("status", "").strip("[]` ").lower()
+        status = dcom.normalize_status(row.get("status", ""))
         try:
             addrs = {vid: parse_addr(row.get(f"v:{vid}", "-"), row.get("module")) for vid, _ in cfg["versions"]}
         except ValueError:
@@ -552,12 +569,9 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
                 warnings.append(f"{loc}:{n}: size {row['size']} differs from the inventory (0x{f.size:X} = "
                                 f"{f.size}): not counted")
                 continue
-        if status in cfg["done"]:
-            kind = "done"
-        elif status in cfg["replaced"]:
-            kind = "replaced"
-        else:
-            if status not in cfg["listed"]:
+        kind = dcom.status_kind(status, cfg["statuses"])
+        if kind not in ("done", "replaced"):
+            if kind is None:
                 warnings.append(f"{loc}:{n}: status '{status}' is not a recognized status ([decomp] done_statuses, "
                                 "replaced_statuses, listed_statuses): not counted")
             continue
@@ -574,6 +588,25 @@ def apply_table(cfg: dict, fns: list[Fn] | None, rows: list[dict], warnings: lis
                                     f"({want:X}): not counted")
                 else:
                     getattr(f, kind)[vid] = status
+                continue
+            gated = f.gated.get(vid)
+            if gated is not None:
+                # Gap address at the level position or sized: only with the oracle mark of that version.
+                try:
+                    marked = dcom.parse_oracle(row.get(f"o:{vid}", ""))
+                except ValueError:
+                    warnings.append(f"{loc}:{n}: oracle column {row.get(f'o:{vid}')!r} must be yes, no or -: not "
+                                    f"counted in {vid}")
+                    continue
+                if (f.module, gated[0]) != a:
+                    warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} differs from the gap address "
+                                    f"({gated[0]:X}, level {gated[1]}): not counted")
+                elif not marked:
+                    warnings.append(f"{loc}:{n}: {vid} address {a[1]:X} of {row.get('name', '?')} is at the gap "
+                                    f"level {gated[1]}: counted only once the oracle has passed on {vid} (oracle "
+                                    "column yes)")
+                else:
+                    pending.append((n, f, vid, a, f"gap-{gated[1]}-oracle", (kind, status)))
                 continue
             why, how = check_table_address(cfg, f, vid, a, by_version[vid], maps[vid])
             if why:

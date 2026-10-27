@@ -1,0 +1,36 @@
+# Decompiled functions of Chibi-Robo! (stage 2): one line per function, read by tools/decomp_functions.py and
+# tools/build.py. Names, addresses and sizes only: no game data.
+#
+# Columns (tab-separated; settings in games/chibi-robo/game.toml, [decomp]):
+#   name      identifier of the export record in the decompiled code (GC_DECOMP_EXPORT); one line per name
+#   module    "dol" for main.dol, or the REL file name without extension (e.g. stage01) for a REL module
+#   us_addr   GGTE01: guest address (dol), or offset in the module's first code section (REL, as in the dtk
+#             symbols); "-" if not known yet
+#   pal_addr  GGTP01: same; "-" if not known yet. A function without an address in BOTH versions cannot be enabled
+#   size      size in bytes of the original function: must be its size in BOTH versions (one column only, so a
+#             function whose size differs between versions cannot be enabled yet)
+#   status    disabled   = listed, not built (no hook, no registration)
+#             unverified = replaces its recompiled version, NOT yet checked by the oracle (D1 mission 4)
+#             verified   = replaces it and passed the oracle on its captured cases
+#             (compared whole and case-insensitive, as tools/decomp_progress.py does; any other status refuses the table)
+#   pal_oracle  optional column: "yes" once the oracle has passed on GGTP01; "no", "-" or empty otherwise
+# Activation lock (tools/decomp_functions.py, run by tools/build.py; the build is refused otherwise). For an enabled
+# line, in each version:
+#   (a) a GGTP01 address that symbols/GGTP01-gaps.tsv places at the level position or sized is refused unless
+#       pal_oracle is "yes"; only the levels strong and graph are enabled without it; any other level is refused;
+#   (b) the size must equal the function's size in that version (GGTP01-gaps.tsv target size, otherwise the symbol
+#       maps and symbols/GGTE01-to-GGTP01.tsv, the transposition report of tools/symbols.py, whose GGTE01 columns
+#       list every GGTE01 function with its size), and the range must not hold another known function start of that
+#       version strictly inside it;
+#   (c) an address that is in none of these sources is refused;
+#   (d) pal_addr must be the address that GGTE01-to-GGTP01.tsv or GGTP01-gaps.tsv gives to the function at us_addr
+#       (the same function in both versions); for a REL line, both <ID>-rel.tsv maps must give it the same name;
+#   and the address must be the start of a function of that size in the DOL or REL of the version (the instruction
+#   before it ends a function or is padding, the last one is blr/bctr/b).
+# Source file of each function: decomp/src/ (one file per original unit; subfolders as in the original split, e.g.
+# src/sysdolphin/baselib/archive.cpp).
+name	module	us_addr	pal_addr	size	status
+mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
+state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified
+hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	unverified
+hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	unverified

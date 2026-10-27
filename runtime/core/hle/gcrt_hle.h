@@ -59,6 +59,13 @@ u32 gcrt_hle_find(const char* name, unsigned* count);
 /* Prints the result of the scans (recognized, ambiguous and absent functions). */
 void gcrt_hle_report(FILE* out);
 
+/* Calls of the dispatcher since the start (chassis and compiled hooks), and those that found no replacement. */
+void gcrt_hle_dispatch_counts(u64* calls, u64* misses);
+/* Calls of the replacement at `address` (false and zeros if none), and how many of them came from a hook compiled
+ * at the entry of the function (direct calls) rather than from the chassis (indirect calls, returns).
+ * Misses per address: GCRT_HLE_MISS_COUNTS=<file> (written at exit). */
+bool gcrt_hle_calls_at(u32 address, u64* calls, u64* hook_calls);
+
 /* Replacement by address (game); `name` is used in the log. */
 bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn);
 /* Replaces every recognized copy of a catalog function; returns their number. */
