@@ -126,7 +126,8 @@ and assets are read from the player's files.
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
 Progress: 0 functions decompiled. D1 started (2026-10-27): guest memory type layer `runtime/core/decomp/gc_mem.h`
-(big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), unit-tested.
+(big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), checked by
+unit and compile-refusal tests in the three memory modes (local tests, not in the repository).
 
 ## Stage 3 — Multiplayer ⬜
 
