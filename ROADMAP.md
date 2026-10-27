@@ -125,13 +125,14 @@ and assets are read from the player's files.
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
-Progress: 0 functions decompiled and verified (2 replaced, not yet verified by the oracle). D1 started (2026-10-27): guest memory type layer `runtime/core/decomp/gc_mem.h`
+Progress: 0 functions decompiled and verified (4 replaced, not yet verified by the oracle). D1 started (2026-10-27): guest memory type layer `runtime/core/decomp/gc_mem.h`
 (big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), checked by
 unit and compile-refusal tests in the three memory modes (local tests, not in the repository). Gateway between
 recompiled and decompiled functions (`runtime/core/decomp/gc_abi.h`: PowerPC EABI arguments and results, nested calls
 back into recompiled code) and per-version table `games/chibi-robo/decomp/functions.tsv`, checked against each
-version's code by `tools/build.py`; first two decompiled leaf functions replace their recompiled versions in US and
-PAL builds (not yet checked by the oracle).
+version's code by `tools/build.py`; first four decompiled leaf functions replace their recompiled versions in US and
+PAL builds (not yet checked by the oracle; three of them are called during the boot, through both paths a call can
+take: a direct call within the same block of generated code, and a call through the dispatcher).
 
 ## Stage 3 — Multiplayer ⬜
 

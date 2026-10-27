@@ -17,6 +17,7 @@ typedef struct {
     GcrtHleFn fn;
     const char* name;
     u64 calls;
+    u64 hook_calls; /* of `calls`: those offered by a hook compiled at the entry (direct calls), not the chassis */
 } Replacement;
 
 static Replacement s_repl[REPL_SLOTS];
@@ -123,18 +124,85 @@ void gcrt_hle_dispatch_counts(u64* calls, u64* misses) {
         *misses = s_dispatch_misses;
 }
 
-static bool dispatch(CPUState* cpu, u32 address) {
+/* Misses per address (GCRT_HLE_MISS_COUNTS=<file>, diagnostics only): with hooks compiled at function entries
+ * (tools/build.py --extra-hooks), the list of the functions a run reached and how often. Written at exit. */
+typedef struct {
+    u32 address; /* 0: free */
+    u64 count;
+} MissCount;
+
+static MissCount* s_miss_table;
+static u32 s_miss_slots; /* power of 2, 0: off */
+static u32 s_miss_used;
+static bool s_miss_full;
+static char s_miss_path[512];
+
+static void miss_count(u32 address) {
+    const u32 mask = s_miss_slots - 1u;
+    for (u32 i = ((address >> 2) * 2654435761u) & mask, n = 0; n < s_miss_slots; i = (i + 1u) & mask, n++) {
+        MissCount* m = &s_miss_table[i];
+        if (m->address == address) {
+            m->count++;
+            return;
+        }
+        if (m->address == 0) {
+            if (s_miss_used * 2u >= s_miss_slots) { /* keep the probes short: count no new address */
+                s_miss_full = true;
+                return;
+            }
+            m->address = address;
+            m->count = 1;
+            s_miss_used++;
+            return;
+        }
+    }
+}
+
+static int miss_compare(const void* a, const void* b) {
+    const u32 x = ((const MissCount*)a)->address, y = ((const MissCount*)b)->address;
+    return x < y ? -1 : x > y;
+}
+
+static void miss_write(void) {
+    FILE* f = fopen(s_miss_path, "w");
+    if (!f) {
+        fprintf(stderr, "gcrt hle: GCRT_HLE_MISS_COUNTS: cannot write %s\n", s_miss_path);
+        return;
+    }
+    qsort(s_miss_table, s_miss_slots, sizeof(MissCount), miss_compare);
+    fprintf(f, "# dispatcher calls without replacement, per guest address (address count)%s\n",
+            s_miss_full ? "; table full: some addresses not counted" : "");
+    for (u32 i = 0; i < s_miss_slots; i++)
+        if (s_miss_table[i].address)
+            fprintf(f, "%08X %llu\n", s_miss_table[i].address, (unsigned long long)s_miss_table[i].count);
+    fclose(f);
+}
+
+static void miss_init(void) {
+    const char* path = getenv("GCRT_HLE_MISS_COUNTS");
+    if (!path || !path[0] || s_miss_table)
+        return;
+    s_miss_slots = 1u << 15; /* a game holds a few thousand function entries; at most half the slots are used */
+    s_miss_table = (MissCount*)calloc(s_miss_slots, sizeof(MissCount));
+    if (!s_miss_table) {
+        s_miss_slots = 0;
+        return;
+    }
+    snprintf(s_miss_path, sizeof(s_miss_path), "%s", path);
+    atexit(miss_write);
+    fprintf(stderr, "gcrt hle: GCRT_HLE_MISS_COUNTS: misses per address written to %s at exit\n", s_miss_path);
+}
+
+static bool dispatch(CPUState* cpu, u32 address, bool from_hook) {
     GcrtCpu* g = gcrt_from_state(cpu);
     s_dispatch_calls++;
     if (gcrt_hle_is_return_address(address))
         return handle_return(g, address);
-    if (!s_repl_count) {
-        s_dispatch_misses++;
-        return false;
-    }
-    Replacement* r = repl_slot(address, false);
+    Replacement* r = s_repl_count ? repl_slot(address, false) : NULL;
     if (!r) {
         s_dispatch_misses++;
+        if (s_miss_slots)
+            miss_count(address);
         return false;
     }
     if (address == s_declined_pc && g->blocks == s_declined_blocks)
@@ -143,11 +211,30 @@ static bool dispatch(CPUState* cpu, u32 address) {
         stack_fill(g);
     bool done = r->fn(g, address);
     r->calls++;
+    r->hook_calls += from_hook;
     if (!done) {
         s_declined_pc = address;
         s_declined_blocks = g->blocks;
     }
     return done;
+}
+
+/* Two entry points into the same dispatcher, so that a replacement knows which path called it. */
+static bool dispatch_chassis(CPUState* cpu, u32 address) {
+    return dispatch(cpu, address, false);
+}
+
+static bool dispatch_hook(CPUState* cpu, u32 address) {
+    return dispatch(cpu, address, true);
+}
+
+bool gcrt_hle_calls_at(u32 address, u64* calls, u64* hook_calls) {
+    Replacement* r = s_repl_count ? repl_slot(address, false) : NULL;
+    if (calls)
+        *calls = r ? r->calls : 0;
+    if (hook_calls)
+        *hook_calls = r ? r->hook_calls : 0;
+    return r != NULL;
 }
 
 void gcrt_hle_init(GcrtCpu* g, bool trace) {
@@ -170,8 +257,9 @@ void gcrt_hle_init(GcrtCpu* g, bool trace) {
         fprintf(stderr, "gcrt hle: GCRT_HLE_STACK_FILL: %u bytes below r1 set to 0x%02X on entry into each replacement\n",
                 (unsigned)s_stack_fill_size, (unsigned)(byte & 0xFFu));
     }
-    g->host_call = dispatch;       /* chassis */
-    g->state.host_call = dispatch; /* compiled hooks (ppc_host_call) */
+    miss_init();
+    g->host_call = dispatch_chassis;    /* chassis */
+    g->state.host_call = dispatch_hook; /* compiled hooks (ppc_host_call) */
 }
 
 bool gcrt_hle_trace_enabled(void) {
@@ -205,6 +293,7 @@ bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn) 
     r->fn = fn;
     r->name = name;
     r->calls = 0;
+    r->hook_calls = 0;
     if (g)
         gcrt_cpu_mark_host_call(g, address); /* chassis filter (cpu/chassis.c, host_call_filter) */
     /* The "magic" addresses (0xF0000000 and above, outside guest memory) are only reached through the chassis

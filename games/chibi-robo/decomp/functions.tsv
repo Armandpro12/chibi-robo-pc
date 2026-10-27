@@ -12,7 +12,10 @@
 #             unverified = replaces its recompiled version, NOT yet checked by the oracle (D1 mission 4)
 #             verified   = replaces it and passed the oracle on its captured cases
 # tools/build.py refuses the build if an enabled line's address is not the start of a function of that size in the
-# DOL or REL of the version being built. Source file of each function: decomp/src/ (one file per original unit).
+# DOL or REL of the version being built. Source file of each function: decomp/src/ (one file per original unit;
+# subfolders as in the original split, e.g. src/sysdolphin/baselib/archive.cpp).
 name	module	us_addr	pal_addr	size	status
 mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
 state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified
+hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	unverified
+hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	unverified

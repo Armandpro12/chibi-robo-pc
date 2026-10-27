@@ -111,8 +111,13 @@ void report(std::FILE* out) {
     for (const entry_state& e : s_entries) {
         const u64 calls = *e.reg->record->calls;
         total += calls;
-        std::fprintf(out, "DECOMP %-32s %08X calls=%llu", e.reg->record->name, static_cast<unsigned>(e.reg->address),
-                     static_cast<unsigned long long>(calls));
+        // Path that reached the replacement: the hook compiled at the entry (direct `bl` calls) or the chassis.
+        u64 dispatched = 0, via_hook = 0;
+        gcrt_hle_calls_at(e.reg->address, &dispatched, &via_hook);
+        std::fprintf(out, "DECOMP %-32s %08X calls=%llu hook=%llu chassis=%llu", e.reg->record->name,
+                     static_cast<unsigned>(e.reg->address), static_cast<unsigned long long>(calls),
+                     static_cast<unsigned long long>(via_hook),
+                     static_cast<unsigned long long>(dispatched - via_hook));
         if (s_crosscheck_limit)
             std::fprintf(out, " crosscheck=%u mismatches=%u", e.checks, e.mismatches);
         std::fputc('\n', out);
