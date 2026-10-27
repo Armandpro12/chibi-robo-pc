@@ -74,6 +74,11 @@ done_statuses = ["verified", "hypothesis", "decompiled", "done", "replaced"]
 transposition = "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"
 # Categories of the partition left out of the decompilation (replaced by native code instead).
 excluded = ["init", "library"]
+# REL functions left out (category "rel-excluded"): the Metrowerks runtime's global destructor chain, linked
+# into 10 of the 16 modules, as global_destructor_chain.c is in the DOL's excluded library range. Verified: the
+# disassembly of two modules registers and walks the chain of global destructors, and the copies of the other
+# modules have the same code (relocations masked) in GGTE01 and GGTP01.
+rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
 
 # DOL partition (notes/decomp.md section D1.4), in reference-version addresses, [start, end); a function
 # belongs to the range that holds its start address. Category "game" and "hsd" are decompiled.

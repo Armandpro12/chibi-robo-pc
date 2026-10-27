@@ -129,9 +129,11 @@ Progress: 0 functions decompiled. D1 started (2026-10-27): guest memory type lay
 (big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), checked by
 unit and compile-refusal tests in the three memory modes (local tests, not in the repository). Progress is
 measured by `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
-`games/chibi-robo/game.toml`): 0 of 3,792 functions (DOL 3,297 and 16 RELs 495; 1,912,156 bytes of code), on both
-US and PAL; 1,209 library functions of the DOL are left out (replaced by native code). 362 of these functions have
-no PAL address yet.
+`games/chibi-robo/game.toml`): 0 of 3,772 functions (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of code), on both
+US and PAL. Left out: 1,209 DOL functions (14 of the `.init` start-up section and 1,195 of the libraries: native
+replacement, or decision pending for THP) and 20 REL functions (the Metrowerks runtime's global destructor chain,
+in 10 modules). 362 of the functions to decompile have no PAL address yet, so they cannot count as decompiled in
+PAL.
 
 ## Stage 3 — Multiplayer ⬜
 
