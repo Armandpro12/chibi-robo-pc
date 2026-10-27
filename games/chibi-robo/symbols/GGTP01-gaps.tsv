@@ -8,18 +8,26 @@
 #   graph = same checks, lower similarity; position = callers, data references and boundaries agree,
 #   callees differ (code changed); weak = other failure; not-linked = no room in the target between its
 #   neighbors; unresolved = no layout; sized = found by the transposition, target size from the partition.
+# A placed range never holds a Ghidra function entry or an exception-index entry of the target strictly
+#   inside it (except a split present at the same offset in the reference); such code is target-only.
 # '!' marks a check that differs. Names: as in the reference map (fn_<address> = automatic name).
+# Activation: no row of this file may be enabled by default in a function list (e.g. functions.tsv of
+#   the decompilation). The position and sized rows in particular are enabled per version, and only
+#   after the decompilation oracle has passed on that version.
+# Reference symbols: external/cbr_decomp/decomp_dtk_main/config/GGTE01, commit d5fca74db64cff5f8c13119f2d6f9d647aa14ffa (2026-10-22).
 # This file only contains names, addresses and sizes, no game data.
 # Function names from cbr_decomp (https://github.com/eavpsp/cbr_decomp),
 # folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LICENSE).
-# This file only contains names and addresses, no game data.
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
 # Functions without a target after the transposition: 357; placed: 352.
-#   strong: 293
-#   graph: 35
-#   position: 24
+#   strong: 294
+#   graph: 36
+#   position: 22
 #   not-linked: 5
 #   sized: 65
+# Exception index: 380 entries in GGTE01, 382 in GGTP01.
+# Target-only code left unassigned by the layouts (4): 8001DDA0+38, 800869E8+F4, 800EC9B4+3C, 801AB0EC+7C.
+# Target code covered by no placed function, zero padding excluded (10): 80003154+1F34, 80005544+235C, 8001DDA0+38, 800869E8+F4, 800EC9B4+3C, 80151E74+4, 8016C124+114, 801AA6D4+7C, 801AB0EC+7C, 801E8CC0+F8.
 80007880	800078A0	6BC	6BC	sized	0.988	0/0	7/7	1/1	ok	1	supplement	__dt__5CGameFv
 80007F3C	80007F5C	114	114	strong	0.812	1/1	3/3	1/1	ok	1	absent	fn_80007F3C
 80008050	80008070	2F4	2F4	graph	0.661	1/1	2/2	1/1	ok	1	absent	CGS_Destructor
@@ -78,7 +86,7 @@
 8001D1D0	8001D558	CC	F0	strong	0.919	2/2	0/0	0/0	ok	1	absent	fn_8001D1D0
 8001D51C	8001D8C8	384	3BC	strong	0.897	2/2	14/14	0/0	ok	1	absent	fn_8001D51C
 8001D8A0	8001DC84	20	20	strong	1.000	0/0	1/1	0/0	ok	1	ambiguous	fn_8001D8A0
-8001D8C0	8001DCA4	E8	134	strong	0.859	2/2	12/12	0/0	ok	1	absent	fn_8001D8C0
+8001D8C0	8001DCA4	E8	FC	strong	0.959	2/2	12/12	0/0	ok	1	absent	fn_8001D8C0
 8001E044	8001E474	D8	B4	position	0.566	1/1	2/1!	0/0	ok	1	absent	fn_8001E044
 8001F46C	8001F878	46C	458	position	0.955	1/1	11/10!	0/0	ok	1	absent	fn_8001F46C
 8001F97C	8001FD74	2D8	2AC	sized	0.776	2/2	7/6!	0/0	ok	1	sequence	fn_8001F97C
@@ -245,7 +253,7 @@
 80080B88	80082AC0	944	944	strong	0.990	1/1	2/2	0/0	ok	1	absent	fn_80080B88
 800814CC	80083404	D0	D0	strong	0.962	1/1	4/4	0/0	ok	1	absent	fn_800814CC
 8008159C	800834D4	6D8	6D8	strong	0.998	1/1	11/11	0/0	ok	1	absent	fn_8008159C
-80082970	800848A8	2308	2234	position	0.856	1/1	37/39!	0/0	ok	1	absent	fn_80082970
+80082970	800848A8	2308	2140	position	0.868	1/1	37/38!	0/0	ok	1	absent	fn_80082970
 80084DC0	80086C24	684	71C	strong	0.810	1/1	3/3	0/0	ok	1	absent	fn_80084DC0
 80086484	80088380	528	528	sized	0.994	1/1	2/2	0/0	ok	1	call-modified	fn_80086484
 800869AC	800888A8	578	5D8	sized	0.475	1/1	4/4	0/0	ok	1	call-modified	fn_800869AC
@@ -256,7 +264,7 @@
 8008A820	8008C7BC	124	174	sized	0.542	1/1	0/0	34/34	ok	1	call-modified	fn_8008A820
 8008B338	8008D324	29C	2D4	graph	0.707	0/0	3/3	35/35	ok	1	absent	fn_8008B338
 8008B5D4	8008D5F8	CC	FC	strong	0.860	0/0	1/1	35/35	ok	1	absent	fn_8008B5D4
-800902A4	800922F8	1D8	230	sized	0.860	5/6!	1/1	29/28!	ok	1	call-modified	fn_800902A4
+800902A4	800922F8	1D8	230	sized	0.860	5/5	1/1	29/28!	ok	1	call-modified	fn_800902A4
 80091C80	80093D2C	C68	C68	sized	0.997	17/17	15/15	11/11	ok	1	call-modified	fn_80091C80
 80093C14	80095CC0	490	490	strong	0.962	1/1	8/8	0/0	ok	1	absent	fn_80093C14
 8009433C	800963E8	EEC	F7C	strong	0.963	1/1	19/19	0/0	ok	1	absent	fn_8009433C
@@ -326,7 +334,7 @@
 800E64A8	800E8AEC	2E8	260	position	0.817	0/0	4/3!	1/1	ok	1	absent	fn_800E64A8
 800E6790	800E8D4C	68	54	position	0.809	0/0	2/1!	1/1	ok	1	absent	fn_800E6790
 800E980C	800EBDB4	370	370	strong	0.968	0/0	6/6	1/1	ok	1	absent	fn_800E980C
-800EA30C	800EC8B4	100	13C	position	0.699	0/0	2/3!	1/1	ok	1	absent	fn_800EA30C
+800EA30C	800EC8B4	100	100	graph	0.781	0/0	2/2	1/1	ok	1	absent	fn_800EA30C
 800EA40C	800EC9F0	148	148	strong	0.976	0/0	5/5	1/1	ok	1	absent	fn_800EA40C
 800EBDBC	800EE3A0	64	64	strong	0.840	1/1	0/0	0/0	ok	1	absent	fn_800EBDBC
 800EBE20	800EE404	AF8	AF8	strong	0.942	0/0	6/6	1/1	ok	1	absent	fn_800EBE20
@@ -441,4 +449,4 @@
 8019B850	8019E0C0	A0	A8	strong	0.976	1/1	3/3	1/1	ok	1	absent	fn_8019B850
 801A82F0	801AABE4	AC	78	graph	0.767	1/1	3/3	1/1	ok	1	absent	fn_801A82F0
 801A839C	801AAC5C	404	3C4	strong	0.892	1/1	32/32	1/1	ok	1	absent	fn_801A839C
-801A87A0	801AB020	CC	148	position	0.767	1/1	0/2!	1/1	ok	1	absent	fn_801A87A0
+801A87A0	801AB020	CC	CC	strong	1.000	1/1	0/0	1/1	ok	1	absent	fn_801A87A0
