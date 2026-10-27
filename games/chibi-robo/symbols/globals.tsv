@@ -1,0 +1,16 @@
+# Global data used by the first decompiled functions (D1), US and PAL addresses.
+# Written by hand by the reverse agent (mission D1 no. 6, 2026-10-27); checked in both DOLs.
+# Format (TSV): name  GGTE01_address  GGTP01_address  size  type  used_by_GGTE01  status  evidence
+# name: CodeWarrior-style symbol when the object is a C++ runtime object (__vt__ = virtual table, __RTTI__ = type
+#   descriptor), otherwise a descriptive placeholder (f32_const_<function> = float constant in .sdata2 read by that
+#   function; the real name is unknown).
+# status "verified": same role read in both DOLs (disassembly of the user in each version) and same contents
+#   (constants: same 32-bit word; tables: every function pointer maps through the transposition).
+# This file only contains names, addresses, sizes and types, no game data (no value is copied here).
+# This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
+__vt__4CVec	80210314	80216A20	C	vtable {type descriptor, 0, destructor}	800A2C48,800A2E2C	verified	lis/addi in both constructors; slot 2 = US 80008DC8 -> PAL 80008DE8 (transposition)
+__RTTI__4CVec	80659FA0	80660E24	8	type descriptor {name, bases}	(vtable slot 0)	verified	vtable slot 0 in both; name pointer leads to the class name CVec in both
+f32_const_8010706C	8065E120	80665230	4	f32	8010706C	verified	lfs r2-0x5C20 (US) / r2-0x59B0 (PAL); same word in both
+f32_const_8003D7DC	8065C480	80663320	4	f32	8003D7DC	verified	lfs r2-0x78C0 in both; same word in both
+f32_const_800B3018_a	8065D3C4	806644F8	4	f32	800B3018	verified	lfs f2 r2-0x697C (US) / r2-0x66E8 (PAL); same word in both
+f32_const_800B3018_b	8065D35C	8066448C	4	f32	800B3018	verified	lfs f0 r2-0x69E4 (US) / r2-0x6754 (PAL); same word in both
