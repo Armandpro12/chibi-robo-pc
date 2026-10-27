@@ -127,7 +127,11 @@ and assets are read from the player's files.
 
 Progress: 0 functions decompiled. D1 started (2026-10-27): guest memory type layer `runtime/core/decomp/gc_mem.h`
 (big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), checked by
-unit and compile-refusal tests in the three memory modes (local tests, not in the repository).
+unit and compile-refusal tests in the three memory modes (local tests, not in the repository). Progress is
+measured by `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
+`games/chibi-robo/game.toml`): 0 of 3,792 functions (DOL 3,297 and 16 RELs 495; 1,912,156 bytes of code), on both
+US and PAL; 1,209 library functions of the DOL are left out (replaced by native code). 362 of these functions have
+no PAL address yet.
 
 ## Stage 3 — Multiplayer ⬜
 

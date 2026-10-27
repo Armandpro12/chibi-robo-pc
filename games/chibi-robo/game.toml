@@ -54,6 +54,66 @@ folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LI
 This file only contains names and addresses, no game data.
 This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt)."""
 
+[decomp]
+# tools/decomp_progress.py: progress of the decompilation (stage 2), per version and per module.
+# The set of functions comes from the reference version's dtk symbols ([symbols] dtk_dir: every function with
+# its bounds, DOL and RELs); the other versions reach the same functions through the transposition report of
+# tools/symbols.py (`transposition` below, generated/, not in Git) and, for the RELs, by running the same
+# matcher on the two versions' REL files. A function without an address in a version never counts as
+# decompiled in that version (parity rule).
+reference = "GGTE01"
+# Folder of the decompiled code (relative to games/<game>/), scanned for automatic names.
+dir = "decomp"
+# Table of the decompiled functions (relative to games/<game>/); missing = nothing decompiled yet.
+functions = "decomp/functions.tsv"
+# Column of the table holding each version's address (other accepted spellings: see the script's header).
+columns = { GGTE01 = "us_addr", GGTP01 = "pal_addr" }
+# Status values (case-insensitive prefix, brackets ignored) that count a row as decompiled.
+done_statuses = ["verified", "hypothesis", "decompiled", "done", "replaced"]
+# Transposition report of tools/symbols.py, relative to the repository root ({slug}, {ref}, {id}).
+transposition = "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"
+# Categories of the partition left out of the decompilation (replaced by native code instead).
+excluded = ["init", "library"]
+
+# DOL partition (notes/decomp.md section D1.4), in reference-version addresses, [start, end); a function
+# belongs to the range that holds its start address. Category "game" and "hsd" are decompiled.
+# Method: names (dtk symbols, GGTE01.map, SDK signature catalog) plus address ranges (the linker keeps the
+# library objects together) plus the source file names referenced by the code. The HSD bounds are a
+# hypothesis (to be confirmed by the reverse agent); they only split "to decompile" in two.
+[[decomp.ranges]]
+category = "init"       # .init section: Metrowerks start-up, TRK and MSL helpers
+start = 0x80003100
+end = 0x80007880
+[[decomp.ranges]]
+category = "game"
+start = 0x80007880
+end = 0x8014AAFC
+[[decomp.ranges]]
+category = "library"    # TRK, Metrowerks runtime, MSL (math included), Nintendo SDK (MTX, ARC...)
+start = 0x8014AAFC
+end = 0x8018D43C
+[[decomp.ranges]]
+category = "game"
+start = 0x8018D43C
+end = 0x801AAABC
+[[decomp.ranges]]
+category = "hsd"        # sysdolphin (HSD) and the sound drivers linked with the game (hypothesis on the bounds)
+start = 0x801AAABC
+end = 0x801F2DA8
+[[decomp.ranges]]
+category = "game"       # no end: up to the last function
+start = 0x801F2DA8
+
+# Single functions outside their range's category (reference address; the name is checked when known).
+[[decomp.overrides]]
+addr = 0x8001580C
+name = "OSReport"
+category = "library"
+[[decomp.overrides]]
+addr = 0x801FD144
+name = "THPInit"
+category = "library"    # THP library: native replacement or decompilation still to decide (notes/decisions.md)
+
 [run.watch]
 # tools/run.py: code addresses whose hits at block entry the executable counts (GCRT_WATCH),
 # to prove that the main loop runs (the internal boot notes, sections 7 and 8):
