@@ -471,23 +471,54 @@ def host_ram_size(state: dict) -> int:
     return size
 
 
-def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path) -> str:
+NEGATIVE_EXPORT = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+?)__wrong\s*,")
+
+
+def oracle_options(game_cfg: dict, oracle: dict | None) -> dict:
+    """game.toml settings seen by the decompiled-functions table for an oracle build (tools/build.py --oracle):
+    rows enabled by --decomp-enable, and the PAL activation lock relaxed (tools/decomp_functions.py)."""
+    if not oracle:
+        return game_cfg
+    return dict(game_cfg, _oracle_build=True, _decomp_enable=list(oracle.get("enable", [])))
+
+
+def negative_records(folder: Path | None) -> dict[str, str]:
+    """Deliberately wrong variants of the oracle's negative test: {function name: export record name} for every
+    GC_DECOMP_EXPORT(<name>__wrong, ...) in the .cpp files of `folder`."""
+    out: dict[str, str] = {}
+    if folder:
+        for f in sorted(folder.rglob("*.cpp")):
+            for m in NEGATIVE_EXPORT.finditer(f.read_text(encoding="utf-8")):
+                out[m.group(1)] = f"{m.group(1)}__wrong"
+    return out
+
+
+def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, oracle: dict | None = None) -> str:
     """Registration table of the decompiled functions for `version` (tools/decomp_functions.py), written into the
-    build folder only if it changed (no recompilation otherwise); "" if the game has no [decomp] table."""
+    build folder only if it changed (no recompilation otherwise); "" if the game has no [decomp] table. `oracle`:
+    options of an oracle build (main: --oracle, --oracle-negative, --decomp-enable)."""
     import decomp_functions  # noqa: E402
-    game_cfg = tc.load_game(game)
+    game_cfg = oracle_options(tc.load_game(game), oracle)
     if not game_cfg.get("decomp"):
         return ""
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root))
     path = build_dir / "decomp" / "decomp_registry.cpp"
-    decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries))
+    records = negative_records(oracle.get("negative")) if oracle else {}
+    if oracle and oracle.get("negative"):
+        missing = [f.name for _, f in entries if f.name not in records]
+        if missing:
+            raise SystemExit(f"--oracle-negative: no wrong variant (GC_DECOMP_EXPORT(<name>__wrong, ...)) for "
+                             f"{', '.join(missing)} in {oracle['negative']}")
+    decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
+                                                                             records=records))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name})")
     return path.as_posix()
 
 
 def configure_and_build(game: str, version: str, config: str, disc_root: Path, recomp_dir: Path,
                         state: dict, jobs: int | None, tag: str | None = None,
-                        pgo: tuple[str, Path | None] = ("OFF", None), compiler: Path | None = None) -> Path:
+                        pgo: tuple[str, Path | None] = ("OFF", None), compiler: Path | None = None,
+                        oracle: dict | None = None) -> Path:
     """compiler: explicit clang-cl (production of a PGO profile with another toolchain, tools/pgo.py --clang);
     default: the development one. lld-link, llvm-lib and llvm-rc are taken next to it."""
     cmake = tc.find_cmake()
@@ -531,7 +562,10 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         exe = llvm_bin / f"{tool}{tc.EXE}"
         if exe.exists():
             defs[var] = exe.as_posix()
-    defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir)
+    defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir, oracle)
+    # Decompilation oracle (--oracle): always set, so that a build folder goes back to a normal build without it.
+    defs["GCRT_DECOMP_ORACLE"] = "ON" if oracle else "OFF"
+    defs["GCRT_DECOMP_NEGATIVE_DIR"] = oracle["negative"].as_posix() if oracle and oracle.get("negative") else ""
     cmd = [cmake, "-S", tc.ROOT, "-B", build_dir, "-G", "Ninja"] + [f"-D{k}={v}" for k, v in defs.items()]
     ensure_aurora_patches()
     print("== CMake configuration")
@@ -644,11 +678,36 @@ def main() -> int:
     parser.add_argument("--extra-hooks", metavar="FILE",
                         help="measurements only: also compile these entry points (hexadecimal addresses, one per line) "
                              "with an HLE hook, without any replacement (cost of hooks on many functions)")
+    parser.add_argument("--oracle", action="store_true",
+                        help="decompilation oracle executable (runtime/core/decomp/gc_oracle.cpp): every call of a "
+                             "decompiled function also runs its recompiled original and compares them; the game keeps "
+                             "the original's results. Never a production build: requires --tag")
+    parser.add_argument("--oracle-negative", metavar="DIR",
+                        help="negative test of the oracle (implies --oracle): every enabled function is replaced by its "
+                             "deliberately wrong variant GC_DECOMP_EXPORT(<name>__wrong, ...) from the .cpp files of DIR")
+    parser.add_argument("--decomp-enable", metavar="NAME,...",
+                        help="oracle builds only: also build these disabled rows of the decompiled-functions table "
+                             "(test functions; the hook list changes, so DolRecomp runs again)")
     args = parser.parse_args()
+    oracle = None
+    if args.oracle_negative:
+        args.oracle = True
+    if args.decomp_enable and not args.oracle:
+        raise SystemExit("--decomp-enable is for oracle builds only (--oracle)")
+    if args.oracle:
+        if not args.tag:
+            raise SystemExit("--oracle needs --tag (an oracle executable is never built into the normal build folder)")
+        if args.pgo not in ("auto", "off"):
+            raise SystemExit("--oracle: no PGO")
+        args.pgo = "off"
+        oracle = {"enable": [n for n in (args.decomp_enable or "").split(",") if n],
+                  "negative": Path(args.oracle_negative).resolve() if args.oracle_negative else None}
+        if oracle["negative"] and not oracle["negative"].is_dir():
+            raise SystemExit(f"--oracle-negative: {oracle['negative']} is not a folder")
     if args.extra_hooks:
         os.environ["GCRT_EXTRA_HOOKS"] = str(Path(args.extra_hooks).resolve())
 
-    game_cfg = tc.load_game(args.game)
+    game_cfg = oracle_options(tc.load_game(args.game), oracle)
     version = args.version or game_cfg["game"]["default_version"]
     if version not in {v["game_id"] for v in game_cfg.get("versions", [])}:
         raise SystemExit(f"Unknown version {version} in games/{args.game}/game.toml.")
@@ -666,7 +725,7 @@ def main() -> int:
     build_dir = tc.build_dir(args.game, version, args.config, args.tag)
     profile = pgo_profile_for_build(args.game, version, args.config, state, mode, args.pgo_dir, build_dir)
     exe = configure_and_build(args.game, version, args.config, disc_root, recomp_dir, state, args.jobs, args.tag,
-                              pgo=("USE", profile) if profile else ("OFF", None))
+                              pgo=("USE", profile) if profile else ("OFF", None), oracle=oracle)
     if profile:
         import pgo as pgo_tools
         stale = pgo_tools.count_out_of_date(build_dir / "build.log")

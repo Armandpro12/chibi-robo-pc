@@ -15,7 +15,8 @@
 //
 // Public API (what decompiled code may use; every name exists in both modes)
 //   gc::be<T>            big-endian scalar in guest memory (fixed-width integers, enums, float, double; not bool)
-//   gc::ptr<T>           32-bit guest pointer to T (T is a guest-layout type: be<...>, ptr<...>, guest structs, u8/s8)
+//   gc::ptr<T>           32-bit guest pointer to T (T is a guest-layout type: be<...>, ptr<...>, guest structs;
+//                        u8/s8/char may be pointed to but not dereferenced in guest mode: see the rules below)
 //   gc::array<T, N>      fixed-size array with the guest layout
 //   gc::bitword<U>       storage word of bit-fields, accessed with gc::bits<U, First, Width, T> descriptors
 //   gc::global<T, Id>    a game global, resolved through the game's per-version address table
@@ -40,8 +41,12 @@
 //     converts to u32 and u32 to be<u32>).
 //   - Every field of a guest structure is a layer type: be<...> (be<u8> and be<s8> included), ptr<...>, array<...>,
 //     bitword<...> or another guest structure. A plain u8/s8 field has the right layout and value, but its accesses
-//     are plain C++ accesses that GC_MEM_OBSERVER cannot see: the oracle would miss them. The same holds for
-//     ptr<u8>/ptr<s8> (byte buffers): use ptr<be<u8>> when the accesses must be observed.
+//     are plain C++ accesses that GC_MEM_OBSERVER cannot see: the oracle would miss them (a byte written there is
+//     not compared, a byte read there is missing from the captured case). Not enforceable for a field (no
+//     reflection in C++20): to be read in review. Byte buffers are ptr<be<u8>> / array<be<u8>, N>: in guest mode,
+//     dereferencing a ptr<u8>/ptr<s8>/ptr<char> (*, [], ->) and array<u8|s8|char, N>, global<u8|s8|char, Id> are
+//     refused at compile time for that reason (D1 mission 4); a ptr<char> may still be held, compared, converted
+//     and moved by pointer arithmetic (e.g. a name returned by address).
 //   - Structure assignment `*a = *b` copies field by field in guest mode (with and without GC_MEM_OBSERVER), never
 //     the padding bytes. In native mode the assignment is the compiler's trivial one, which may copy the padding
 //     bytes too. The original code may have copied the whole block, padding included [hypothesis: not checked on
@@ -673,6 +678,12 @@ template <class T>
 inline constexpr bool is_host_only_v = std::is_pointer_v<std::remove_cv_t<T>> ||
                                        std::is_same_v<std::remove_cv_t<T>, bool> || is_multibyte_scalar<T>::value;
 
+// A plain single byte (u8, s8, char): right layout and value, but its accesses are plain C++ accesses the oracle's
+// observer (GC_MEM_OBSERVER) cannot see; guest code accesses bytes through be<u8> / be<s8> instead.
+template <class T, bool = std::is_arithmetic_v<std::remove_cv_t<T>>> struct is_plain_byte : std::false_type {};
+template <class T> struct is_plain_byte<T, true> : std::bool_constant<(sizeof(T) == 1)> {};
+template <class T> inline constexpr bool is_plain_byte_v = is_plain_byte<T>::value;
+
 // Guest size of the object a pointer designates (dereference, arithmetic, address_of). The type is complete here.
 template <class T> constexpr std::uint32_t object_size() noexcept {
     if constexpr (std::is_void_v<T>) {
@@ -713,7 +724,8 @@ template <class T> struct ptr_access;
 
 template <class T> class ptr {
     static_assert(!detail::is_host_only_v<T>,
-                  "gc::ptr<T>: T must have the guest layout (gc::be<...>, gc::ptr<...>, a guest struct, u8 or s8)");
+                  "gc::ptr<T>: T must have the guest layout (gc::be<...>, gc::ptr<...>, a guest struct; u8/s8/char not "
+                  "dereferenced)");
 
 public:
     using element_type = T;
@@ -733,16 +745,25 @@ public:
     std::add_lvalue_reference_t<T> operator*() const
         requires(!std::is_void_v<T>)
     {
+        static_assert(!detail::is_plain_byte_v<T>,
+                      "gc::ptr<u8|s8|char>: a plain byte access is not seen by the oracle's observer; point to "
+                      "gc::be<u8> / gc::be<s8> (gc::ptr<gc::be<u8>>)");
         return *host();
     }
     T* operator->() const
         requires(!std::is_void_v<T>)
     {
+        static_assert(!detail::is_plain_byte_v<T>,
+                      "gc::ptr<u8|s8|char>: a plain byte access is not seen by the oracle's observer; point to "
+                      "gc::be<u8> / gc::be<s8> (gc::ptr<gc::be<u8>>)");
         return host();
     }
     std::add_lvalue_reference_t<T> operator[](std::ptrdiff_t index) const
         requires(!std::is_void_v<T>)
     {
+        static_assert(!detail::is_plain_byte_v<T>,
+                      "gc::ptr<u8|s8|char>: a plain byte access is not seen by the oracle's observer; point to "
+                      "gc::be<u8> / gc::be<s8> (gc::ptr<gc::be<u8>>)");
         return *(*this + index).host();
     }
 
@@ -944,6 +965,11 @@ template <class T, std::size_t N> struct array {
     static_assert(detail::guest_object_ok_v<T>); // virtual bases, composition-only mode
 #endif
     static_assert(N > 0, "gc::array<T, 0> has no console equivalent");
+#if !defined(GC_NATIVE_MEMORY)
+    static_assert(!detail::is_plain_byte_v<T>,
+                  "gc::array<u8|s8|char, N>: plain byte accesses are not seen by the oracle's observer; use "
+                  "gc::array<gc::be<u8>, N>");
+#endif
 
     T elements[N];
 
@@ -1077,8 +1103,10 @@ template <class T, auto Id> struct global {
     // Like ptr<T>: a global<u32, Id> would read the console's big-endian bytes in host order. (T may still be
     // incomplete here; the class checks are made in get().)
     static_assert(!detail::is_host_only_v<T>,
-                  "gc::global<T, Id>: T must have the guest layout (gc::be<...>, gc::ptr<...>, a guest struct, "
-                  "u8 or s8)");
+                  "gc::global<T, Id>: T must have the guest layout (gc::be<...>, gc::ptr<...>, a guest struct)");
+    static_assert(!detail::is_plain_byte_v<T>,
+                  "gc::global<u8|s8|char, Id>: a plain byte access is not seen by the oracle's observer; use "
+                  "gc::be<u8> / gc::be<s8>");
 #endif
 
     static T& get();

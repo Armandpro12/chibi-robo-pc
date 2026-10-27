@@ -34,3 +34,4 @@ mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
 state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified
 hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	unverified
 hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	unverified
+vec3_copy	dol	800A2CC8	800A50F8	0x1C	disabled

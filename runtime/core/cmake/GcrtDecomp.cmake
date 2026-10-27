@@ -24,6 +24,13 @@ function(gcrt_add_decompiled_code target)
       "#include \"decomp/gc_abi_c.h\"\n"
       "extern \"C\" void gcrt_decomp_install_generated(struct GcrtCpu* g) { (void)g; }\n")
   endif()
+  # Negative test of the oracle (tools/build.py --oracle-negative): the deliberately wrong variants are built too, and
+  # the generated table registers them instead of the functions themselves.
+  if(GCRT_DECOMP_ORACLE AND GCRT_DECOMP_NEGATIVE_DIR)
+    file(GLOB_RECURSE negative_sources CONFIGURE_DEPENDS "${GCRT_DECOMP_NEGATIVE_DIR}/*.cpp")
+    list(SORT negative_sources)
+    list(APPEND decomp_sources ${negative_sources})
+  endif()
   list(LENGTH decomp_sources decomp_count)
   message(STATUS "${target}: ${decomp_count} decompiled source files, registry ${registry}")
   target_sources(${target} PRIVATE ${decomp_sources} "${registry}")
