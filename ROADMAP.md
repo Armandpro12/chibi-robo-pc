@@ -2,7 +2,7 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-24.**
+**Last update: 2026-10-27.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
@@ -14,7 +14,7 @@ one has been validated.
 | # | Stage | Goal | State |
 |---|---|---|---|
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
-| 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first public release | ⬜ |
+| 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first public release | 🟡 in progress |
 | 3 | Multiplayer | Two players in the same house | ⬜ |
 | 3b | PS Vita port | Planned, after multiplayer, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
 | 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack | ⬜ |
@@ -111,7 +111,7 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
   both versions, from the command line or as an MCP server, in a container with no network that runs as a non-root
   user. Not needed to build or play; see [Technical notes](guide/technical.md#optional-reverse-engineering-with-rea).
 
-## Stage 2 — Full decompilation ⬜
+## Stage 2 — Full decompilation 🟡
 
 Rewrite every function of the game (DOL and 16 REL modules) as readable C++ with meaningful names, verified
 against the recompiled build by an automated oracle. The decompiled code contains no game data: tables, strings
@@ -124,6 +124,10 @@ and assets are read from the player's files.
 | D3 | No recompiled code, no virtual CPU | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one |
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
+
+Progress: 0 functions decompiled. D1 started (2026-10-27): guest memory type layer `runtime/core/decomp/gc_mem.h`
+(big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals, native-memory switch), checked by
+unit and compile-refusal tests in the three memory modes (local tests, not in the repository).
 
 ## Stage 3 — Multiplayer ⬜
 
