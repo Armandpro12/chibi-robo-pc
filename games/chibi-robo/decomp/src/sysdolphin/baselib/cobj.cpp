@@ -1,8 +1,8 @@
 // HSD camera objects (sysdolphin): HSD_CObj, a camera with its eye-position and interest world objects.
 //
 // Original unit: sysdolphin/baselib/cobj.c [hypothesis: the function below has the name, the fields and the logic of
-// HSD_CObjMtxIsDirty in that unit of cbr_decomp (external/cbr_decomp/decomp_dtk_main/src, CC0 1.0); cbr_decomp's
-// split does not place it at this address]. Only names and the structure layout are taken from cbr_decomp's cobj.h,
+// HSD_CObjMtxIsDirty in that unit of cbr_decomp (https://github.com/eavpsp/cbr_decomp, folder decomp_dtk_main/src,
+// CC0 1.0); cbr_decomp's split does not place it at this address]. Only names and the structure layout are taken from cbr_decomp's cobj.h,
 // wobj.h and object.h (names that doldecomp/melee's sysdolphin also uses: names only, see the project rules); the
 // code was written from the disassembly of both versions (identical in US and PAL).
 #include "decomp/gc_abi.h"

@@ -318,10 +318,19 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
     # Decompiled functions enabled in the game's table (tools/decomp_functions.py, which refuses an address that is not
     # the start of a function of the listed size in this version's code). One name for all of them, so that renaming a
     # decompiled function does not change the fingerprint (no regeneration of the C).
+    # A decompiled function at the address of an HLE catalog function (native replacement of the SDK) or of a
+    # game.toml hook is refused: the runtime registers both at the same address and the later one would silently
+    # replace the other (gcrt_hle_register).
     if game_cfg.get("decomp"):
         import decomp_functions  # noqa: E402
-        for a, _ in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout):
+        clash = []
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout):
+            if a in hooks:
+                clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
+        if clash:
+            raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
+                             f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
     # Measurements only (tools/build.py --extra-hooks): more entry points compiled with a hook, without replacement.
     for a in game_cfg.get("_extra_hooks", []):
         hooks.setdefault(a, "extra")

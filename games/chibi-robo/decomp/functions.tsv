@@ -19,9 +19,12 @@
 #   (a) a GGTP01 address that symbols/GGTP01-gaps.tsv places at the level position or sized is refused unless
 #       pal_oracle is "yes"; only the levels strong and graph are enabled without it; any other level is refused;
 #   (b) the size must equal the function's size in that version (GGTP01-gaps.tsv target size, otherwise the symbol
-#       maps and the transposition report of tools/symbols.py; dtk symbols for GGTE01), and the range must not hold
-#       another known function start of that version strictly inside it;
+#       maps and symbols/GGTE01-to-GGTP01.tsv, the transposition report of tools/symbols.py, whose GGTE01 columns
+#       list every GGTE01 function with its size), and the range must not hold another known function start of that
+#       version strictly inside it;
 #   (c) an address that is in none of these sources is refused;
+#   (d) pal_addr must be the address that GGTE01-to-GGTP01.tsv or GGTP01-gaps.tsv gives to the function at us_addr
+#       (the same function in both versions); for a REL line, both <ID>-rel.tsv maps must give it the same name;
 #   and the address must be the start of a function of that size in the DOL or REL of the version (the instruction
 #   before it ends a function or is padding, the last one is blr/bctr/b).
 # Source file of each function: decomp/src/ (one file per original unit; subfolders as in the original split, e.g.

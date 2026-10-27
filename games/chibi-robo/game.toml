@@ -58,7 +58,7 @@ This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0
 # tools/decomp_progress.py: progress of the decompilation (stage 2), per version and per module.
 # The set of functions comes from the reference version's dtk symbols ([symbols] dtk_dir: every function with
 # its bounds, DOL and RELs); the other versions reach the same functions through the transposition report of
-# tools/symbols.py (`transposition` below, generated/, not in Git) and, for the RELs, by running the same
+# tools/symbols.py (`transposition` below, in Git next to the maps) and, for the RELs, by running the same
 # matcher on the two versions' REL files. A function without an address in a version never counts as
 # decompiled in that version (parity rule).
 reference = "GGTE01"
@@ -77,8 +77,10 @@ functions = "decomp/functions.tsv"
 done_statuses = ["verified"]
 replaced_statuses = ["unverified"]
 listed_statuses = ["disabled"]
-# Transposition report of tools/symbols.py, relative to the repository root ({slug}, {ref}, {id}).
-transposition = "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"
+# Transposition report of tools/symbols.py transpose, relative to the repository root ({slug}, {ref}, {id}). In Git:
+# tools/decomp_functions.py (run by tools/build.py) checks the table's addresses against it, so a build needs neither
+# the dtk symbols nor generated/ symbol files.
+transposition = "games/{slug}/symbols/{ref}-to-{id}.tsv"
 # Categories of the partition left out of the decompilation (replaced by native code instead).
 excluded = ["init", "library"]
 # REL functions left out (category "rel-excluded"): the Metrowerks runtime's global destructor chain, linked

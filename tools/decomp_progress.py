@@ -35,7 +35,8 @@ Game-specific parameters: [decomp] section of `games/<game>/game.toml` (all path
                  reading as tools/decomp_functions.py (shared code: tools/decomp_common.py), which refuses the
                  table instead of warning.
   transposition  transposition report of tools/symbols.py for a non-reference version, relative to the
-                 root ({slug}, {ref}, {id} replaced)
+                 repository of the tools (not --root: it is a file of the game, in Git, next to the maps; {slug},
+                 {ref}, {id} replaced; default games/{slug}/symbols/{ref}-to-{id}.tsv)
   oracle_columns optional sub-table [decomp.oracle_columns], <version ID> = "<column name>": column of the
                  table that says "yes" once the oracle has passed on that version (see the gaps below)
   excluded       partition categories not to decompile (e.g. libraries replaced by native code)
@@ -297,7 +298,6 @@ def load_config(slug: str, root: Path) -> dict:
         "columns": dc.get("columns", {}),
         "statuses": dcom.status_sets(dc),
         "oracle_columns": dcom.oracle_columns(dc),
-        "transposition": dc.get("transposition", "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv"),
         "excluded": set(dc.get("excluded", [])),
         "ranges": ranges,
         "overrides": {parse_int(o["addr"]): (o.get("name"), o["category"]) for o in dc.get("overrides", [])},
@@ -390,47 +390,35 @@ def map_version(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]) -> dict
     """Fills f.addr[vid] / f.how[vid]; returns the sources used."""
     ref, slug = cfg["ref"], cfg["slug"]
     src = {}
-    rel = cfg["transposition"].format(slug=slug, ref=ref, id=vid)
-    path = cfg["root"] / rel
+    # The report is a file of the game (in Git, next to the maps): read from the tools' tree, as map_dir.
+    path = dcom.transposition_path(cfg["game"], cfg["game"]["_dir"].parent.parent, vid)
+    rel = rel_path(path)
     dol = {f.ref: f for f in fns if f.module == "dol"}
+    trans = dcom.read_transposition(path)
     if path.exists():
         src["dol"] = rel
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            p = line.split("\t")
-            f = dol.get(int(p[0], 16))
-            if f is None:
-                continue
-            tgt = int(p[1], 16)
-            f.addr[vid] = tgt or None
-            f.how[vid] = p[3]
-            if len(p) > 6 and p[6].strip():
-                c = [int(x, 16) for x in p[6].split(",")]
-                f.cands[vid] = (set(c), len(c) < TRANSPOSITION_CANDIDATES)
     else:
         src["dol"] = None
         warnings.append(f"{vid}: no DOL addresses ({rel} missing): run `py -3 tools/symbols.py {slug} transpose "
-                        f"--to {vid}` (or pass --root)")
-    for f in dol.values():
-        f.how.setdefault(vid, "unknown")
-        f.addr.setdefault(vid, None)
+                        f"--to {vid}`")
     # Gap addresses (tools/symbols.py gaps), activation lock of tools/decomp_common.py: strong and graph are
     # established; position and sized only through a table row marked by the oracle; other levels give nothing.
+    # Same pairing as tools/decomp_functions.py (decomp_common.paired_address).
     gpath = cfg["map_dir"] / f"{vid}-gaps.tsv"
     gaps = dcom.read_gaps(gpath)
     if gaps:
         src["gaps"] = rel_path(gpath)
-    for g in gaps:
-        f = dol.get(g.ref)
-        if f is None or not g.target:
-            continue
-        if g.level in dcom.ESTABLISHED_LEVELS:
-            if f.addr.get(vid) is None:
-                f.addr[vid], f.how[vid] = g.target, f"gap-{g.level}"
-        elif g.level in dcom.ORACLE_LEVELS:
-            f.addr[vid], f.how[vid] = None, f"gap-{g.level}"
-            f.gated[vid] = (g.target, g.level)
+    gaps_by_ref = {g.ref: g for g in gaps if g.target}
+    for f in dol.values():
+        t = trans.get(f.ref)
+        if t is not None and t.candidates:
+            f.cands[vid] = (set(t.candidates), len(t.candidates) < TRANSPOSITION_CANDIDATES)
+        addr, how = dcom.paired_address(f.ref, trans, gaps_by_ref)
+        if dcom.is_gated(how):
+            f.addr[vid], f.how[vid] = None, how
+            f.gated[vid] = (addr, how[4:])
+        else:
+            f.addr[vid], f.how[vid] = addr, how
     # RELs: same matcher as tools/symbols.py, module by module
     mods = defaultdict(list)
     for f in fns:

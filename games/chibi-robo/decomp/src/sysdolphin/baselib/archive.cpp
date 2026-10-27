@@ -1,8 +1,8 @@
 // HSD archives (sysdolphin): a file loaded in memory with its tables of public and external symbols.
 //
 // Original unit: sysdolphin/baselib/archive.c, the unit of that name in cbr_decomp's sources
-// (external/cbr_decomp/decomp_dtk_main/src, CC0 1.0); cbr_decomp's split does not place it at this address. The
-// function that follows this one (read in the US version; identical code in PAL) is, instruction for instruction,
+// (https://github.com/eavpsp/cbr_decomp, folder decomp_dtk_main/src, CC0 1.0); cbr_decomp's split does not place it
+// at this address. The function that follows this one (read in the US version; identical code in PAL) is, instruction for instruction,
 // cbr_decomp's HSD_ArchiveGetPublicAddress (same fields, same loop). The names HSD_Archive, HSD_ArchiveHeader,
 // HSD_ArchivePublicInfo, HSD_ArchiveExternInfo, their fields and the layout come from cbr_decomp's archive.h; only
 // names and layout are taken (doldecomp/melee's sysdolphin uses the same names: names only, see the project rules).

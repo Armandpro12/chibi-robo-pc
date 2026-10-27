@@ -10,9 +10,12 @@ This tool:
     [decomp] done_statuses, replaced_statuses, listed_statuses). A done or replaced status (verified, unverified)
     enables the function; a listed one (disabled) does not; any other status refuses the table;
   * resolves the addresses of one version after two checks, both required for every enabled function:
-    1. activation lock (`check_sources`): the address is ESTABLISHED in that version's symbol sources. Reference
-       version: dtk symbols ([symbols] dtk_dir), <ID>.map, <ID>-rel.tsv. Other versions: the transposition report
-       ([decomp] transposition, generated/), <ID>.map, <ID>-rel.tsv and <ID>-gaps.tsv ([symbols] map_dir).
+    1. activation lock (`check_sources`): the address is ESTABLISHED in that version's symbol sources, all of them
+       files in Git next to the symbol maps ([symbols] map_dir), so that a build needs neither the dtk symbols nor
+       generated/ symbol files. Reference version: the reference columns of the transposition reports
+       (<ref>-to-<ID>.tsv of tools/symbols.py transpose, [decomp] transposition: every reference function with its
+       size), <ID>.map, <ID>-rel.tsv. Other versions: the target column of the transposition report, <ID>.map,
+       <ID>-rel.tsv and <ID>-gaps.tsv.
        (a) an address that <ID>-gaps.tsv gives at the level position or sized is refused unless the row's oracle
            column for that version ([decomp.oracle_columns]) is "yes" (the oracle has passed on that version); a
            level other than strong, graph, position or sized is refused;
@@ -21,6 +24,10 @@ This tool:
            unknown or different size is refused, and so is a range holding another known function start of that
            version strictly inside it;
        (c) an address found in none of the sources is refused;
+       (d) pairing: in a version other than the reference, the address must be the one that version's
+           transposition report or <ID>-gaps.tsv gives to the row's REFERENCE address (tools/decomp_common.py
+           paired_address), so that both columns name the same function; for a REL row, both <ID>-rel.tsv files
+           must give that function the same non-automatic name at the two offsets;
     2. code check: in that version's DOL or REL the address is the start of a function of the expected size (the
        instruction before it ends a function or is padding, the last one is blr/b/bctr).
     A function enabled for the build must have an address in EVERY version (parity);
@@ -187,6 +194,26 @@ class Known:
     sizes: dict[tuple[str, int], dict[str, int | None]]  # (module, address or REL offset) -> {source: size or None}
     gaps: dict[int, dc.Gap]  # DOL address in the version -> row of <ID>-gaps.tsv (non-reference versions)
     sources: list[str]
+    ref: str = ""
+    trans: dict[int, dc.Transposed] = field(default_factory=dict)  # reference address -> report row (other versions)
+    gaps_by_ref: dict[int, dc.Gap] = field(default_factory=dict)  # reference address -> gap row (other versions)
+    trans_name: str = ""
+    rel_names: dict[str, dict[tuple[str, int], str]] = field(default_factory=dict)  # version -> (module, off) -> name
+
+
+def _rel_names(path: Path) -> dict[tuple[str, int], str]:
+    """<ID>-rel.tsv: (module, offset) -> name."""
+    out: dict[tuple[str, int], str] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            p = line.split("\t")
+            if line.startswith("#") or len(p) < 6:
+                continue
+            try:
+                out[(p[1], int(p[3], 16))] = p[5].strip()
+            except ValueError:
+                pass
+    return out
 
 
 def _map_entries(path: Path) -> dict[tuple[str, int], int]:
@@ -224,7 +251,30 @@ def known_entries(game_cfg: dict, version: str) -> Known:
     def add(key: tuple[str, int], source: str, size: int | None) -> None:
         sizes.setdefault(key, {})[source] = size
 
-    if version == ref:
+    others = [v["game_id"] for v in game_cfg.get("versions", []) if v["game_id"] != ref]
+
+    def report(vid: str) -> tuple[Path, dict[int, dc.Transposed]]:
+        path = dc.transposition_path(game_cfg, tc.ROOT, vid)
+        shown = path.relative_to(tc.ROOT).as_posix() if path.is_relative_to(tc.ROOT) else str(path)
+        if not path.exists():
+            raise SystemExit(f"Decompiled functions refused for {version}: transposition report {shown} missing (a "
+                             f"file in Git, next to the symbol maps: restore it with `git checkout -- {shown}`, or "
+                             f"write it again with `py -3 tools/symbols.py {slug} transpose --to {vid}`, which needs "
+                             f"the dtk symbols and the Ghidra analysis of {vid}); the {version} addresses cannot be "
+                             f"established without it")
+        return path, dc.read_transposition(path)
+
+    trans: dict[int, dc.Transposed] = {}
+    trans_name = ""
+    if version == ref and others:
+        # Every reference function with its size: the reference columns of the transposition reports (written from
+        # the dtk symbols by tools/symbols.py transpose); two reports that disagree refuse the size (rule (b)).
+        for vid in others:
+            path, rows = report(vid)
+            for t in rows.values():
+                add(("dol", t.ref), path.name, t.ref_size)
+            used.append(path.name)
+    elif version == ref:
         dtk = tc.ROOT / sym["dtk_dir"] / "symbols.txt" if sym.get("dtk_dir") else None
         if dtk is None or not dtk.exists():
             raise SystemExit(f"Decompiled functions refused for {version}: dtk symbols of the reference version "
@@ -233,35 +283,29 @@ def known_entries(game_cfg: dict, version: str) -> Known:
             add(("dol", s.addr), "dtk", s.size)
         used.append("dtk symbols")
     else:
-        rel = d.get("transposition", "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv").format(
-            slug=slug, ref=ref, id=version)
-        path = tc.ROOT / rel
-        if not path.exists():
-            raise SystemExit(f"Decompiled functions refused for {version}: transposition report {rel} missing: run "
-                             f"`py -3 tools/symbols.py {slug} transpose --to {version}` (the {version} addresses "
-                             f"cannot be established without it)")
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("#") or not line.strip():
-                continue
-            p = line.split("\t")
-            target = int(p[1], 16)
-            if target:  # size of the reference: the version's size only for an identical match
-                add(("dol", target), "transposition", int(p[2], 16) if p[4].strip() == "1" else None)
-        used.append(rel)
+        path, trans = report(version)
+        trans_name = path.name
+        for t in trans.values():
+            if t.target:  # size of the reference: the version's size only for an identical match
+                add(("dol", t.target), path.name, t.ref_size if t.identical else None)
+        used.append(path.name)
     for key, size in _map_entries(map_dir / f"{version}.map").items():
         add(key, f"{version}.map", size or None)
     for key, size in _map_entries(map_dir / f"{version}-rel.tsv").items():
         add(key, f"{version}-rel.tsv", size or None)
     used += [f"{version}.map", f"{version}-rel.tsv"]
     gaps: dict[int, dc.Gap] = {}
+    gaps_by_ref: dict[int, dc.Gap] = {}
     gpath = dc.gaps_path(game_cfg, version)
     for g in dc.read_gaps(gpath):
         if g.target:
             gaps[g.target] = g
+            gaps_by_ref[g.ref] = g
             add(("dol", g.target), gpath.name, g.size or None)
     if gpath.exists():
         used.append(gpath.name)
-    return Known(sizes, gaps, used)
+    rel_names = {v: _rel_names(map_dir / f"{v}-rel.tsv") for v in {ref, version}}
+    return Known(sizes, gaps, used, ref, trans, gaps_by_ref, trans_name, rel_names)
 
 
 def check_sources(game_cfg: dict, version: str, f: Function, addr: int, known: Known) -> str | None:
@@ -302,6 +346,35 @@ def check_sources(game_cfg: dict, version: str, f: Function, addr: int, known: K
     if f.size != size:
         return (f"size 0x{f.size:X} differs from the {version} size 0x{size:X} (one size column: a function whose "
                 f"size differs between versions cannot be enabled)")
+    return check_pairing(game_cfg, version, f, addr, known)
+
+
+def check_pairing(game_cfg: dict, version: str, f: Function, addr: int, known: Known) -> str | None:
+    """Rule (d): reason why `addr` is not, in `version`, the same function as the row's reference address."""
+    ref = known.ref
+    if version == ref:
+        return None
+    us = f.addresses.get(ref)
+    if us is None:
+        return f"no {ref} address: the {version} address cannot be paired with a {ref} function"
+    if f.module != "dol":
+        import symbols as sy  # noqa: E402  (automatic names, as tools/symbols.py writes them)
+        a = known.rel_names.get(ref, {}).get((f.module, us))
+        b = known.rel_names.get(version, {}).get((f.module, addr))
+        if not a or not b or a != b or sy.AUTO_RE.match(a):
+            return (f"{version} offset {addr:X} of {f.module} not paired with {ref} offset {us:X}: {ref}-rel.tsv and "
+                    f"{version}-rel.tsv must give both the same non-automatic name (found {a or 'none'} and "
+                    f"{b or 'none'}; the build does not run the REL matcher)")
+        return None
+    want, how = dc.paired_address(us, known.trans, known.gaps_by_ref)
+    source = dc.gaps_path(game_cfg, version).name if how.startswith("gap-") else known.trans_name
+    if want is None:
+        gname = dc.gaps_path(game_cfg, version).name
+        return (f"{ref} {us:08X} has no {version} address in {known.trans_name} nor in {gname} ({how}): the two "
+                f"columns cannot be shown to name the same function")
+    if want != addr:
+        return (f"not the same function as {ref} {us:08X}: {source} gives that function the {version} address "
+                f"{want:08X} ({how}), not {addr:08X}")
     return None
 
 
