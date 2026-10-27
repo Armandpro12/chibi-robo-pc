@@ -4,6 +4,7 @@ Usage:
   py -3 tools/symbols.py <game> convert                 # dtk symbols.txt -> <ref>.map (+ <ref>-rel.tsv)
   py -3 tools/symbols.py <game> transpose [--to ID]     # <ref>.map -> <ID>.map by function matching
   py -3 tools/symbols.py <game> all                     # both
+  py -3 tools/symbols.py <game> gaps [--to ID]          # place what transpose did not find -> <ID>-gaps.tsv
 
 Game-specific parameters: [symbols] section of `games/<game>/game.toml`:
   dtk_dir      dtk folder of the reference version (holds symbols.txt and one subfolder per REL)
@@ -450,6 +451,265 @@ class Matcher:
 
 
 # ---------------------------------------------------------------------------------------------
+# Gap filling (command "gaps"): the functions the transposition left without a target
+
+
+GAP_TODO = ("absent", "ambiguous", "collision")
+NL = "\n"
+GAP_STRONG_SIM = 0.80
+
+
+def data_words(path: Path) -> dict[int, int]:
+    """Count of each 32-bit word of the non-code segments of a DOL (references to functions from data)."""
+    data = path.read_bytes()
+    counts: dict[int, int] = defaultdict(int)
+    for s in gcinfo.describe_dol(data)["segments"]:
+        if s["name"].startswith("text"):
+            continue
+        blob = data[s["offset"]:s["offset"] + s["size"]]
+        for (w,) in struct.iter_unpack(">I", blob[:len(blob) // 4 * 4]):
+            counts[w] += 1
+    return counts
+
+
+def similarity(a: tuple | None, b: tuple | None) -> float:
+    if not a or not b:
+        return 0.0
+    import difflib
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
+def boundary_kind(w: int | None) -> str:
+    if w is None:
+        return "?"
+    if w == 0x4E800020:
+        return "blr"
+    if (w >> 26) == 18 and (w & 3) == 0:
+        return "b"
+    if w == 0x4C000064:
+        return "rfi"
+    return "other"
+
+
+@dataclass
+class Gap:
+    ref: Sym
+    status: str = "unresolved"   # strong | graph | position | weak | sized | not-linked | unresolved
+    target: int | None = None
+    size: int = 0                # size in the target version
+    sim: float = -1.0
+    checks: dict = field(default_factory=dict)
+
+
+class GapFiller:
+    """Places the functions of the reference version that the transposition did not find ("absent",
+    "ambiguous", "collision") by their position between two found functions ("anchors"):
+      1. anchors = every found function; their targets must increase with the reference address;
+      2. between two consecutive anchors, the unplaced reference functions keep their order (the linker keeps the
+         order of the objects); they are laid out on candidate starts of the target version (Ghidra function
+         entries, words after a blr, bl targets) by dynamic programming that maximizes the sum of
+         size x similarity of the masked code (difflib ratio); if no layout exists, a reference function may be
+         left out ("not-linked") when the target bytes cannot hold it;
+      3. once every function is placed, the target code is a complete partition, and each placed function is
+         checked on it: same set of callers, same set of callees, same number of references from data words,
+         same kind of instruction before its start and at its end;
+      4. status: "strong" (similarity >= GAP_STRONG_SIM and every check passes), "graph" (every check passes,
+         lower similarity), "position" (callers, data references and boundaries agree, callees differ: code
+         changed between versions), "weak" (any other failure). Functions already found but whose code differs
+         (size unknown in the map) get their target size from the partition ("sized")."""
+
+    def __init__(self, m: Matcher, res: dict[int, Match], dst_entries: set[int]):
+        self.m, self.res = m, res
+        self.funcs = m.funcs
+        self.by_addr = m.by_addr
+        self.dst_entries = dst_entries
+        heur = set(m.starts)
+        self.dst_starts = sorted(heur | dst_entries | {r.target for r in res.values() if r.target is not None})
+        self._sim: dict[tuple[int, int, int], float] = {}
+
+    def _anchors(self) -> list[tuple[int, int]]:
+        import bisect
+        cand = [(f.addr, self.res[f.addr].target) for f in self.funcs
+                if self.res[f.addr].target is not None and self.res[f.addr].status not in GAP_TODO]
+        # Longest increasing subsequence of the targets (an out-of-order pair is not an anchor).
+        tails, tail_idx, prev = [], [], [-1] * len(cand)
+        for i, (_, t) in enumerate(cand):
+            j = bisect.bisect_left(tails, t)
+            if j == len(tails):
+                tails.append(t)
+                tail_idx.append(i)
+            else:
+                tails[j], tail_idx[j] = t, i
+            prev[i] = tail_idx[j - 1] if j > 0 else -1
+        out, k = [], tail_idx[-1] if tail_idx else -1
+        while k >= 0:
+            out.append(cand[k])
+            k = prev[k]
+        return out[::-1]
+
+    def score(self, f: Sym, s: int, e: int) -> float:
+        if not (f.size // 2 <= e - s <= 2 * f.size + 64):
+            return -1.0
+        key = (f.addr, s, e)
+        if key not in self._sim:
+            self._sim[key] = similarity(self.m.ref_masked.get(f.addr), self.m.dst_masked(s, e - s))
+        return self._sim[key]
+
+    def _layout(self, inside: list[Sym], cands: list[int], first: int | None, end: int, allow_skip: bool):
+        """Best layout of `inside` on `cands` (target starts) ending at `end`; None if impossible.
+        Returns [(start, end, similarity) | None (left out)]."""
+        n, neg = len(inside), float("-inf")
+        memo: dict[tuple[int, int], tuple[float, list | None]] = {}
+
+        def go(j: int, k: int):
+            # inside[j] starts at cands[k]
+            if (j, k) in memo:
+                return memo[(j, k)]
+            f, s = inside[j], cands[k]
+            best: tuple[float, list | None] = (neg, None)
+            if j == n - 1:
+                sc = self.score(f, s, end)
+                if sc >= 0:
+                    best = (sc * f.size, [(s, end, sc)])
+            else:
+                for k2 in range(k + 1, len(cands)):
+                    e = cands[k2]
+                    if e - s > 2 * f.size + 64:
+                        break
+                    sc = self.score(f, s, e)
+                    if sc < 0:
+                        continue
+                    for jn in ([j + 1, j + 2] if allow_skip and j + 2 < n else [j + 1]):
+                        sub = go(jn, k2)
+                        if sub[1] is None:
+                            continue
+                        skipped = [None] * (jn - j - 1)
+                        tot = sc * f.size + sub[0] - sum(inside[x].size for x in range(j + 1, jn))
+                        if tot > best[0]:
+                            best = (tot, [(s, e, sc)] + skipped + sub[1])
+            memo[(j, k)] = best
+            return best
+
+        starts = [cands.index(first)] if first is not None else range(len(cands))
+        sol: tuple[float, list | None] = (neg, None)
+        for j0 in ([0, 1] if allow_skip and n > 1 else [0]):
+            for k in starts:
+                r = go(j0, k)
+                if r[1] is not None and r[0] - sum(inside[x].size for x in range(j0)) > sol[0]:
+                    sol = (r[0] - sum(inside[x].size for x in range(j0)), [None] * j0 + r[1])
+        return sol[1]
+
+    def run(self) -> dict[int, Gap]:
+        import bisect
+        anchors = self._anchors()
+        ref_addrs = [f.addr for f in self.funcs]
+        out: dict[int, Gap] = {}
+        for i in range(len(anchors) - 1):
+            (a, pa), (b, pb) = anchors[i], anchors[i + 1]
+            lo = bisect.bisect_right(ref_addrs, a)
+            inside = []
+            for f in self.funcs[lo:]:
+                if f.addr >= b:
+                    break
+                inside.append(f)
+            if not inside:
+                continue
+            fa = self.by_addr[a]
+            first = pa + fa.size if self.res[a].identical else None
+            lo_i = bisect.bisect_right(self.dst_starts, pa)
+            hi_i = bisect.bisect_left(self.dst_starts, pb)
+            cands = self.dst_starts[lo_i:hi_i]
+            if first is not None and first not in cands:
+                cands = sorted(set(cands) | {first})
+            if first is not None and first >= pb:
+                for f in inside:      # no target byte between the two anchors
+                    out[f.addr] = Gap(f, "not-linked")
+                continue
+            lay = self._layout(inside, cands, first, pb, False) or self._layout(inside, cands, first, pb, True)
+            for j, f in enumerate(inside):
+                g = Gap(f)
+                if lay is None:
+                    pass
+                elif lay[j] is None:
+                    g.status = "not-linked"
+                else:
+                    g.target, end, g.sim = lay[j]
+                    g.size = end - g.target
+                out[f.addr] = g
+        return out
+
+    def check(self, gaps: dict[int, Gap], ref_dol: Path, dst_dol: Path) -> None:
+        """Step 3: checks on the complete partition (see the class docstring)."""
+        import bisect
+        place = {f.addr: self.res[f.addr].target for f in self.funcs
+                 if self.res[f.addr].target is not None and self.res[f.addr].status not in GAP_TODO}
+        place.update({a: g.target for a, g in gaps.items() if g.target is not None})
+        inv = {t: a for a, t in place.items()}
+        dst_sorted = sorted(inv)
+        ref_sorted = [f.addr for f in self.funcs]
+
+        def owner_dst(x: int):
+            k = bisect.bisect_right(dst_sorted, x) - 1
+            return inv[dst_sorted[k]] if k >= 0 else None
+
+        def owner_ref(x: int):
+            k = bisect.bisect_right(ref_sorted, x) - 1
+            f = self.funcs[k] if k >= 0 else None
+            return f.addr if f and f.addr <= x < f.addr + f.size else None
+
+        def graph(img: Image, owner):
+            callers, callees = defaultdict(set), defaultdict(set)
+            for addr, w in img.all_words():
+                if (w >> 26) == 18 and (w & 3) == 1:
+                    li = w & 0x03FFFFFC
+                    if li & 0x02000000:
+                        li -= 0x04000000
+                    t = (addr + li) & 0xFFFFFFFF
+                    src = owner(addr)
+                    if src is not None:
+                        callers[t].add(src)
+                        callees[src].add(t)
+            return callers, callees
+
+        r_callers, r_callees = graph(self.m.ref_img, owner_ref)
+        d_callers, d_callees = graph(self.m.dst_img, owner_dst)
+        r_data, d_data = data_words(ref_dol), data_words(dst_dol)
+        # Sizes of the found but modified functions, from the partition.
+        for f in self.funcs:
+            r = self.res[f.addr]
+            if f.addr in gaps or r.target is None or r.identical or r.status in GAP_TODO:
+                continue
+            k = bisect.bisect_right(dst_sorted, r.target)
+            if k < len(dst_sorted):
+                gaps[f.addr] = Gap(f, "sized", r.target, dst_sorted[k] - r.target,
+                                   similarity(self.m.ref_masked.get(f.addr),
+                                              self.m.dst_masked(r.target, dst_sorted[k] - r.target)))
+        for a, g in gaps.items():
+            if g.target is None:
+                continue
+            f = g.ref
+            callers_ok = r_callers.get(a, set()) == d_callers.get(g.target, set())
+            mapped = {inv.get(t, -t) for t in d_callees.get(a, set())}
+            callees_ok = r_callees.get(a, set()) == mapped
+            dref = (r_data.get(a, 0), d_data.get(g.target, 0))
+            bounds_ok = (boundary_kind(self.m.ref_img.word(a - 4)) == boundary_kind(self.m.dst_img.word(g.target - 4))
+                         and boundary_kind(self.m.ref_img.word(a + f.size - 4))
+                         == boundary_kind(self.m.dst_img.word(g.target + g.size - 4)))
+            g.checks = {"callers": (len(r_callers.get(a, ())), len(d_callers.get(g.target, ())), callers_ok),
+                        "callees": (len(r_callees.get(a, ())), len(mapped), callees_ok),
+                        "data": (dref[0], dref[1], dref[0] == dref[1]),
+                        "bounds": bounds_ok, "entry": g.target in self.dst_entries}
+            if g.status == "sized":
+                continue
+            if callers_ok and callees_ok and dref[0] == dref[1] and bounds_ok:
+                g.status = "strong" if g.sim >= GAP_STRONG_SIM else "graph"
+            elif callers_ok and dref[0] == dref[1] and bounds_ok:
+                g.status = "position"
+            else:
+                g.status = "weak"
+
+
+# ---------------------------------------------------------------------------------------------
 # Outputs
 
 
@@ -673,10 +933,79 @@ def cmd_transpose(slug: str, game: dict, to: str) -> dict:
     return stats
 
 
+def cmd_gaps(slug: str, game: dict, to: str) -> None:
+    """Places the functions that the transposition did not find (GapFiller) and writes <to>-gaps.tsv next to the maps.
+    Read-only on the transposition: the maps and the transposition report are not rewritten."""
+    cfg = config(game)
+    ref = cfg["ref"]
+    ref_dol, _ = code_paths(slug, ref, game)
+    dst_dol, _ = code_paths(slug, to, game)
+    for p in (ref_dol, dst_dol):
+        if not p.exists():
+            sys.exit(f"missing: {p} (run tools/extract.py {slug} --version ...)")
+    funcs = functions(read_dtk(cfg["dtk"] / "symbols.txt"))
+    entries = ghidra_starts(slug, to)
+    if not entries:
+        sys.exit(f"missing: Ghidra functions.tsv of {to} (run tools/ghidra/analyze.py)")
+    matcher = Matcher(Image.from_dol(ref_dol), funcs, Image.from_dol(dst_dol), entries)
+    ref_sup = {n: a for a, n, st in read_supplement(cfg, ref) if verified(st)}
+    seeds = {ref_sup[n]: a for a, n, st in read_supplement(cfg, to) if verified(st) and n in ref_sup}
+    res = matcher.run(seeds)
+    filler = GapFiller(matcher, res, entries)
+    gaps = filler.run()
+    filler.check(gaps, ref_dol, dst_dol)
+    counts: dict[str, int] = defaultdict(int)
+    for g in gaps.values():
+        counts[(g.status, res[g.ref.addr].status if g.status != "sized" else "found")] += 1
+    todo = [g for g in gaps.values() if g.status != "sized"]
+    placed = [g for g in todo if g.target is not None]
+    lines = [f"Functions without a target after the transposition: {len(todo)}; placed: {len(placed)}."]
+    for st in ("strong", "graph", "position", "weak", "not-linked", "unresolved", "sized"):
+        n = sum(v for (s, _), v in counts.items() if s == st)
+        if n:
+            lines.append(f"  {st}: {n}")
+    print(NL.join(lines))
+    sym = game.get("symbols", {})
+    head = [f"# Gap filling {game['game']['name']} {ref} -> {to} - generated by tools/symbols.py gaps, do not edit.",
+            "# Functions that the transposition (<ID>.map) did not find, placed by position between found functions",
+            "# and checked on the complete partition of the target code; plus the target size of the found but",
+            "# modified functions (size 0 in <ID>.map). Not read by dolrecomp; method: GapFiller in tools/symbols.py.",
+            f"# Format (TSV, hexadecimal addresses and sizes): {ref} {to} {ref}_size {to}_size status similarity",
+            "#   callers(ref/target) callees(ref/target) data_refs(ref/target) bounds ghidra_entry transposition name",
+            "# status: strong = similarity >= 0.80 and same callers, callees, data references and boundaries;",
+            "#   graph = same checks, lower similarity; position = callers, data references and boundaries agree,",
+            "#   callees differ (code changed); weak = other failure; not-linked = no room in the target between its",
+            "#   neighbors; unresolved = no layout; sized = found by the transposition, target size from the partition.",
+            "# '!' marks a check that differs. Names: as in the reference map (fn_<address> = automatic name).",
+            "# This file only contains names, addresses and sizes, no game data."]
+    for a in sym.get("attribution", "").splitlines():
+        if a.strip():
+            head.append(f"# {a.strip()}")
+    head += [f"# {x}" for x in lines]
+    out = cfg["out"] / f"{to}-gaps.tsv"
+    with out.open("w", encoding="utf-8", newline=NL) as f:
+        f.write(NL.join(head) + NL)
+        for a in sorted(gaps):
+            g = gaps[a]
+            c = g.checks
+
+            def pair(k):
+                if k not in c:
+                    return "-"
+                x, y, ok = c[k]
+                return f"{x}/{y}" + ("" if ok else "!")
+            bounds = ("ok" if c.get("bounds") else "!") if c else "-"
+            row = [f"{a:08X}", f"{(g.target or 0):08X}", f"{g.ref.size:X}", f"{g.size:X}", g.status, f"{g.sim:.3f}",
+                   pair("callers"), pair("callees"), pair("data"), bounds, str(int(bool(c.get("entry")))),
+                   res[a].status, g.ref.name]
+            f.write("\t".join(row) + NL)
+    print(f"{out}: {len(gaps)} rows")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game")
-    ap.add_argument("cmd", choices=["convert", "transpose", "all"])
+    ap.add_argument("cmd", choices=["convert", "transpose", "all", "gaps"])
     ap.add_argument("--to", help="target version of the transposition (default: the game's default version)")
     ns = ap.parse_args()
     game = tc.load_game(ns.game)
@@ -687,6 +1016,10 @@ def main() -> int:
         if to == config(game)["ref"]:
             sys.exit("the target version is the reference version")
         cmd_transpose(ns.game, game, to)
+    if ns.cmd == "gaps":
+        if to == config(game)["ref"]:
+            sys.exit("the target version is the reference version")
+        cmd_gaps(ns.game, game, to)
     return 0
 
 

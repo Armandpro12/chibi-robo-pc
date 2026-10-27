@@ -189,6 +189,18 @@ The 16 modules are stored in `qp.bin` under `rel/` `[verified: file]`:
 - The 15,720 `bl` calls between transposed functions all point to the expected function in PAL.
 - The resulting PAL maps are in `games/chibi-robo/symbols/` (names and addresses only).
 
+**PAL addresses of the functions the transposition did not find** (`tools/symbols.py chibi-robo gaps`, output `games/chibi-robo/symbols/GGTP01-gaps.tsv`) `[verified: complete partition checks + Ghidra entries]`:
+- Method: the DOL functions keep their order between versions, so each function left without a PAL address is placed between its two found neighbours, by dynamic programming over candidate starts with masked-code similarity. Once every function is placed, the PAL code is a complete partition, and each placed function is checked on it: same callers, same callees, same number of references from data words, same instruction before its start and at its end.
+- All 357 functions left by the transposition (344 without a candidate, 13 with several) are resolved: 293 pass every check with a masked similarity of at least 0.80, 35 pass every check with a lower similarity, 24 keep their callers, data references and boundaries but call a different set of functions in PAL (code changed between versions). 338 of the 352 PAL starts are also Ghidra function entries.
+- Five US functions have no PAL counterpart (no byte left for them between their neighbours): the four SDK functions listed above (`VIGetDTVStatus`, `AIReset`, `OSGetProgressiveMode`, `OSSetProgressiveMode`) and a 4-byte empty function at US `0x80058760`; the next function (US `0x80058764`, PAL `0x8005A260`) is 4 bytes longer in PAL.
+- The same partition gives the PAL size of the 65 functions found by the transposition whose code differs.
+
+**Layout facts of the compiled code** (same code in both versions):
+- Bit-fields are allocated from the most significant bit of their unit, and a field that fits in one byte is read and written with a byte access (`lbz`/`rlwimi`/`stb`) `[verified: SDK __SITransfer (US 0x80160300, PAL 0x80162BB0), whose source bit-field order matches the documented SI COMCSR register layout; capstone and Ghidra disassembly]`.
+- The first virtual function of a class puts its virtual table pointer after the data members: the 16-byte `CVec` holds three floats at 0, 4 and 8 and its vtable pointer at 0xC `[verified: constructors US 0x800A2C48 / PAL 0x800A5078]`. The `CVec` vtable (US `0x80210314`, PAL `0x80216A20`, 0xC bytes) holds the type descriptor, a zero offset and the destructor.
+- The compiler-generated `CVec` copy constructor copies the three float members with integer word loads and stores, not float ones `[verified: US 0x800A2E2C / PAL 0x800A525C]`.
+- Enumerations stored in `GXRenderModeObj` take 4 bytes in the HSD code that reads it (`aa` at 0x19, `sample_pattern` at 0x1A, `vfilter` at 0x32, passed to `GXSetCopyFilter` at US 0x801CB8D8 / PAL 0x801CE1D4) `[verified: disassembly]`.
+
 **Behaviour** `[verified: Ghidra]`:
 - PAL asks for 50 or 60 Hz at boot. Choosing 60 Hz switches the video mode to EuRGB60, 59.94 Hz `[verified: trace]`.
 - The frame limiter divides by a variable in PAL (initial value 50) and by the constant 60 in US (section 8).
