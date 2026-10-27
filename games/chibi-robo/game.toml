@@ -133,6 +133,16 @@ mother-spiders-room = 22
 # code: menus, title screen, 3D scene of the introduction (birthday party). Measurements: notes/performance.md.
 scenarios = ["title-boot", "intro-no-card"]
 
+[decomp]
+# Decompiled functions (stage 2): table read by tools/decomp_functions.py and tools/build.py (HLE hook and registration
+# of each enabled function at its address in the version being built). Path relative to games/<game>/.
+functions = "decomp/functions.tsv"
+
+[decomp.columns]
+# Column of the table that holds the address of each version.
+GGTE01 = "us_addr"
+GGTP01 = "pal_addr"
+
 [hle.hooks]
 # Game-specific entry points to compile with an HLE hook (tools/build.py -> DolRecomp --hle-hooks),
 # for the address-based replacements installed in games/chibi-robo/main.c (GcrtGameDesc.install,

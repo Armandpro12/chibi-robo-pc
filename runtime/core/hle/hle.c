@@ -112,15 +112,31 @@ static void stack_fill(GcrtCpu* g) {
         mem_write32(&g->state, a, s_stack_fill_word);
 }
 
+/* Dispatcher calls, and those that found no replacement (cost of compiled hooks: notes/decomp.md D1.1). */
+static u64 s_dispatch_calls;
+static u64 s_dispatch_misses;
+
+void gcrt_hle_dispatch_counts(u64* calls, u64* misses) {
+    if (calls)
+        *calls = s_dispatch_calls;
+    if (misses)
+        *misses = s_dispatch_misses;
+}
+
 static bool dispatch(CPUState* cpu, u32 address) {
     GcrtCpu* g = gcrt_from_state(cpu);
+    s_dispatch_calls++;
     if (gcrt_hle_is_return_address(address))
         return handle_return(g, address);
-    if (!s_repl_count)
+    if (!s_repl_count) {
+        s_dispatch_misses++;
         return false;
+    }
     Replacement* r = repl_slot(address, false);
-    if (!r)
+    if (!r) {
+        s_dispatch_misses++;
         return false;
+    }
     if (address == s_declined_pc && g->blocks == s_declined_blocks)
         return false;
     if (s_stack_fill_size)

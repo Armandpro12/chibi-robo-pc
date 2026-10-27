@@ -108,6 +108,10 @@ void gcrt_timeline(const char* fmt, ...)
  * no thread switch can slip in). All integer registers, LR, CTR, CR, XER, MSR, SRR0/1 are restored afterwards;
  * *result = r3 on return. The stack is the current one (r1). */
 bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, u32* result);
+/* Same, with the argument registers (integer and floating-point) already set by the caller, who also reads the
+ * results (r3, r4, f1...): only PC, LR, MSR[EE], SRR0/1 are restored afterwards (decompiled code calling recompiled
+ * code, runtime/core/decomp/gc_abi.h). Returns true if the function returned. */
+bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function);
 /* Depth of the nested calls in progress (0: normal execution of the game). No thread switch is allowed during a
  * nested call. */
 int gcrt_guest_call_depth(void);

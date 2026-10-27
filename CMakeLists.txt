@@ -10,6 +10,7 @@ set(GCRT_RECOMP_DIR "" CACHE PATH "DolRecomp output (generated/<game>/<ID>/recom
 set(GCRT_DISC_ROOT "" CACHE PATH "Root of the extracted disc, used by default at launch")
 set(GCRT_DOL_FNV64 "0" CACHE STRING "FNV-1a 64 hash of the recompiled DOL (0: no check)")
 set(GCRT_RAM_SIZE "0x01800000" CACHE STRING "Size of the host RAM (>= 24 MiB)")
+set(GCRT_DECOMP_REGISTRY "" CACHE FILEPATH "Registration table of the decompiled functions for this version (tools/build.py)")
 set(DOLRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/DolRecomp" CACHE PATH "DolRecomp sources")
 option(GCRT_CPU_FAST_PATHS "Inline fast paths for the generated code (runtime/core/cpu/gcrt_cpu_inline.h)" ON)
 # Optional profile-guided optimization (GCRT_PGO, tools/build.py --pgo): before any add_subdirectory, so that the
@@ -26,6 +27,7 @@ endif()
 
 add_subdirectory(runtime/core)
 include(runtime/core/cmake/GcrtRecomp.cmake)
+include(runtime/core/cmake/GcrtDecomp.cmake)
 
 if(GCRT_GAME)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${GCRT_GAME}/CMakeLists.txt")

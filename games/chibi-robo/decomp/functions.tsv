@@ -1,0 +1,18 @@
+# Decompiled functions of Chibi-Robo! (stage 2): one line per function, read by tools/decomp_functions.py and
+# tools/build.py. Names, addresses and sizes only: no game data.
+#
+# Columns (tab-separated; settings in games/chibi-robo/game.toml, [decomp]):
+#   name      identifier of the export record in the decompiled code (GC_DECOMP_EXPORT); one line per name
+#   module    "dol" for main.dol, or the REL file name without extension (e.g. stage01) for a REL module
+#   us_addr   GGTE01: guest address (dol), or offset in the module's first code section (REL, as in the dtk
+#             symbols); "-" if not known yet
+#   pal_addr  GGTP01: same; "-" if not known yet. A function without an address in BOTH versions cannot be enabled
+#   size      size in bytes of the original function (same in both versions; checked against each version's code)
+#   status    disabled   = listed, not built (no hook, no registration)
+#             unverified = replaces its recompiled version, NOT yet checked by the oracle (D1 mission 4)
+#             verified   = replaces it and passed the oracle on its captured cases
+# tools/build.py refuses the build if an enabled line's address is not the start of a function of that size in the
+# DOL or REL of the version being built. Source file of each function: decomp/src/ (one file per original unit).
+name	module	us_addr	pal_addr	size	status
+mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
+state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified

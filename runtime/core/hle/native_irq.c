@@ -258,6 +258,41 @@ bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, 
     return state.returned;
 }
 
+bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
+    CPUState* c = &g->state;
+    /* Same rules as gcrt_guest_call (MSR[EE] = 0, depth counted: no thread switch during the call, stop
+     * propagated), but the caller has set the argument registers and reads the results itself: only PC, LR, MSR[EE],
+     * SRR0/1 are restored; integer, floating-point and condition registers keep what the callee left (the caller of a
+     * function may not rely on the volatile ones; the callee preserves the others, as the PowerPC EABI requires). */
+    const u32 pc = c->pc, lr = c->lr, msr = c->msr, srr0 = c->srr0, srr1 = c->srr1;
+    const GcrtStopReason outer_stop = g->stop;
+    CallState state = {false, 0};
+    CallState* state_ptr = &state;
+    c->lr = gcrt_hle_push_return(g, 0, call_returned, &state_ptr, sizeof(state_ptr));
+    c->pc = function;
+    c->msr &= ~MSR_EE;
+    s_guest_calls++;
+    GcrtRunLimits limits = {g->blocks + NESTED_CALL_BLOCK_BUDGET, 0.0};
+    s_guest_call_depth++;
+    GcrtStopReason reason = gcrt_cpu_run(g, &limits);
+    s_guest_call_depth--;
+    c->pc = pc;
+    c->lr = lr;
+    c->msr = (c->msr & ~MSR_EE) | (msr & MSR_EE);
+    c->srr0 = srr0;
+    c->srr1 = srr1;
+    if (state.returned) {
+        g->stop = outer_stop;
+    } else {
+        s_guest_call_failures++;
+        if (reason != GCRT_STOP_REQUESTED && reason != GCRT_STOP_TIME_LIMIT)
+            fprintf(stderr, "gcrt native: the nested call to %08X did not return (%s)\n", function,
+                    gcrt_stop_reason_name(reason));
+        g->stop = reason != GCRT_STOP_NONE ? reason : GCRT_STOP_REQUESTED;
+    }
+    return state.returned;
+}
+
 bool gcrt_guest_call_exception_context(GcrtCpu* g, u32 context, u32 function, const u32* args, unsigned count) {
     if (gcrt_native_os_active()) {
         const u32 tmp = gcrt_native_exception_context_begin(g);
