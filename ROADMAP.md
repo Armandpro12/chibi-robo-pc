@@ -125,18 +125,23 @@ and assets are read from the player's files.
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
-Progress: 0 functions decompiled and verified. D1 started (2026-10-27): guest memory type layer
+Progress: 4 functions decompiled and verified by the oracle, on both US and PAL. D1 started (2026-10-27): guest memory type layer
 `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest pointers, bit-fields, per-version globals,
 native-memory switch), checked by unit and compile-refusal tests in the three memory modes (local tests, not in the
 repository). Gateway between recompiled and decompiled functions (`runtime/core/decomp/gc_abi.h`: PowerPC EABI
 arguments and results, nested calls back into recompiled code) and per-version table
 `games/chibi-robo/decomp/functions.tsv`, checked against each version's code by `tools/build.py`; first four
-decompiled leaf functions replace their recompiled versions in US and PAL builds (not yet checked by the oracle; three
-of them are called during the boot, through both paths a call can take: a direct call within the same block of
-generated code, and a call through the dispatcher). Progress is measured by `tools/decomp_progress.py` (per version
+decompiled leaf functions replace their recompiled versions in US and PAL builds (three of them are called during the
+boot, through both paths a call can take: a direct call within the same block of generated code, and a call through
+the dispatcher). Oracle (`tools/build.py --oracle`, `tools/decomp_oracle.py`, `runtime/core/decomp/gc_oracle.cpp`;
+not in the normal build): on every call of a decompiled function, an oracle build runs the recompiled original and then
+the decompiled version from the same state and compares the result registers, the registers the PowerPC EABI
+preserves and the bytes written, keeping the original's results; distinct starting states are kept as cases replayed
+offline. Over the five reference scenarios, the four functions were compared about 181,000 times in US and 216,000 in
+PAL without a difference (every reference scenario still identical to the bench references with the oracle on), and a
+deliberately wrong variant of each one, plus a floating-point test leaf, is reported in both versions. Progress is measured by `tools/decomp_progress.py` (per version
 and per module; partition in the `[decomp]` section of `games/chibi-robo/game.toml`): 0 of 3,772 functions (DOL 3,297
-and 16 RELs 475; 1,910,996 bytes of code) verified, on both US and PAL; the four functions above (208 bytes) are
-shown as replaced, not verified, in both versions. Left out: 1,209 DOL functions (14 of the `.init` start-up section
+and 16 RELs 475; 1,910,996 bytes of code): 4 verified (0.10 %; 208 bytes, 0.01 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the `.init` start-up section
 and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL functions (the Metrowerks
 runtime's global destructor chain, in 10 modules). 97 of the functions to decompile have no established PAL address
 yet, so they cannot count as decompiled in PAL: in the DOL, 22 placed by position only and 65 whose PAL size comes
