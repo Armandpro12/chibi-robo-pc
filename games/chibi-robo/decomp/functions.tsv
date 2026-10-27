@@ -7,13 +7,25 @@
 #   us_addr   GGTE01: guest address (dol), or offset in the module's first code section (REL, as in the dtk
 #             symbols); "-" if not known yet
 #   pal_addr  GGTP01: same; "-" if not known yet. A function without an address in BOTH versions cannot be enabled
-#   size      size in bytes of the original function (same in both versions; checked against each version's code)
+#   size      size in bytes of the original function: must be its size in BOTH versions (one column only, so a
+#             function whose size differs between versions cannot be enabled yet)
 #   status    disabled   = listed, not built (no hook, no registration)
 #             unverified = replaces its recompiled version, NOT yet checked by the oracle (D1 mission 4)
 #             verified   = replaces it and passed the oracle on its captured cases
-# tools/build.py refuses the build if an enabled line's address is not the start of a function of that size in the
-# DOL or REL of the version being built. Source file of each function: decomp/src/ (one file per original unit;
-# subfolders as in the original split, e.g. src/sysdolphin/baselib/archive.cpp).
+#             (compared whole and case-insensitive, as tools/decomp_progress.py does; any other status refuses the table)
+#   pal_oracle  optional column: "yes" once the oracle has passed on GGTP01; "no", "-" or empty otherwise
+# Activation lock (tools/decomp_functions.py, run by tools/build.py; the build is refused otherwise). For an enabled
+# line, in each version:
+#   (a) a GGTP01 address that symbols/GGTP01-gaps.tsv places at the level position or sized is refused unless
+#       pal_oracle is "yes"; only the levels strong and graph are enabled without it; any other level is refused;
+#   (b) the size must equal the function's size in that version (GGTP01-gaps.tsv target size, otherwise the symbol
+#       maps and the transposition report of tools/symbols.py; dtk symbols for GGTE01), and the range must not hold
+#       another known function start of that version strictly inside it;
+#   (c) an address that is in none of these sources is refused;
+#   and the address must be the start of a function of that size in the DOL or REL of the version (the instruction
+#   before it ends a function or is padding, the last one is blr/bctr/b).
+# Source file of each function: decomp/src/ (one file per original unit; subfolders as in the original split, e.g.
+# src/sysdolphin/baselib/archive.cpp).
 name	module	us_addr	pal_addr	size	status
 mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
 state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified

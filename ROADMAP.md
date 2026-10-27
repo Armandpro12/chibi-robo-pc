@@ -138,8 +138,12 @@ and per module; partition in the `[decomp]` section of `games/chibi-robo/game.to
 and 16 RELs 475; 1,910,996 bytes of code) verified, on both US and PAL; the four functions above (208 bytes) are
 shown as replaced, not verified, in both versions. Left out: 1,209 DOL functions (14 of the `.init` start-up section
 and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL functions (the Metrowerks
-runtime's global destructor chain, in 10 modules). 362 of the functions to decompile have no PAL address yet, so they
-cannot count as decompiled in PAL. A function counts as decompiled only once it has passed the oracle (status
+runtime's global destructor chain, in 10 modules). 97 of the functions to decompile have no established PAL address
+yet, so they cannot count as decompiled in PAL: in the DOL, 22 placed by position only and 65 whose PAL size comes
+only from the code partition (both enabled per version, once the oracle has passed on PAL), and 1 ambiguous match; 9
+in the RELs. The other PAL addresses come from the transposition of the US symbols and from the gap filling of
+`games/chibi-robo/symbols/GGTP01-gaps.tsv` (levels strong and graph); `tools/build.py` refuses to enable a function
+whose address and size are not established that way in each version. A function counts as decompiled only once it has passed the oracle (status
 `verified`); one that already replaces its recompiled version but is not verified yet (`unverified`) is shown in a
 separate column.
 

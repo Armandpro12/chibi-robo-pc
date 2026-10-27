@@ -5,10 +5,25 @@ its export record (GC_DECOMP_EXPORT in the decompiled code), its module, its add
 version, named in `[decomp.columns]`), its size and its status. Only names, addresses and sizes: no game data.
 
 This tool:
-  * reads and checks the table (columns, one line per name, statuses);
-  * resolves the addresses of one version, after checking in that version's DOL or REL that each address is the start
-    of a function of the expected size (the instruction before it ends a function or is padding, the last one is
-    blr/b/bctr); a function enabled for the build must have an address in EVERY version (parity);
+  * reads and checks the table (columns, one line per name, statuses). Statuses are read as tools/decomp_progress.py
+    reads them (tools/decomp_common.py: whole word, case-insensitive, surrounding "[]"/backquotes ignored; lists in
+    [decomp] done_statuses, replaced_statuses, listed_statuses). A done or replaced status (verified, unverified)
+    enables the function; a listed one (disabled) does not; any other status refuses the table;
+  * resolves the addresses of one version after two checks, both required for every enabled function:
+    1. activation lock (`check_sources`): the address is ESTABLISHED in that version's symbol sources. Reference
+       version: dtk symbols ([symbols] dtk_dir), <ID>.map, <ID>-rel.tsv. Other versions: the transposition report
+       ([decomp] transposition, generated/), <ID>.map, <ID>-rel.tsv and <ID>-gaps.tsv ([symbols] map_dir).
+       (a) an address that <ID>-gaps.tsv gives at the level position or sized is refused unless the row's oracle
+           column for that version ([decomp.oracle_columns]) is "yes" (the oracle has passed on that version); a
+           level other than strong, graph, position or sized is refused;
+       (b) the row's size must equal the size of the function in that version (gap target size first, otherwise the
+           sizes the other sources give, which must agree; a transposition size only for an identical match): an
+           unknown or different size is refused, and so is a range holding another known function start of that
+           version strictly inside it;
+       (c) an address found in none of the sources is refused;
+    2. code check: in that version's DOL or REL the address is the start of a function of the expected size (the
+       instruction before it ends a function or is padding, the last one is blr/b/bctr).
+    A function enabled for the build must have an address in EVERY version (parity);
   * writes the registration table of the version (C++ file for runtime/core/decomp/gc_abi.h, build folder only).
 tools/build.py calls it for the HLE hooks (DolRecomp --hle-hooks) and the registration table.
 
@@ -21,16 +36,17 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import decomp_common as dc  # noqa: E402
 import toolchain as tc  # noqa: E402
 
-# Statuses: `disabled` = listed, not built (no hook, no registration); `unverified` = replaces its recompiled version,
-# not yet checked by the oracle; `verified` = replaces it and passed the oracle on its captured cases.
-STATUSES = ("disabled", "unverified", "verified")
-ENABLED = ("unverified", "verified")
+# Status kinds (tools/decomp_common.py, lists in [decomp] of game.toml): done (`verified` = replaces its recompiled
+# version and passed the oracle) and replaced (`unverified` = replaces it, not yet checked by the oracle) are built;
+# listed (`disabled`) is not (no hook, no registration).
+ENABLED_KINDS = ("done", "replaced")
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ABSENT = ("", "-")
 
@@ -43,8 +59,14 @@ class Function:
     module: str  # "dol", or the REL file name without extension
     addresses: dict[str, int | None]  # version ID -> address (DOL) or offset in the REL code section; None = absent
     size: int
-    status: str
+    status: str  # normalized (tools/decomp_common.py)
     line: int
+    oracle: dict[str, bool] = field(default_factory=dict)  # version -> oracle column "yes" ([decomp.oracle_columns])
+    kind: str = "listed"  # done, replaced or listed
+
+    @property
+    def enabled(self) -> bool:
+        return self.kind in ENABLED_KINDS
 
 
 def config(game_cfg: dict) -> tuple[Path, dict[str, str]]:
@@ -64,6 +86,8 @@ def read_table(game_cfg: dict) -> list[Function]:
     path, columns = config(game_cfg)
     if not path.exists():
         return []
+    sets = dc.status_sets(game_cfg.get("decomp", {}))
+    oracle_cols = dc.oracle_columns(game_cfg.get("decomp", {}))
     header = None
     out: list[Function] = []
     seen: dict[str, int] = {}
@@ -83,14 +107,26 @@ def read_table(game_cfg: dict) -> list[Function]:
             errors.append(f"{path}:{n}: {len(cells)} cells, {len(header)} columns")
             continue
         row = dict(zip(header, cells))
-        name, status = row["name"], row["status"]
+        name, status = row["name"], dc.normalize_status(row["status"])
+        kind = dc.status_kind(status, sets)
         if not IDENT.match(name):
             errors.append(f"{path}:{n}: name {name!r} is not a C identifier")
         if name in seen:
             errors.append(f"{path}:{n}: {name} already listed line {seen[name]}")
         seen[name] = n
-        if status not in STATUSES:
-            errors.append(f"{path}:{n}: status {status!r} (expected one of {', '.join(STATUSES)})")
+        if kind is None:
+            errors.append(f"{path}:{n}: status {row['status']!r} is not a recognized status (expected one of "
+                          f"{', '.join(dc.all_statuses(sets))}: [decomp] done_statuses, replaced_statuses, "
+                          f"listed_statuses; compared whole, case-insensitive)")
+            kind = "listed"
+        oracle: dict[str, bool] = {}
+        for version, column in oracle_cols.items():
+            try:
+                oracle[version] = dc.parse_oracle(row.get(column, ""))
+            except ValueError:
+                errors.append(f"{path}:{n}: {column} {row[column]!r} must be yes, no or - (yes = the oracle has "
+                              f"passed on {version})")
+                oracle[version] = False
         addresses: dict[str, int | None] = {}
         for version, column in columns.items():
             value = row[column].strip()
@@ -106,12 +142,12 @@ def read_table(game_cfg: dict) -> list[Function]:
             size = 0
         if size <= 0 or size % 4:
             errors.append(f"{path}:{n}: size {row['size']!r} must be a positive multiple of 4")
-        if status in ENABLED:
+        if kind in ENABLED_KINDS:
             absent = [v for v, a in addresses.items() if a is None]
             if absent:
                 errors.append(f"{path}:{n}: {name} is {status} but has no address for {', '.join(absent)}: a "
                               f"function without an address in every version cannot be enabled (status disabled)")
-        out.append(Function(name, row["module"].strip(), addresses, size, status, n))
+        out.append(Function(name, row["module"].strip(), addresses, size, status, n, oracle, kind))
     if errors:
         raise SystemExit("Table of decompiled functions refused:\n  " + "\n  ".join(errors))
     return out
@@ -145,6 +181,130 @@ def check_code(ranges: list[tuple[int, bytes]], address: int, size: int) -> str 
     return "address outside the code sections"
 
 
+@dataclass
+class Known:
+    """Function starts of one version from its symbol sources."""
+    sizes: dict[tuple[str, int], dict[str, int | None]]  # (module, address or REL offset) -> {source: size or None}
+    gaps: dict[int, dc.Gap]  # DOL address in the version -> row of <ID>-gaps.tsv (non-reference versions)
+    sources: list[str]
+
+
+def _map_entries(path: Path) -> dict[tuple[str, int], int]:
+    """<ID>.map ("ADDRESS SIZE NAME") and <ID>-rel.tsv ("module_id module section offset size name"), hexadecimal:
+    (module, address or offset) -> size (0 = unknown)."""
+    out: dict[tuple[str, int], int] = {}
+    if not path.exists():
+        return out
+    rel = path.suffix == ".tsv"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        p = line.split("\t") if rel else line.split()
+        try:
+            if rel and len(p) >= 6:
+                out[(p[1], int(p[3], 16))] = int(p[4], 16)
+            elif not rel and len(p) == 3:
+                out[("dol", int(p[0], 16))] = int(p[1], 16)
+        except ValueError:
+            pass
+    return out
+
+
+def known_entries(game_cfg: dict, version: str) -> Known:
+    """Every known function start of `version`, with the size each source gives there (None = unknown)."""
+    import symbols as sy  # noqa: E402  (generic tool of the repository)
+    sym = game_cfg.get("symbols", {})
+    d = game_cfg.get("decomp", {})
+    slug = game_cfg["_dir"].name
+    ref = d.get("reference") or sym.get("reference")
+    map_dir = game_cfg["_dir"] / sym.get("map_dir", "symbols")
+    sizes: dict[tuple[str, int], dict[str, int | None]] = {}
+    used: list[str] = []
+
+    def add(key: tuple[str, int], source: str, size: int | None) -> None:
+        sizes.setdefault(key, {})[source] = size
+
+    if version == ref:
+        dtk = tc.ROOT / sym["dtk_dir"] / "symbols.txt" if sym.get("dtk_dir") else None
+        if dtk is None or not dtk.exists():
+            raise SystemExit(f"Decompiled functions refused for {version}: dtk symbols of the reference version "
+                             f"missing ({dtk or '[symbols] dtk_dir'}): its addresses cannot be established")
+        for s in sy.functions(sy.read_dtk(dtk)):
+            add(("dol", s.addr), "dtk", s.size)
+        used.append("dtk symbols")
+    else:
+        rel = d.get("transposition", "generated/{slug}/{id}/symbols/{ref}-to-{id}.tsv").format(
+            slug=slug, ref=ref, id=version)
+        path = tc.ROOT / rel
+        if not path.exists():
+            raise SystemExit(f"Decompiled functions refused for {version}: transposition report {rel} missing: run "
+                             f"`py -3 tools/symbols.py {slug} transpose --to {version}` (the {version} addresses "
+                             f"cannot be established without it)")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            p = line.split("\t")
+            target = int(p[1], 16)
+            if target:  # size of the reference: the version's size only for an identical match
+                add(("dol", target), "transposition", int(p[2], 16) if p[4].strip() == "1" else None)
+        used.append(rel)
+    for key, size in _map_entries(map_dir / f"{version}.map").items():
+        add(key, f"{version}.map", size or None)
+    for key, size in _map_entries(map_dir / f"{version}-rel.tsv").items():
+        add(key, f"{version}-rel.tsv", size or None)
+    used += [f"{version}.map", f"{version}-rel.tsv"]
+    gaps: dict[int, dc.Gap] = {}
+    gpath = dc.gaps_path(game_cfg, version)
+    for g in dc.read_gaps(gpath):
+        if g.target:
+            gaps[g.target] = g
+            add(("dol", g.target), gpath.name, g.size or None)
+    if gpath.exists():
+        used.append(gpath.name)
+    return Known(sizes, gaps, used)
+
+
+def check_sources(game_cfg: dict, version: str, f: Function, addr: int, known: Known) -> str | None:
+    """Activation lock: reason why `addr` (DOL address or REL offset) of `f` is not established in `version`'s symbol
+    sources with the row's size, None if it is (rules (a), (b), (c) of the header)."""
+    gname = dc.gaps_path(game_cfg, version).name
+    gap = known.gaps.get(addr) if f.module == "dol" else None
+    size: int | None
+    if gap is not None:
+        if gap.level in dc.ORACLE_LEVELS:
+            if not f.oracle.get(version):
+                col = dc.oracle_columns(game_cfg.get("decomp", {})).get(version)
+                return (f"{version} address placed by {gname} at level {gap.level}: enabled only once the oracle has "
+                        f"passed on {version} (column {col} = yes)" if col else
+                        f"{version} address placed by {gname} at level {gap.level}: enabled only once the oracle has "
+                        f"passed on {version} ([decomp.oracle_columns] has no column for {version})")
+        elif gap.level not in dc.ESTABLISHED_LEVELS:
+            return f"{version} address placed by {gname} at level {gap.level}: not established"
+        size = gap.size or None
+        if size is None:
+            return f"no {version} size in {gname}"
+    else:
+        found = known.sizes.get((f.module, addr))
+        if found is None:
+            return (f"not a known function start of {version} (sources: {', '.join(known.sources)}): establish it "
+                    f"through tools/symbols.py first")
+        given = {s for s in found.values() if s is not None}
+        if not given:
+            return f"size not established in {version} (known there with an unknown size: {', '.join(found)})"
+        if len(given) > 1:
+            return (f"the {version} sources disagree on its size ("
+                    f"{', '.join(f'{k} 0x{v:X}' for k, v in found.items() if v is not None)})")
+        size = given.pop()
+    inside = sorted(a for (m, a) in known.sizes if m == f.module and addr < a < addr + f.size)
+    if inside:
+        return (f"range 0x{addr:X}+0x{f.size:X} holds another known {version} function start "
+                f"({', '.join(f'{a:X}' for a in inside[:4])})")
+    if f.size != size:
+        return (f"size 0x{f.size:X} differs from the {version} size 0x{size:X} (one size column: a function whose "
+                f"size differs between versions cannot be enabled)")
+    return None
+
+
 def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -> list[tuple[int, Function]]:
     """Enabled functions of `version` with their guest address, after the code checks. `layout`: tools/build.py
     rel_layout (virtual addresses of the RELs)."""
@@ -156,8 +316,9 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -
     rels = {m["name"]: m for m in layout}
     out: list[tuple[int, Function]] = []
     errors: list[str] = []
+    known = known_entries(game_cfg, version) if any(f.enabled for f in functions) else None
     for f in functions:
-        if f.status not in ENABLED:
+        if not f.enabled:
             continue
         addr = f.addresses[version]
         assert addr is not None  # read_table refuses an enabled function with an absent address
@@ -172,7 +333,7 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -
         else:
             errors.append(f"{f.name}: unknown module {f.module!r} (dol, or one of {', '.join(sorted(rels))})")
             continue
-        reason = check_code(ranges, guest, f.size)
+        reason = check_sources(game_cfg, version, f, addr, known) or check_code(ranges, guest, f.size)
         if reason:
             errors.append(f"{f.name} ({version} {f.module} {addr:08X}, size 0x{f.size:X}): {reason}")
         out.append((guest, f))
@@ -234,7 +395,7 @@ def main() -> int:
     versions = args.version or [v["game_id"] for v in game_cfg["versions"]]
     functions = read_table(game_cfg)
     print(f"{len(functions)} functions in the table, "
-          f"{sum(f.status in ENABLED for f in functions)} enabled")
+          f"{sum(f.enabled for f in functions)} enabled")
     for version in versions:
         manifest = tc.GENERATED / args.game / version / "manifest.json"
         if not manifest.exists():

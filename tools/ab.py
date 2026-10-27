@@ -148,6 +148,10 @@ def build_in_worktree(game: str, version: str, rev: str, wt: Path, tag: str) -> 
     gen = wt / "generated" / game / version
     gen.mkdir(parents=True, exist_ok=True)
     make_link(tc.ROOT / "generated" / game / version / "disc", gen / "disc")
+    # Transposition report of tools/symbols.py, read-only: tools/decomp_functions.py needs it to establish the
+    # addresses of the decompiled functions in a non-reference version.
+    if (tc.ROOT / "generated" / game / version / "symbols").exists():
+        make_link(tc.ROOT / "generated" / game / version / "symbols", gen / "symbols")
     print(f"== this worktree contains junctions to the main checkout; remove it with: py -3 tools/worktree.py remove \"{wt}\"")
     manifest = tc.ROOT / "generated" / game / version / "manifest.json"
     if manifest.exists() and not (gen / "manifest.json").exists():
