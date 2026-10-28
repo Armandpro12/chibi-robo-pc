@@ -31,13 +31,13 @@
 - Both the **US** (GGTE01) and **PAL** (GGTP01) versions are supported.
 - **You provide your own disc image.** No game data (disc image, textures, sounds, levels) is in this repository or
   in the installer.
-- Next steps: a fully decompiled C++ game (started, a first dozen functions are rewritten and checked against the
-  recompiled ones), then multiplayer, a PS Vita port, a remaster and mods ([ROADMAP.md](ROADMAP.md)).
+- Next steps: a fully decompiled C++ game (started: a first dozen functions are rewritten and checked against the
+  recompiled ones, in the source but not yet in release 0.1.1), then multiplayer, a PS Vita port, a remaster and mods ([ROADMAP.md](ROADMAP.md)).
 
 ## Current state
 
-> **Early beta (0.1.x).** It runs, and it has been compared automatically with Dolphin, but nobody has played the
-> whole game on it yet. That is where you can help: see [Help test it](#help-test-it).
+> **Early beta (0.1.x).** It runs, and it has been compared automatically with Dolphin on the key scenes, but
+> nobody has played the whole game on it yet. That is where you can help: see [Help test it](#help-test-it).
 
 - ✅ Boots and runs in real time with music and sound effects, on both versions: title screen, new game, the prologue
   up to and including the birthday party, the first save, and leaving the Chibi-House.
@@ -80,12 +80,14 @@ You do not need to be a developer. The most useful reports, in this order:
 2. **Try it on your machine.** Does it install and start on Windows 10, on a clean Windows, with AMD or Intel
    graphics, on a laptop, with a gamepad? "It works for me" is a useful report too.
 3. **Listen.** Music, effects and the intro, compared with the original.
-4. **Crashes and freezes.** Share only the `crash-*.txt` report, after reading it
+4. **Crashes and freezes.** Share only the `crash-*.txt` or `hang-*.txt` report, after reading it
    ([guide/reporting-crashes.md](guide/reporting-crashes.md)).
 
 To report, [open an issue](https://github.com/Armandpro12/chibi-robo-pc/issues/new) with: the version (from the
-installer's file name), US or PAL, your Windows version, your graphics card and driver, what you did and what
-happened. One problem per issue. **Never attach your disc image or any game file.**
+installer's file name, or the release you downloaded), US or PAL, your Windows version, your graphics card and
+driver, what you did and what happened. One problem per issue. A screenshot of a visual problem is welcome (crop it
+to the problem); attach a save only if asked. **Never attach your disc image, files extracted from it, or memory
+dumps.**
 
 ## Known problems
 
@@ -95,10 +97,13 @@ happened. One problem per issue. **Never attach your disc image or any game file
   ([#28](https://github.com/Armandpro12/chibi-robo-pc/issues/28)).
 - Only part of the game is compared with the original; most video cutscenes are not yet
   ([#34](https://github.com/Armandpro12/chibi-robo-pc/issues/34)).
+- On a heavily loaded PC the game can freeze for many seconds around the same point while it compiles graphics
+  pipelines; seen on a test machine, not reported by players
+  ([#47](https://github.com/Armandpro12/chibi-robo-pc/issues/47)).
 - The installer does not accept compressed images (`.rvz`, `.ciso`, ZIP...).
 
 All open issues: [github.com/Armandpro12/chibi-robo-pc/issues](https://github.com/Armandpro12/chibi-robo-pc/issues).
-If the game crashes, share only the `crash-*.txt` report, after reading it
+If the game crashes or freezes, share only the `crash-*.txt` or `hang-*.txt` report, after reading it
 ([guide/reporting-crashes.md](guide/reporting-crashes.md)).
 
 ## Guide
