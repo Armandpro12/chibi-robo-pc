@@ -125,7 +125,10 @@ and assets are read from the player's files.
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
-Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below).
+Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below). Two
+more, `hsd_hermite_interpolate` and `hsd_mtx_get_translation`, are decompiled but disabled: they start with a
+floating-point instruction, and the gateway does not yet handle a call made while the floating-point unit is off (see
+"Remaining work in D1" below).
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
@@ -138,6 +141,16 @@ Progress: 12 functions decompiled and verified by the oracle, on both US and PAL
   functions are all disabled is not built. A store of decompiled code reaches the CPU layer exactly as a store of
   recompiled code does (the write journal used by the idle detection, and the clearing of a `lwarx` reservation),
   through a store hook of the type layer; checked by a local test against the real idle detection and by the oracle.
+- **Single-precision arithmetic** (`runtime/core/decomp/gc_float.h`): one helper per instruction (`fadds`, `fsubs`,
+  `fmuls`, `fmadds`, `fneg`) that gives the recompiled code's results bit for bit where plain host `float` arithmetic
+  does not: the 25-bit rounding of the multiplier, the fused multiply-add with its half-way correction, the NaN
+  rules, and the flush of tiny results in the non-IEEE mode (FPSCR[NI], on in every state the oracle captured). The
+  mode is passed explicitly by the caller. Adapted from DolRecomp's CPU runtime (`src/cpu/cpu.c`, GPL-3.0-or-later),
+  whose helpers follow Dolphin's interpreter (`Interpreter_FPUtils.h`, Copyright 2009 Dolphin Emulator Project,
+  GPL-2.0-or-later); it stays under GPL-3.0. Checked by a local differential test against DolRecomp's helpers with
+  the non-IEEE mode off and on (no difference on 2.66 million cases per mode, at two optimization levels). Equal to
+  DolRecomp is what the oracle needs; that every result equals the console is not proven (DolRecomp's `fmadds`, for
+  example, does not flush tiny results in the non-IEEE mode, while Dolphin's interpreter does).
 - **Oracle** (`tools/build.py --oracle`, `tools/decomp_oracle.py`, `runtime/core/decomp/gc_oracle.cpp`; not in the
   normal build): on every call of a decompiled function, an oracle build runs the recompiled original and then the
   decompiled version from the same state and compares the result registers, the registers the PowerPC EABI preserves
@@ -160,7 +173,7 @@ Progress: 12 functions decompiled and verified by the oracle, on both US and PAL
   the share of calls where the console's single-precision rounding and fused multiply-add change the result).
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 12 verified (0.32 %; 468 bytes, 0.02 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 12 verified (0.31 %; 468 bytes, 0.02 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
@@ -171,6 +184,18 @@ Progress: 12 functions decompiled and verified by the oracle, on both US and PAL
   whose address and size are not established that way in each version.
 - A function counts as decompiled only once it is `verified`; one that already replaces its recompiled version but is
   not verified yet (`unverified`) is shown in a separate column.
+
+### Remaining work in D1
+
+1. **Floating-point unit off.** The game's OS turns the floating-point unit off when it switches threads and restores
+   a thread's floating-point registers on that thread's first floating-point instruction. The recompiled original
+   does this; the gateway does not, so a decompiled function that uses floating-point registers could read another
+   thread's values (deduced from the mechanism, not measured). Planned: for a function whose original contains a
+   floating-point instruction, the gateway lets the original run when the unit is off, and the oracle counts those
+   calls apart. Then `hsd_hermite_interpolate` and `hsd_mtx_get_translation` are enabled again and rechecked by the
+   oracle. `hsd_pobj_set_shape_blend`, verified, also moves a float with floating-point loads and stores; the
+   scenarios never called it with the unit off, and it is part of the same fix.
+2. Full A/B bench of the production build of this batch, then review and merge.
 
 ## Stage 3 — Multiplayer ⬜
 
