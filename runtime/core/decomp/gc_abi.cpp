@@ -23,6 +23,7 @@ struct entry_state {
     const registration* reg = nullptr;
     unsigned checks = 0;     // cross-checks done
     unsigned mismatches = 0; // cross-checks whose result differed
+    u64 fpu_declined = 0;    // entries declined because MSR[FP] = 0 (registration_uses_fpu)
 };
 
 GcrtCpu* s_cpu = nullptr;
@@ -84,6 +85,7 @@ registers registers_of(GcrtCpu* g) noexcept {
 
 void install(GcrtCpu* g, const registration* table, unsigned count) {
     s_cpu = g;
+    detail::guest_msr = &g->state.msr;
     // Guest RAM for gc_mem.h: the host buffer of the CPU, with its mirrors (gc_mem.h). The size includes the area of
     // the RELs placed after the 24 MiB (tools/build.py, host_ram_size).
     gc::init_guest_memory(g->state.ram, g->state.ram_size);
@@ -112,8 +114,12 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     const char* cc = std::getenv("GCRT_DECOMP_CROSSCHECK");
     s_crosscheck_limit = cc && cc[0] ? static_cast<unsigned>(std::strtoul(cc, nullptr, 0)) : 0u;
     detail::crosscheck_enabled = s_crosscheck_limit != 0;
-    std::fprintf(stderr, "gc_abi: %u decompiled functions registered%s\n", count,
-                 detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
+    unsigned with_fpu = 0;
+    for (unsigned i = 0; i < count; i++)
+        with_fpu += (table[i].flags & registration_uses_fpu) != 0;
+    std::fprintf(stderr, "gc_abi: %u decompiled functions registered (%u whose original uses the FPU: declined while "
+                         "MSR[FP] = 0)%s\n",
+                 count, with_fpu, detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
     if (!s_report_registered) {
         s_report_registered = true;
         std::atexit(&report_at_exit);
@@ -133,10 +139,14 @@ void report(std::FILE* out) {
         // Path that reached the replacement: the hook compiled at the entry (direct `bl` calls) or the chassis.
         u64 dispatched = 0, via_hook = 0;
         gcrt_hle_calls_at(e.reg->address, &dispatched, &via_hook);
-        std::fprintf(out, "DECOMP %-32s %08X calls=%llu hook=%llu chassis=%llu", e.reg->record->name,
-                     static_cast<unsigned>(e.reg->address), static_cast<unsigned long long>(calls),
-                     static_cast<unsigned long long>(via_hook),
-                     static_cast<unsigned long long>(dispatched - via_hook));
+        // calls = runs of the decompiled version (call_count, after the declines); fpu_declined = entries left to the
+        // original because MSR[FP] = 0 (registration_uses_fpu), counted in hook/chassis too.
+        std::fprintf(out, "DECOMP %-32s %08X calls=%llu hook=%llu chassis=%llu fpu=%u fpu_declined=%llu",
+                     e.reg->record->name, static_cast<unsigned>(e.reg->address),
+                     static_cast<unsigned long long>(calls), static_cast<unsigned long long>(via_hook),
+                     static_cast<unsigned long long>(dispatched - via_hook),
+                     (e.reg->flags & registration_uses_fpu) ? 1u : 0u,
+                     static_cast<unsigned long long>(e.fpu_declined));
         if (s_crosscheck_limit)
             std::fprintf(out, " crosscheck=%u mismatches=%u", e.checks, e.mismatches);
         std::fputc('\n', out);
@@ -152,6 +162,23 @@ namespace detail {
 
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
+const u32* guest_msr = nullptr;
+
+bool decline_without_fpu(u32 address) noexcept {
+    entry_state* e = lookup(address);
+    if (!e || !(e->reg->flags & registration_uses_fpu))
+        return false;
+    e->fpu_declined++;
+#if defined(GC_DECOMP_ORACLE)
+    oracle_declined_fpu(address);
+#endif
+    return true;
+}
+
+bool registered_uses_fpu(u32 address) noexcept {
+    const entry_state* e = lookup(address);
+    return e && (e->reg->flags & registration_uses_fpu);
+}
 
 GcrtCpu* current_cpu() noexcept {
     return s_cpu;

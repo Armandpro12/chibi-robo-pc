@@ -460,6 +460,38 @@ def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tup
     return reachable, dead
 
 
+# Floating-point instructions as DolRecomp guards them (src/frontend/decoder.h ppc_op_uses_fpu: every opcode from
+# PPC_OP_STFIWX to PPC_OP_PS_SEL; src/backend/emitter.c emits `if (!ppc_fp_available_inline(ctx, cia)) return;` before
+# each one, the "FPU unavailable" exception when MSR[FP] = 0). Primary opcodes: 48-55 lfs, lfsu, lfd, lfdu, stfs,
+# stfsu, stfd, stfdu; 56, 57 psq_l, psq_lu; 60, 61 psq_st, psq_stu; 59 single-precision arithmetic; 63 double-precision
+# arithmetic, compares and the FPSCR instructions; 4 paired singles and psq_lx/stx/lux/stux, except extended opcode
+# 1014 (dcbz_l); 31 with the extended opcodes of lfsx, lfsux, lfdx, lfdux, stfsx, stfsux, stfdx, stfdux and stfiwx.
+# This is a superset: an encoding of these opcodes that DolRecomp's decoder rejects (PPC_OP_UNKNOWN, not guarded) is
+# counted too, which only makes the gateway decline more often (tests/decomp: checked against the guards of the whole
+# generated code of both versions).
+FPU_PRIMARY = frozenset({48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61, 63})
+FPU_X31 = frozenset({535, 567, 599, 631, 663, 695, 727, 759, 983})
+
+
+def is_fpu_instruction(word: int) -> bool:
+    """True if `word` is a floating-point instruction (one that raises "FPU unavailable" when MSR[FP] = 0)."""
+    op, xo = word >> 26, (word >> 1) & 0x3FF
+    if op in FPU_PRIMARY:
+        return True
+    if op == 4:
+        return xo != 1014
+    return op == 31 and xo in FPU_X31
+
+
+def fpu_instructions(ranges: list[tuple[int, bytes]], address: int, size: int) -> list[int]:
+    """Addresses of the floating-point instructions (is_fpu_instruction) of [address, address + size) of `ranges`."""
+    for base, blob in ranges:
+        if base <= address < base + len(blob):
+            return [address + 4 * i for i in range(size // 4)
+                    if is_fpu_instruction(_word(blob, address - base + 4 * i))]
+    return []
+
+
 # Files outside the decompiled sources that decide what an oracle run measures, relative to the repository root
 # (folders: every file below them): the basic-block analysis and the table checks (this file, decomp_common.py, the
 # code reader symbols.py), the generation of the block hooks and of the registration table (build.py), the
@@ -525,9 +557,11 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
 
 
 def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
-            blocks: dict[int, tuple[list[int], list[int]]] | None = None) -> list[tuple[int, Function]]:
+            blocks: dict[int, tuple[list[int], list[int]]] | None = None,
+            fpu: dict[int, list[int]] | None = None) -> list[tuple[int, Function]]:
     """Enabled functions of `version` with their guest address, after the code checks. `layout`: tools/build.py
-    rel_layout (virtual addresses of the RELs). `blocks`: if given, filled with {guest address: code_blocks()}."""
+    rel_layout (virtual addresses of the RELs). `blocks`: if given, filled with {guest address: code_blocks()}.
+    `fpu`: if given, filled with {guest address: fpu_instructions()} (empty list: no floating-point instruction)."""
     import symbols as sy  # noqa: E402  (generic tool of the repository)
     functions = read_table(game_cfg)
     if not functions:
@@ -552,6 +586,8 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
             errors.append(f"{f.name} ({version} {f.module} {addr:08X}, size 0x{f.size:X}): {reason}")
         if blocks is not None:
             blocks[guest] = code_blocks(ranges, guest, f.size)
+        if fpu is not None:
+            fpu[guest] = fpu_instructions(ranges, guest, f.size)
         out.append((guest, f))
     addresses = [a for a, _ in out]
     for a in sorted({a for a in addresses if addresses.count(a) > 1}):
@@ -563,12 +599,16 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
 
 def registry_source(version: str, entries: list[tuple[int, Function]], oracle: bool = False,
                     records: dict[str, str] | None = None,
-                    blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "") -> str:
+                    blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "",
+                    fpu: dict[int, list[int]] | None = None) -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
     (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
     code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
     (`sources_hash`, oracle_sources_hash()); `records`: export record to use instead of a function's own (negative
-    test of the oracle: name -> record name)."""
+    test of the oracle: name -> record name). `fpu`: fpu_instructions() of each function (resolve); a function whose
+    original holds a floating-point instruction is registered with gc::abi::registration_uses_fpu, so that the gateway
+    lets the original run when MSR[FP] = 0 (runtime/core/decomp/gc_abi.h). Without `fpu`, every function is flagged
+    (the safe side: declining only lets the original run)."""
     records = records or {}
     blocks = blocks or {}
     lines = [f"// Registration table of the decompiled functions for {version}: generated by tools/decomp_functions.py",
@@ -584,7 +624,11 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     if entries:
         lines.append("const ::gc::abi::registration k_table[] = {")
         for a, f in entries:
-            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}}},")
+            uses_fpu = bool(fpu.get(a)) if fpu is not None else True
+            flags = "::gc::abi::registration_uses_fpu" if uses_fpu else "::gc::abi::registration_none"
+            first = f"first floating-point instruction {fpu[a][0]:08X}" if fpu and fpu.get(a) else (
+                "no floating-point instruction" if fpu is not None else "not scanned")
+            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}}}, // {first}")
         lines += ["};", "constexpr unsigned k_count = sizeof(k_table) / sizeof(k_table[0]);"]
         if oracle:
             lines.append("const unsigned k_addresses[] = {" + ", ".join(f"0x{a:08X}u" for a, _ in entries) + "};")
@@ -647,11 +691,13 @@ def main() -> int:
         if not manifest.exists():
             raise SystemExit(f"{manifest} missing: extract the disc first (tools/extract.py)")
         disc_root = Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
-        entries = resolve(game_cfg, version, disc_root, _layout(game_cfg, disc_root))
+        fpu: dict[int, list[int]] = {}
+        entries = resolve(game_cfg, version, disc_root, _layout(game_cfg, disc_root), fpu=fpu)
         print(f"{version}: {len(entries)} functions resolved, code checks passed")
         if args.action == "list":
             for a, f in entries:
-                print(f"  {a:08X} {f.size:#06x} {f.module:8} {f.status:10} {f.name}")
+                fp = f"fpu={len(fpu[a])}@{fpu[a][0]:08X}" if fpu.get(a) else "fpu=0"
+                print(f"  {a:08X} {f.size:#06x} {f.module:8} {f.status:10} {fp:16} {f.name}")
     return 0
 
 

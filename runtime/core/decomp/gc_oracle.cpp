@@ -51,7 +51,13 @@
 // that is not compared is only the saved part of the scratch area under the case's r1 (synthetic_dead_stack bytes,
 // not the 64 KiB of a real call): a store anywhere else, even through a pointer argument that points a few KiB
 // under S, is compared. They count apart from the real calls (synthetic_* in the summary) and are written as
-// replayable cases with their label.
+// replayable cases with their label. A case of a function this executable does not register (a disabled row, not
+// built) is checked for syntax and skipped: counted in the header (synthetic_skipped, synthetic_skipped_functions),
+// and tools/decomp_oracle.py decides whether that name may be missing.
+//
+// FPU off: for a function whose original holds a floating-point instruction, the gateway declines its entry while
+// MSR[FP] = 0 (gc_abi.h registration_uses_fpu) before reaching the oracle: the original runs as in the game, "FPU
+// unavailable" exception included, and the call is counted as fpu_declined, neither compared nor not compared.
 //   case <function> <label>     starts a case (one function, any label without spaces)
 //   area <bytes>                size of the scratch area (default 0x100, at most 0x400), zero-filled first
 //   rN = <value>                gpr N; fN = <hex bits> (fpr N), pN = <hex bits> (ps1 of fpr N)
@@ -74,6 +80,7 @@
 // journal, content of the synthetic cases) is written in the header, with a run identifier; tools/decomp_oracle.py
 // refuses to promote results whose settings are not the defaults, and counts one run only once.
 #include "decomp/gc_abi.h"
+#include "decomp/gc_float.h"
 #include "decomp/gc_oracle_compare.h"
 
 // C headers without their own extern "C" (DolRecomp's cpu.h): the write journal is a C symbol.
@@ -150,6 +157,14 @@ struct function_state {
     u64 compared = 0;
     u64 mismatches = 0;    // compared calls with at least one difference
     u64 not_compared = 0;  // calls run as the original only (not a leaf, unsupported, original did not return)
+    // Entries the gateway declined because MSR[FP] = 0 (gc_abi.h registration_uses_fpu): the original ran in the game
+    // as in a build without this function, "FPU unavailable" exception included. Neither compared nor "not compared":
+    // nothing was asked of the decompiled version.
+    u64 fpu_declined = 0;
+    // Compared calls (real and synthetic) during which the decompiled version ran an fmadds under NI = 1 whose result
+    // Dolphin's interpreter would flush to zero and DolRecomp's ppc_fma does not (gc_float.h): information only, the
+    // reference of the comparison is the recompiled original.
+    u64 fmadds_dolphin_divergent = 0;
     u64 stored = 0;        // cases written
     u64 printed = 0;       // differences printed on stderr
     std::unordered_set<u64> fingerprints;     // distinct starting states
@@ -186,6 +201,11 @@ unsigned s_synthetic_loaded = 0;
 // synthetic_content_hash of tools/decomp_oracle.py over the current files).
 u64 s_synthetic_content = oracle::fnv_offset;
 std::vector<std::string> s_synthetic_errors;
+// Cases of a function this executable does not register (a disabled row of the game's table, not built): skipped and
+// counted apart, by function. tools/decomp_oracle.py checks that every such name is a disabled row of the table (any
+// other name, an enabled row that was not built or a misspelled one, refuses the promotion).
+std::vector<std::pair<std::string, unsigned>> s_synthetic_skipped;
+unsigned s_synthetic_skipped_count = 0;
 u64 s_case_limit = 64;
 u32 s_dead_stack = oracle::default_dead_stack;
 // Synthetic cases: the case's r1 is 0x100 under S and the saved scratch area starts 0x400 under S, so the frame of
@@ -529,7 +549,8 @@ void report_at_exit() {
         std::fprintf(stdout,
                      "ORACLE %-32s %s %08X calls=%llu compared=%llu mismatches=%llu cases=%zu bad_cases=%zu "
                      "stored=%llu not_compared=%llu leaf=%s blocks=%llu/%zu results=%zu synthetic=%llu/%zu "
-                     "synthetic_mismatches=%llu journal_reattached=%llu restore_errors=%llu%s%s\n",
+                     "synthetic_mismatches=%llu journal_reattached=%llu restore_errors=%llu fpu_declined=%llu "
+                     "fmadds_dolphin_divergent=%llu%s%s\n",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.calls),
                      static_cast<unsigned long long>(f.compared), static_cast<unsigned long long>(f.mismatches),
                      f.fingerprints.size(), f.bad_fingerprints.size(), static_cast<unsigned long long>(f.stored),
@@ -537,7 +558,9 @@ void report_at_exit() {
                      f.blocks.size(), f.results.size(), static_cast<unsigned long long>(f.synthetic_compared),
                      f.synthetic.size(), static_cast<unsigned long long>(f.synthetic_mismatches),
                      static_cast<unsigned long long>(f.journal_reattached),
-                     static_cast<unsigned long long>(f.restore_errors), f.leaf_reason[0] ? " reason=" : "",
+                     static_cast<unsigned long long>(f.restore_errors),
+                     static_cast<unsigned long long>(f.fpu_declined),
+                     static_cast<unsigned long long>(f.fmadds_dolphin_divergent), f.leaf_reason[0] ? " reason=" : "",
                      f.leaf_reason);
         if (!s_out)
             continue;
@@ -547,7 +570,7 @@ void report_at_exit() {
                      "\"bad_cases\":%zu,\"stored\":%llu,\"not_compared\":%llu,\"leaf\":\"%s\",\"reason\":\"%s\","
                      "\"synthetic_cases\":%zu,\"synthetic_compared\":%llu,\"synthetic_mismatches\":%llu,"
                      "\"synthetic_not_compared\":%llu,\"journal_reattached\":%llu,\"restore_errors\":%llu,"
-                     "\"paths\":%zu,",
+                     "\"fpu_declined\":%llu,\"fmadds_dolphin_divergent\":%llu,\"paths\":%zu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
@@ -556,7 +579,9 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.synthetic_mismatches),
                      static_cast<unsigned long long>(f.synthetic_not_compared),
                      static_cast<unsigned long long>(f.journal_reattached),
-                     static_cast<unsigned long long>(f.restore_errors), f.paths.size());
+                     static_cast<unsigned long long>(f.restore_errors),
+                     static_cast<unsigned long long>(f.fpu_declined),
+                     static_cast<unsigned long long>(f.fmadds_dolphin_divergent), f.paths.size());
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         std::fputc(',', s_out);
@@ -626,6 +651,7 @@ void load_synthetic_file(const std::string& path) {
     unsigned number = 0;
     function_state* f = nullptr;
     synthetic_case c;
+    std::string skipped; // function of the current case when it is not registered in this build
     auto error = [&](const char* what) {
         s_synthetic_errors.push_back(path + ":" + std::to_string(number) + ": " + what);
     };
@@ -642,8 +668,11 @@ void load_synthetic_file(const std::string& path) {
             c = synthetic_case{};
             ls >> name >> c.label;
             f = find_function(name);
-            if (!f)
-                error("function not registered in this build");
+            // Not registered: skipped (its lines are still checked), counted apart; the report tool decides whether
+            // the name may be absent (a disabled row) or not.
+            skipped = f ? std::string() : name;
+            if (name.empty())
+                error("case without a function");
             if (c.label.empty())
                 error("case without a label");
         } else if (tag == "area") {
@@ -685,8 +714,17 @@ void load_synthetic_file(const std::string& path) {
                     f->synthetic.push_back(c);
                     s_synthetic_loaded++;
                 }
+            } else if (!skipped.empty()) {
+                auto it = std::find_if(s_synthetic_skipped.begin(), s_synthetic_skipped.end(),
+                                       [&](const auto& s) { return s.first == skipped; });
+                if (it == s_synthetic_skipped.end())
+                    s_synthetic_skipped.emplace_back(skipped, 1u);
+                else
+                    it->second++;
+                s_synthetic_skipped_count++;
             }
             f = nullptr;
+            skipped.clear();
         } else if (tag.size() >= 2 && (tag[0] == 'r' || tag[0] == 'f' || tag[0] == 'p')) {
             std::string eq, v;
             ls >> eq >> v;
@@ -860,11 +898,13 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     attach_journal(&observer.writes);
     s_journal_seen = &journaled;
     const u64 guest_calls_before = guest_calls;
+    const u64 divergences_before = gc::fp::detail::fmadds_dolphin_divergences;
     s_depth++;
     s_running = &f;
     invoke(registers_of(g));
     s_running = nullptr;
     s_depth--;
+    const bool fmadds_divergent = gc::fp::detail::fmadds_dolphin_divergences != divergences_before;
     s_journal_seen = nullptr;
     detach_journal();
     gc::set_memory_observer(previous);
@@ -936,6 +976,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     }
 
     // Coverage and results (compared calls only).
+    f.fmadds_dolphin_divergent += fmadds_divergent;
     for (std::size_t i = 0; i < f.call_blocks.size(); i++)
         f.block_hits[i] += f.call_blocks[i];
     for (std::size_t i = 0; i < f.call_dead.size(); i++)
@@ -1084,19 +1125,30 @@ void initialize() {
                          "{\"kind\":\"header\",\"version\":\"%s\",\"run\":\"%s\",\"functions\":%zu,\"negative\":%s,"
                          "\"sources\":\"%s\",\"dead_stack\":\"%08X\",\"synthetic_dead_stack\":\"%08X\","
                          "\"case_limit\":%llu,\"crosscheck\":%s,\"synthetic_cases\":%u,\"synthetic_content\":\"%016llX\","
-                         "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u,\"test_no_store_hook\":%u}\n",
+                         "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u,\"test_no_store_hook\":%u,"
+                         "\"synthetic_skipped\":%u,\"synthetic_skipped_functions\":{",
                          s_version, run, s_functions.size(), negative_build ? "true" : "false", s_sources_hash,
                          static_cast<unsigned>(s_dead_stack), static_cast<unsigned>(synthetic_dead_stack),
                          static_cast<unsigned long long>(s_case_limit), crosscheck_enabled ? "true" : "false",
                          s_synthetic_loaded, static_cast<unsigned long long>(s_synthetic_content),
-                         s_synthetic_errors.size(), s_test_detaching_journal, s_test_no_store_hook);
+                         s_synthetic_errors.size(), s_test_detaching_journal, s_test_no_store_hook,
+                         s_synthetic_skipped_count);
+            for (std::size_t i = 0; i < s_synthetic_skipped.size(); i++) {
+                // Identifier characters only (the name comes from a case file): anything else is written as '?'.
+                std::string name = s_synthetic_skipped[i].first;
+                for (char& ch : name)
+                    if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_'))
+                        ch = '?';
+                std::fprintf(s_out, "%s\"%s\":%u", i ? "," : "", name.c_str(), s_synthetic_skipped[i].second);
+            }
+            std::fprintf(s_out, "}}\n");
             std::fflush(s_out);
         }
     }
     std::fprintf(stderr, "gc_oracle: %zu decompiled functions compared with their recompiled originals (%s), %u "
-                         "synthetic cases%s%s\n",
-                 s_functions.size(), s_version, s_synthetic_loaded, s_out ? ", report " : "",
-                 s_out ? s_out_path.c_str() : "");
+                         "synthetic cases (%u skipped: function not built)%s%s\n",
+                 s_functions.size(), s_version, s_synthetic_loaded, s_synthetic_skipped_count,
+                 s_out ? ", report " : "", s_out ? s_out_path.c_str() : "");
     std::atexit(&report_at_exit);
 }
 
@@ -1134,6 +1186,21 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
     }
     compare_call(g, *f, invoke, signature, nullptr, s_dead_stack);
     return true; // registers and memory are the original's
+}
+
+void oracle_declined_fpu(u32 address) noexcept {
+    if (s_depth) {
+        // Reached during a comparison (in the original's nested run, or by guest code the decompiled version called):
+        // the function being compared is not a leaf, as when oracle_entry is reached (the gateway declined first).
+        if (s_running && s_running->leaf == leaf_yes) {
+            s_running->leaf = leaf_no;
+            std::snprintf(s_running->leaf_reason, sizeof(s_running->leaf_reason),
+                          "called the decompiled function at %08X", static_cast<unsigned>(address));
+        }
+        return;
+    }
+    if (function_state* f = find_function(address))
+        f->fpu_declined++;
 }
 
 } // namespace gc::abi::detail

@@ -50,7 +50,13 @@ Promotion rule (report). A row of the game's functions table is proposed `verifi
   * the oracle compared the function at least once, never saw a difference (real calls and synthetic cases), found
     it to be a leaf in every run that called it, could compare every synthetic case, and left at most
     --max-not-compared real calls uncompared (default 0: a call whose original did not return, for instance, is not
-    compared, and is not evidence);
+    compared, and is not evidence). Two kinds of calls and cases are counted apart, not as uncompared: entries the
+    gateway declined because MSR[FP] = 0 for a function whose original uses the FPU ("fpu_declined": the original
+    ran, "FPU unavailable" exception included, runtime/core/decomp/gc_abi.h registration_uses_fpu), and synthetic
+    cases of a DISABLED row the executable does not build (header synthetic_skipped_functions; skipping the cases of an
+    enabled row or of a name that is not in the table is a problem). Also reported, never part of the verdict: the
+    compared calls whose decompiled fmadds under NI = 1 Dolphin would flush to zero and DolRecomp does not
+    (gc_float.h, "fmadds_dolphin_divergent");
   * block coverage: every basic block of the original reachable from its entry (tools/decomp_functions.py
     code_blocks) ran during at least one compared call or synthetic case; a block the analysis calls unreachable must
     never run (it would prove the analysis wrong);
@@ -278,7 +284,7 @@ def new_aggregate(rec: dict) -> dict:
             "paths": set(), "synthetic_cases": 0, "synthetic_compared": 0, "synthetic_mismatches": 0,
             "synthetic_not_compared": 0, "blocks": None, "block_hits": {}, "dead_blocks": None,
             "dead_block_hits": {}, "results": set(), "results_count": 0, "path_count": 0, "synthetic_labels": set(),
-            "journal_reattached": 0, "restore_errors": 0}
+            "journal_reattached": 0, "restore_errors": 0, "fpu_declined": 0, "fmadds_dolphin_divergent": 0}
 
 
 def new_seen() -> dict[str, dict]:
@@ -291,15 +297,20 @@ def new_seen() -> dict[str, dict]:
 
 def read_results(bench: Path, game: str, labels: list[str], version: str,
                  current: dict | None = None, seen: dict | None = None,
-                 addresses: dict[str, int] | None = None) -> tuple[dict, list[str]]:
+                 addresses: dict[str, int] | None = None, kinds: dict[str, str] | None = None,
+                 skipped: dict[str, int] | None = None) -> tuple[dict, list[str]]:
     """{function: aggregate} over every oracle file of `labels` for `version`, and the problems found. A problem is
     blocking: --promote refuses, and every verdict of the version fails. `current`: {"sources": hash, "synthetic":
     hash} the results must have been produced with (None: not checked). `seen`: new_seen(), shared by the calls of one
     report (None: this call only). `addresses`: {function: address in `version`} of the table's DOL rows, which every
-    summary must carry (None: not checked)."""
+    summary must carry (None: not checked). `kinds`: {row name: kind} of the functions table (tools/decomp_functions.py:
+    done, replaced, listed): the synthetic cases an executable skipped because their function was not built
+    (header synthetic_skipped_functions) are accepted, and counted into `skipped` ({function: cases, summed over the
+    files}), only for a disabled row ("listed"); any other name is a problem (None: every skipped case is one)."""
     import hashlib
     agg: dict[str, dict] = {}
     problems: list[str] = []
+    skipped = skipped if skipped is not None else {}
     seen = seen if seen is not None else new_seen()
     for label in labels:
         folder = oracle_dir(bench, game, label, version)
@@ -382,8 +393,12 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                                         f"{expected:08X} in {version} (results of another version or table)")
                     a["runs"] += 1
                     for k in ("calls", "compared", "mismatches", "not_compared", "synthetic_compared",
-                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached"):
+                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached", "fpu_declined",
+                              "fmadds_dolphin_divergent"):
                         a[k] += int(rec.get(k, 0))
+                    if "fpu_declined" not in rec:
+                        problems.append(f"{path.name}: {name}: summary without fpu_declined (oracle executable older "
+                                        f"than the FPU decline of the gateway: rebuild and rerun)")
                     if "restore_errors" not in rec:
                         problems.append(f"{path.name}: {name}: summary without restore_errors (old oracle executable)")
                     elif int(rec["restore_errors"]):
@@ -477,6 +492,27 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                 if int(header.get("synthetic_errors", 0)):
                     problems.append(f"{path.name}: {header['synthetic_errors']} errors in the synthetic cases "
                                     f"(stderr of the run)")
+                # Synthetic cases of functions this executable does not register: accepted (and counted apart) only
+                # for a disabled row of the table, which is not built; an enabled row or an unknown name is a problem.
+                listed_skips = header.get("synthetic_skipped_functions")
+                if listed_skips is None or "synthetic_skipped" not in header:
+                    problems.append(f"{path.name}: header without synthetic_skipped (oracle executable older than the "
+                                    f"skipping of unbuilt rows: rebuild and rerun)")
+                else:
+                    if sum(int(n) for n in listed_skips.values()) != int(header["synthetic_skipped"]):
+                        problems.append(f"{path.name}: synthetic_skipped {header['synthetic_skipped']} is not the sum "
+                                        f"of synthetic_skipped_functions")
+                    for skipped_name, n in listed_skips.items():
+                        kind = (kinds or {}).get(skipped_name)
+                        if kind == "listed":
+                            skipped[skipped_name] = skipped.get(skipped_name, 0) + int(n)
+                        elif kind is None:
+                            problems.append(f"{path.name}: {n} synthetic cases of {skipped_name}, which is not a row "
+                                            f"of the functions table (misspelled name in decomp/oracle_cases?)")
+                        else:
+                            problems.append(f"{path.name}: {n} synthetic cases of {skipped_name} skipped: the row is "
+                                            f"enabled but the executable does not register it (old executable, or "
+                                            f"another table)")
                 if summaries != int(header.get("functions", -1)):
                     problems.append(f"{path.name}: {summaries} summaries for {header.get('functions')} functions")
             if not ended:
@@ -595,9 +631,12 @@ def cmd_report(args) -> int:
     results = {}
     problems: list[str] = []
     seen = new_seen()  # shared by every version: a copy into another version's folder is refused too
+    kinds = {f.name: f.kind for f in functions}
+    skipped: dict[str, dict[str, int]] = {}
     for v in versions:
         addresses = {f.name: f.addresses[v] for f in functions if f.module == "dol" and f.addresses.get(v) is not None}
-        results[v], p = read_results(bench, game, labels, v, current, seen, addresses)
+        skipped[v] = {}
+        results[v], p = read_results(bench, game, labels, v, current, seen, addresses, kinds, skipped[v])
         problems += p
     print(f"Oracle report, labels {', '.join(labels)}; thresholds: --min-cases {args.min_cases} distinct cases per "
           f"version (or fewer, saturated, after --saturation {args.saturation} comparisons), --max-not-compared "
@@ -630,6 +669,9 @@ def cmd_report(args) -> int:
                 print(f"{'':44}synthetic cases: {a['synthetic_compared']} compared of {a['synthetic_cases']} per run, "
                       f"{a['synthetic_mismatches']} with differences; runs of the original where another write "
                       f"journal detached itself (oracle journal kept): {a['journal_reattached']}")
+                print(f"{'':44}declined, FPU off (MSR[FP] = 0: the original ran, not counted as calls nor as not "
+                      f"compared): {a['fpu_declined']}; compared calls with an fmadds that Dolphin would flush "
+                      f"under NI = 1 and DolRecomp does not: {a['fmadds_dolphin_divergent']}")
                 print(f"{'':44}paths of the stored cases: {', '.join(sorted(a['paths'])) or '-'}")
                 for e in a["examples"]:
                     print(f"{'':44}e.g. {e}")
@@ -645,6 +687,10 @@ def cmd_report(args) -> int:
         ok, reasons = proposed[f.name]
         if f.kind == "listed":
             state = "row disabled: never promoted" + (" (would pass)" if ok else "")
+            ignored = {v: skipped[v][f.name] for v in versions if skipped[v].get(f.name)}
+            if ignored:
+                state += ("; synthetic cases ignored (row not built in the executable): " +
+                          ", ".join(f"{v} {n}" for v, n in ignored.items()))
         elif ok:
             state = "proposed status: verified"
         else:
