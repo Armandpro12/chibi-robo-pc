@@ -81,14 +81,18 @@ COMPONENTS = [
     ("DolRecomp (CPU runtime)", f"commit {DOLRECOMP_COMMIT[:12]} of github.com/ExpansionPak/DolRecomp: src/cpu/cpu.c, "
      "src/cpu/cpu.h and src/common/types.h, unmodified", "the game executable",
      "GNU General Public License v3.0 or later (SPDX header of src/cpu/cpu.c: GPL-3.0-or-later, "
-     "Copyright (C) 2026 ExpansionPak)", "https://github.com/ExpansionPak/DolRecomp",
+     "Copyright (C) 2026 ExpansionPak); runtime/core/decomp/gc_float.h of this project's repository adapts "
+     "floating-point helpers of src/cpu/cpu.c (force_25_bit, correct_single_fma_tie, force_single)",
+     "https://github.com/ExpansionPak/DolRecomp",
      [("dolrecomp", "LICENSE", "same:root:LICENSE")]),
     ("Dolphin (adapted code)", "commit e6f3ae17627e of github.com/dolphin-emu/dolphin", "the game executable",
      "GNU General Public License v2.0 or later, used here under the GNU GPL v3.0 (text: first entry). Copyright 2008 "
      "Dolphin Emulator Project (DSP sample accelerator, AX microcode HLE, microcode base and hashes, AX structures, "
      "and the free DSP coefficient table of Dolphin's Data/Sys/GC/dsp_coef.bin: files of runtime/core/audio/ of this "
      "project's repository); Copyright 2010 and 2017 Dolphin Emulator Project (display copy filter coefficients and "
-     "computation: runtime/core/gx/xfb_filter.cpp). Each adapted file names the Dolphin files it comes from.",
+     "computation: runtime/core/gx/xfb_filter.cpp); Copyright 2009 Dolphin Emulator Project (floating-point "
+     "rounding of the Gekko, Force25Bit, ForceSingle and NI_madd_msub of Interpreter_FPUtils.h, through DolRecomp: "
+     "runtime/core/decomp/gc_float.h). Each adapted file names the Dolphin files it comes from.",
      "https://github.com/dolphin-emu/dolphin", None),
     ("Aurora", "commit 50e5be30ec12 with the project's patches (tools/patches/aurora/ of this project's repository)",
      "the game executable", "MIT License", "https://github.com/encounter/aurora", [("aurora", "LICENSE")]),

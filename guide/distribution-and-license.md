@@ -62,13 +62,16 @@ agent before each merge, and the project owner's validation at the end of each s
 ## Credits and third-party software
 
 - [DolRecomp](https://github.com/ExpansionPak/DolRecomp) (GPL-3.0) — static recompiler from PowerPC to C. A small
-  patch is kept in `tools/patches/dolrecomp/`.
+  patch is kept in `tools/patches/dolrecomp/`. The single-precision helpers of `runtime/core/decomp/gc_float.h` are
+  adapted from its CPU runtime (`src/cpu/cpu.c`, GPL-3.0-or-later), with attribution in the file.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
   dependencies (Dawn, SDL3 and others, under their own licenses). Eleven small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`; what each one does: [technical.md](technical.md#aurora-patches).
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;
-  its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file.
+  its AX audio voice processing is ported in `runtime/core/audio/`, with attribution in each file. The floating-point
+  rounding of `runtime/core/decomp/gc_float.h` (Force25Bit, ForceSingle and NI_madd_msub of its interpreter,
+  Copyright 2009 Dolphin Emulator Project) comes to this project through DolRecomp's helpers.
 - [cbr_decomp](https://github.com/eavpsp/cbr_decomp) — function names in `games/chibi-robo/symbols/` come from its
   `decomp_dtk_main` folder (CC0 1.0). Thanks to its author for the groundwork.
 - [unplug](https://github.com/adierking/unplug) (MIT) — the stage numbers in `games/chibi-robo/game.toml`
