@@ -7,16 +7,17 @@ body:
     attributes:
       label: Which version of the game?
       options:
-        - US (GGTE01)
-        - PAL (GGTP01)
+        - US / North America (GGTE01)
+        - PAL / Europe (GGTP01)
         - Both
+        - Not sure
     validations:
       required: true
   - type: input
     id: machine
     attributes:
       label: Your PC
-      description: Windows version, graphics card, and the port version (it is in the installer's file name).
+      description: Windows version, graphics card, and the port version (it is in the installer's file name, or use the release you downloaded).
       placeholder: Windows 10, AMD RX 6600, port 0.1.1
     validations:
       required: true
@@ -39,7 +40,7 @@ body:
   - type: textarea
     id: anything-off
     attributes:
-      label: Anything off? (optional)
+      label: Anything off? (optional, say what did not work)
       description: Graphics, sound, speed, a cutscene, a crash. If it is a clear bug, a "Bug or crash" report is even better.
   - type: checkboxes
     id: no-game-files
