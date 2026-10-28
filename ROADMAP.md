@@ -192,9 +192,15 @@ once the gateway handled a call made while the unit is off; see "Follow-ups from
   every call where the order matters. Known limits: a callee that waits for another thread or an interrupt does not
   return while the oracle runs it (such functions cannot be compared yet), and the blocks that only lead to a failed
   assertion are not yet covered by synthetic cases.
+- **Game globals by version** (start of D2): decompiled code names a global by an identifier; its address in each
+  version comes from `games/chibi-robo/symbols/globals.tsv`, which the build checks in both DOLs (right section, same
+  contents where initialized, and the original code of each listed user references it at the same instruction
+  offsets) before writing the identifiers and the version's address table; a wrong PAL address refuses the PAL build.
+  First use: three HSD functions that write globals, verified by the oracle in US and PAL (3.6 to 11.4 million
+  comparisons each, no difference).
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 14 verified (0.37 %; 592 bytes, 0.03 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 17 verified (0.45 %; 636 bytes, 0.03 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
