@@ -65,7 +65,7 @@ agent before each merge, and the project owner's validation at the end of each s
   patch is kept in `tools/patches/dolrecomp/`. The single-precision helpers of `runtime/core/decomp/gc_float.h` are
   adapted from its CPU runtime (`src/cpu/cpu.c`, GPL-3.0-or-later), with attribution in the file.
 - [Aurora](https://github.com/encounter/aurora) (MIT) — GameCube/Wii compatibility layer (GX, input) and its
-  dependencies (Dawn, SDL3 and others, under their own licenses). Eleven small patches are kept in
+  dependencies (Dawn, SDL3 and others, under their own licenses). Twelve small patches are kept in
   `tools/patches/aurora/` and applied by `tools/build.py`; what each one does: [technical.md](technical.md#aurora-patches).
 - [Dear ImGui](https://github.com/ocornut/imgui) (MIT), through Aurora — the setup menu.
 - [Dolphin](https://github.com/dolphin-emu/dolphin) (GPL-2.0-or-later) — reference for the original behavior;

@@ -68,7 +68,7 @@ used.
 
 ## Aurora patches
 
-[Aurora](https://github.com/encounter/aurora) (MIT) is used with eleven small patches, kept in
+[Aurora](https://github.com/encounter/aurora) (MIT) is used with twelve small patches, kept in
 `tools/patches/aurora/` and applied by `tools/build.py`:
 
 1. `0001` lets the render target be taller than the displayed image (the console's 528-line EFB).
@@ -103,6 +103,17 @@ used.
 11. `0011` logs at debug level only, instead of as a warning, the staging buffer maps that Dawn aborts because Aurora
     is shutting down ("Buffer mapping Aborted: Buffer was destroyed before mapping was resolved", seen at the end of
     most runs); an abort while the game runs is still a warning.
+12. `0012` compiles pipelines on several threads instead of one: half the logical processors, from 1 to 8
+    (`AURORA_PIPELINE_THREADS=N` overrides it, up to 16; more than one only when `ImplicitDeviceSynchronization` is
+    enabled, see `0007`), at high scheduling priority (`AURORA_PIPELINE_THREAD_PRIORITY=low|normal|high`, through SDL). With
+    an empty pipeline cache, the game asks for 143 new pipelines just before one EFB-to-texture copy, about 37 s
+    (US) or 72 s (PAL) into a new game or a loaded game, and waits for all of them so that no draw is skipped (issue 47): on a
+    20-thread development machine that wait went from about 10 s to about 1.8 s, and with an artificial load on 16
+    of the 20 hardware threads from about 16 s to about 2 s (US and PAL, one run each). The pipelines and the frames are the same;
+    only the order in which the pipelines finish compiling changes. A player who keeps the cache (`gcrt-data`)
+    does not get this wait on later launches, with or without the patch. Whether Dawn is safe for concurrent pipeline
+    creation under `ImplicitDeviceSynchronization` has not been checked against its documentation (no crash was seen
+    in the measurement runs); machines with few cores and the Vulkan backend were not measured.
 
 `tools/build.py` finds how many of the patches a checkout already has by rebuilding each step of the series in a
 temporary Git index (with its own temporary object directory, so the Aurora repository is not written to), since a

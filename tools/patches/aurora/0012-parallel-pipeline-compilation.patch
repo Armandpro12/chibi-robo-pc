@@ -1,0 +1,139 @@
+diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
+index a06bcf5..2acc51e 100644
+--- a/lib/gfx/pipeline_cache.cpp
++++ b/lib/gfx/pipeline_cache.cpp
+@@ -21,11 +21,15 @@
+ #include <limits>
+ #include <mutex>
+ #include <optional>
++#include <cstdlib>
+ #include <ranges>
++#include <string_view>
+ #include <variant>
+ #include <thread>
++#include <vector>
+ 
+ #include <SDL3/SDL_iostream.h>
++#include <SDL3/SDL_thread.h>
+ #include <absl/container/flat_hash_map.h>
+ #include <absl/container/flat_hash_set.h>
+ #include <fmt/format.h>
+@@ -80,7 +84,13 @@ constexpr size_t BuildPipelinesPerFrame = 5;
+ #else
+ constexpr size_t BuildPipelinesPerFrame = 1;
+ #endif
+-static std::thread g_pipelineThread;
++// Pipeline compilation threads (one upstream). Default: half the logical processors, 1 to 8, at high priority;
++// AURORA_PIPELINE_THREADS=N starts N of them (more than one only when the device is assumed to serialize its API calls, see
++// start_pipeline_threads), AURORA_PIPELINE_THREAD_PRIORITY=low|normal|high sets their scheduling priority. Several
++// threads compile a burst of new pipelines in parallel (Dawn's Direct3D 12 backend with FXC: 143 pipelines in 1.7 s
++// with 8 threads instead of 10 s with one, on a 20-thread host). The high priority keeps a busy host from starving
++// them: at normal priority, with every core busy, the same burst took 28 s with one thread and more than 30 s with 8.
++static std::vector<std::thread> g_pipelineThreads;
+ static std::atomic_bool g_pipelineThreadEnd = false;
+ static std::condition_variable g_pipelineQueueCv;
+ static std::condition_variable g_pipelineReadyCv;
+@@ -969,17 +979,16 @@ static void pipeline_worker() {
+   tracy::SetThreadName("Pipeline compilation thread");
+ #endif
+ 
+-  bool hasMore = false;
+   while (g_hasPipelineThread || g_pipelinesPerFrame < BuildPipelinesPerFrame) {
+     PendingPipeline pending;
+     {
+       std::unique_lock lock{g_pipelineMutex};
+       if (g_hasPipelineThread) {
+-        if (!hasMore) {
+-          g_pipelineQueueCv.wait(lock, [] {
+-            return !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty() || g_pipelineThreadEnd;
+-          });
+-        }
++        // Always through the predicate (it returns at once when work is queued): with several compilation threads,
++        // another one may have taken the last queued pipeline since this thread finished its previous one.
++        g_pipelineQueueCv.wait(lock, [] {
++          return !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty() || g_pipelineThreadEnd;
++        });
+       } else if (g_pipelineQueue.empty() && g_backgroundPipelineQueue.empty()) {
+         return;
+       }
+@@ -996,7 +1005,6 @@ static void pipeline_worker() {
+       std::lock_guard lock{g_pipelineMutex};
+       g_pipelines.try_emplace(pending.hash, std::move(result));
+       g_pendingPipelines.erase(pending.hash);
+-      hasMore = !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty();
+     }
+     if (!g_hasPipelineThread) {
+       g_pipelinesPerFrame += std::max(1u, pipelineCount);
+@@ -1005,6 +1013,51 @@ static void pipeline_worker() {
+   }
+ }
+ 
++static SDL_ThreadPriority g_pipelineThreadPriority = SDL_THREAD_PRIORITY_NORMAL;
++
++static void pipeline_thread_main() {
++  if (g_pipelineThreadPriority != SDL_THREAD_PRIORITY_NORMAL &&
++      !SDL_SetCurrentThreadPriority(g_pipelineThreadPriority)) {
++    Log.warn("Failed to set the pipeline compilation thread priority: {}", SDL_GetError());
++  }
++  pipeline_worker();
++}
++
++static void start_pipeline_threads() {
++  // Default: half the logical processors, 1 to 8 (the game's own threads keep the other half).
++  size_t count = std::clamp<size_t>(std::thread::hardware_concurrency() / 2, 1, 8);
++  if (const char* env = std::getenv("AURORA_PIPELINE_THREADS"); env != nullptr) {
++    const long value = std::strtol(env, nullptr, 10);
++    count = value < 1 ? 1 : value > 16 ? 16 : static_cast<size_t>(value);
++  }
++#ifdef WEBGPU_DAWN
++  // Several threads call the device at the same time: assumed safe only when Dawn serializes its API calls.
++  if (count > 1 && !webgpu::g_device.HasFeature(wgpu::FeatureName::ImplicitDeviceSynchronization)) {
++    Log.warn("{} pipeline threads wanted, but ImplicitDeviceSynchronization is not enabled: using one", count);
++    count = 1;
++  }
++#else
++  count = 1;
++#endif
++  g_pipelineThreadPriority = SDL_THREAD_PRIORITY_HIGH;
++  if (const char* env = std::getenv("AURORA_PIPELINE_THREAD_PRIORITY"); env != nullptr) {
++    const std::string_view value{env};
++    if (value == "low") {
++      g_pipelineThreadPriority = SDL_THREAD_PRIORITY_LOW;
++    } else if (value == "normal") {
++      g_pipelineThreadPriority = SDL_THREAD_PRIORITY_NORMAL;
++    }
++  }
++  Log.info("Pipeline compilation: {} thread(s), priority {}", count,
++           g_pipelineThreadPriority == SDL_THREAD_PRIORITY_HIGH  ? "high"
++           : g_pipelineThreadPriority == SDL_THREAD_PRIORITY_LOW ? "low"
++                                                                 : "normal");
++  g_pipelineThreads.reserve(count);
++  for (size_t i = 0; i < count; ++i) {
++    g_pipelineThreads.emplace_back(pipeline_thread_main);
++  }
++}
++
+ template <typename PipelineConfig>
+ static size_t load_pipeline_cache_entries(ShaderType type, uint32_t configVersion) {
+   if (!prepare_pipeline_cache_db()) {
+@@ -1153,7 +1206,7 @@ void initialize_pipeline_cache() {
+     g_hasPipelineThread = false;
+   } else {
+     g_hasPipelineThread = true;
+-    g_pipelineThread = std::thread(pipeline_worker);
++    start_pipeline_threads();
+   }
+ 
+   const size_t loadedCount = load_pipeline_cache();
+@@ -1172,7 +1225,10 @@ void shutdown_pipeline_cache() {
+     g_pipelineThreadEnd = true;
+     g_pipelineQueueCv.notify_all();
+     g_pipelineReadyCv.notify_all();
+-    g_pipelineThread.join();
++    for (auto& thread : g_pipelineThreads) {
++      thread.join();
++    }
++    g_pipelineThreads.clear();
+   }
+   g_hasPipelineThread = false;
+ 
