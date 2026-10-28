@@ -1,0 +1,17 @@
+# Synthetic cases of the decompilation oracle for hsd_mobj_get_tobj (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Material at S: texture pointer at +8.
+
+case hsd_mobj_get_tobj no_material
+r3 = 0
+end
+
+case hsd_mobj_get_tobj texture
+r3 = S
+mem S+8 4 S+40
+end
+
+case hsd_mobj_get_tobj no_texture
+r3 = S
+mem S+8 4 0
+end

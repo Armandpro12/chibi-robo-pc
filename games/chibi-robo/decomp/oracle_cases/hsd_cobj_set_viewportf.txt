@@ -1,0 +1,28 @@
+# Synthetic cases of the decompilation oracle for hsd_cobj_set_viewportf (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Camera at S: viewport (4 floats) at +0xC. Source viewport at S+80 (float bits, NaN and -0 included).
+
+case hsd_cobj_set_viewportf no_camera
+r3 = 0
+r4 = S+80
+mem S+80 4 3F800000
+end
+
+case hsd_cobj_set_viewportf viewport
+r3 = S
+r4 = S+80
+mem S+C 4 1
+mem S+80 4 00000000
+mem S+84 4 44200000
+mem S+88 4 00000000
+mem S+8C 4 43F00000
+end
+
+case hsd_cobj_set_viewportf odd_bits
+r3 = S
+r4 = S+80
+mem S+80 4 7FA00001
+mem S+84 4 80000000
+mem S+88 4 00000001
+mem S+8C 4 FF800000
+end

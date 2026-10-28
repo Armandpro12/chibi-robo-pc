@@ -1,0 +1,13 @@
+# Synthetic cases of the decompilation oracle for ps_get_next_particle (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Particle at S: next at +0.
+
+case ps_get_next_particle next
+r3 = S
+mem S 4 S+40
+end
+
+case ps_get_next_particle last
+r3 = S
+mem S 4 0
+end
