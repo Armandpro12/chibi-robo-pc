@@ -398,10 +398,15 @@ bool host_pump_events() {
   return !SDL_HasEvent(SDL_EVENT_QUIT) && !SDL_HasEvent(SDL_EVENT_WINDOW_CLOSE_REQUESTED);
 }
 
-double host_wait_pipelines(double timeoutSeconds) {
+double host_wait_pipelines(double timeoutSeconds, uint32_t* queuedAtStart, uint32_t* compiled) {
   // Aurora's public statistic (include/aurora/gfx.h): pipelines waiting for compilation,
   // incremented when queued and decremented by the compilation thread (pipeline_cache.cpp).
   auto& queued = const_cast<AuroraStats*>(aurora_get_stats())->queuedPipelines;
+  auto& created = const_cast<AuroraStats*>(aurora_get_stats())->createdPipelines;
+  const uint32_t createdAtStart = std::atomic_ref<uint32_t>(created).load(std::memory_order_acquire);
+  if (queuedAtStart != nullptr) {
+    *queuedAtStart = std::atomic_ref<uint32_t>(queued).load(std::memory_order_acquire);
+  }
   const auto start = std::chrono::steady_clock::now();
   double waited = 0.0;
   while (std::atomic_ref<uint32_t>(queued).load(std::memory_order_acquire) != 0) {
@@ -412,6 +417,9 @@ double host_wait_pipelines(double timeoutSeconds) {
                         std::atomic_ref<uint32_t>(queued).load());
       break;
     }
+  }
+  if (compiled != nullptr) {
+    *compiled = std::atomic_ref<uint32_t>(created).load(std::memory_order_acquire) - createdAtStart;
   }
   return waited;
 }

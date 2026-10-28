@@ -392,7 +392,9 @@ double wait_for_pipelines(GcrtPlatform* p, bool beforeTextureCopy) {
   } else {
     p->bridge.flush();
   }
-  const double waited = gcrt::platform::host_wait_pipelines(30.0);
+  uint32_t queuedAtStart = 0;
+  uint32_t compiled = 0;
+  const double waited = gcrt::platform::host_wait_pipelines(30.0, &queuedAtStart, &compiled);
   if (waited <= 0.0) {
     return 0.0;
   }
@@ -405,8 +407,11 @@ double wait_for_pipelines(GcrtPlatform* p, bool beforeTextureCopy) {
   }
   gcrt_cpu_set_clock(p->g, p->g->clock);
   p->paceHost += std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(waited));
-  GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu%s)", waited * 1000.0,
-             static_cast<unsigned long long>(p->framesPresented + 1), beforeTextureCopy ? ", EFB -> texture copy" : "");
+  // queued: pipelines waiting when the wait began; compiled: pipeline objects created meanwhile (a configuration can
+  // need two, see Aurora's CompiledPipeline), whose ratio to the time waited is the compilation throughput.
+  GCRT_TRACE(GCRT_TRACE_PLATFORM, "pipelines: %.1f ms wait (image %llu%s; %u queued, %u compiled)", waited * 1000.0,
+             static_cast<unsigned long long>(p->framesPresented + 1), beforeTextureCopy ? ", EFB -> texture copy" : "",
+             queuedAtStart, compiled);
   return waited;
 }
 

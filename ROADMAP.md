@@ -330,6 +330,15 @@ timing of the simulated disc.
   the values are the same from one run to the next, and frames do not change at all when that stack memory is
   filled with other bytes (US: menus, loading and 3D scenes; US and PAL: backyard), so these channels are not used
   there. Left as is.
+- First-launch pause to compile graphics pipelines (issue 47): with an empty pipeline cache, about 37 s (US) or
+  72 s (PAL) into a new or loaded game, the game asks for 143 new pipelines before one EFB-to-texture copy and waits
+  for all of them, so that no draw is skipped. Aurora patch `0012` compiles them on several threads at high
+  priority: on the 20-thread development machine the wait went from about 10 s to about 1.8 s (US and PAL), and
+  under an artificial CPU load on 16 of the 20 threads from about 16 s to about 2 s (US and PAL, one run each);
+  frames, sound and saves unchanged. A kept cache (later launches) avoids the wait, as before. Not measured on a
+  machine with few cores or with the Vulkan backend. That Dawn is safe for concurrent pipeline creation under
+  `ImplicitDeviceSynchronization` is assumed, not checked against its documentation (no crash in the measurement
+  runs).
 - The comparison with Dolphin is partial: images of the key scenes and sound of the title screen, party, living room
   and backyard in both versions, with the differences listed in "Known differences with Dolphin"; only the credits
   video and the basement video are compared, and the rest of the game is not.
