@@ -3,8 +3,8 @@
 //
 // Names from doldecomp/melee's psstructs.h (names only, see the project rules): HSD_Particle, next, kind,
 // HSD_psAppSRT, appsrt, usedCount. The layout is this game's, read from its code (static asserts below, oracle):
-// `next` at 0, `kind` at 4 and the AppSRT's use count at 0x32 are where Melee has them, but the particle's `appsrt`
-// pointer is at 0x90 here (0x8C in Melee) [hypothesis on what the four extra bytes before it hold].
+// `next` at 0, `kind` at 4, the AppSRT's use count at 0x32 and the particle's `appsrt` pointer at 0x90 are what the
+// oracle checked in this game's code (the offsets are not taken from any other project).
 #ifndef CHIBI_DECOMP_SYSDOLPHIN_BASELIB_PSSTRUCTS_H
 #define CHIBI_DECOMP_SYSDOLPHIN_BASELIB_PSSTRUCTS_H
 

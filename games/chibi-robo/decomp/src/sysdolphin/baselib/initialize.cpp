@@ -13,7 +13,7 @@
 namespace hsd {
 
 // End of a rendering pass: nothing to do in this game (an empty function; two functions of the game call it, US
-// 8000DFA8 and 80193F3C).
+// 8000DFA8 and 80193F3C, from the call graph of the US symbols).
 void HSD_EndRender() {}
 
 } // namespace hsd

@@ -29,7 +29,7 @@ ptr<const be<u8>> psReadCount(ptr<const be<u8>> stream, ptr<be<u16>> count) {
     return stream;
 }
 
-// The particle after `particle` in its list (used by the interpreter when a particle ends).
+// The particle after `particle` in its list (the role is a [hypothesis]: not checked against its callers).
 ptr<HSD_Particle> psGetNextParticle(ptr<const HSD_Particle> particle) {
     return particle->next;
 }
