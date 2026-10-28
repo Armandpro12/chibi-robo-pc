@@ -1,8 +1,12 @@
 // HSD object allocator (sysdolphin): a pool of fixed-size blocks with a list of free ones.
 //
 // Original unit: sysdolphin/baselib/objalloc.c [hypothesis: the function sits next to that source-file string in both
-// versions]. Names are hypotheses (notes of the decompilation stage); the code was written from the disassembly of
-// both versions (identical in US and PAL).
+// versions]. The code was written from the disassembly of both versions (identical in US and PAL). Cross-check
+// [hypothesis on the identity]: it is, access for access, HSD_ObjFree of cbr_decomp's objalloc.c
+// (https://github.com/eavpsp/cbr_decomp, folder decomp_dtk_main/src, CC0 1.0). The name ObjAllocData and the layout
+// of its fields (free-list head at 4, used count at 8, free count at 0xC) agree with HSD_ObjAllocData of cbr_decomp's
+// objalloc.h; doldecomp/melee's sysdolphin uses the same names (names only, see the project rules). The other names
+// are this project's [hypothesis] (notes of the decompilation stage).
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
 

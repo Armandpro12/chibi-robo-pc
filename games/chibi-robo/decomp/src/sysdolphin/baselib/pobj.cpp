@@ -1,9 +1,14 @@
 // HSD polygon objects (sysdolphin): HSD_PObj and the shape blending of a shape-animated one.
 //
 // Original unit: sysdolphin/baselib/pobj.c [hypothesis: the function sits between the pobj.c and tobj.c source-file
-// strings in both versions; it is called only through a function pointer, by the animation code]. Names are
-// hypotheses (notes of the decompilation stage); the code was written from the disassembly of both versions
-// (identical in US and PAL).
+// strings in both versions; it is called only through a function pointer, by the animation code]. The code was
+// written from the disassembly of both versions (identical in US and PAL). Cross-check [hypothesis on the identity]:
+// it has the logic and the fields of PObjUpdateFunc, with ShapeSetSetAnimResult inlined, in cbr_decomp's pobj.c
+// (https://github.com/eavpsp/cbr_decomp, folder decomp_dtk_main/src, CC0 1.0). The names ShapeSet, shape_set and
+// blend, the kind mask 0x3000 and the kind 0x1000 (POBJ_SHAPEANIM), the weight-array flag 1 << 1 (SHAPESET_ADDITIVE),
+// the first weight track 2 (HSD_A_S_W0) and the layout (flags at 0xC, shape_set at 0x14, blend at 0x1C) agree with
+// cbr_decomp's pobj.h and forward.h; doldecomp/melee's sysdolphin uses the same names (names only, see the project
+// rules). The other names are this project's [hypothesis] (notes of the decompilation stage).
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
 
