@@ -97,8 +97,10 @@ dumps.**
   ([#28](https://github.com/Armandpro12/chibi-robo-pc/issues/28)).
 - Only part of the game is compared with the original; most video cutscenes are not yet
   ([#34](https://github.com/Armandpro12/chibi-robo-pc/issues/34)).
-- On a heavily loaded PC the game can freeze for many seconds around the same point while it compiles graphics
-  pipelines; seen on a test machine, not reported by players
+- On first launch, about 37 seconds (US) or 72 seconds (PAL) into a new or loaded game, the game stops for a while to
+  compile graphics pipelines: about 10 seconds on the test machine, much more on a heavily loaded PC; later
+  launches reuse the compiled pipelines. The development version compiles them on several threads, which brings
+  that stop down to about 2 seconds on the test machine
   ([#47](https://github.com/Armandpro12/chibi-robo-pc/issues/47)).
 - The installer does not accept compressed images (`.rvz`, `.ciso`, ZIP...).
 
