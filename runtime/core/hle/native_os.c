@@ -170,6 +170,9 @@ static u32 cntlzw(u32 v) {
 }
 
 bool gcrt_native_os_active(void) { return s_os.ready; }
+/* Thread switches refused because a nested call by the host was running (select_thread); read by the decompilation
+ * oracle, which runs originals in nested runs. */
+u64 gcrt_native_os_refused_nested(void) { return s_os.refused_nested; }
 
 u32 gcrt_native_os_sda(void) { return s_os.sda; }
 

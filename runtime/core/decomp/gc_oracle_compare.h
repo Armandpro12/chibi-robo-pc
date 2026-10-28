@@ -7,8 +7,8 @@
 //     (ps0 and ps1 for f32, ps0 for f64);
 //   * registers the PowerPC EABI preserves: r1, r2, r13, r14..r31, f14..f31 (ps0 and ps1 bits), cr2..cr4;
 //   * bytes written to guest memory, address and final value, except the dead stack under the entry r1
-//     ([r1 - dead stack, r1), default_dead_stack bytes unless the caller gives another size): a byte written by only
-//     one side is a difference even if its value did not change;
+//     ([r1 - dead stack, r1), default_dead_stack bytes unless the caller gives another size) and the LR save word
+//     [r1 + 4, r1 + 8): a byte written by only one side is a difference even if its value did not change;
 //   * FPSCR is not compared. This is only sound for a game whose own code never reads FPSCR (no mffs, mtfsf, mtfsb,
 //     mcrfs): a sticky exception bit or a rounding mode left by one side would then never change a result. Each game
 //     states why that holds for it next to its functions table (games/<game>/decomp/); a game that reads FPSCR needs
@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace gc::oracle {
@@ -104,9 +105,13 @@ inline void push(std::vector<difference>& out, const char* what, u32 address, u6
     d.decompiled = decompiled;
     out.push_back(d);
 }
+// Not compared: the dead stack under the entry r1, and the LR save word of the caller's frame, 4(r1) at entry (the
+// PowerPC EABI has a function that calls others save its return address there: the decompiled C++ keeps it on the host
+// instead, and the value is dead once the function returned; seen on every compared call of a non-leaf original,
+// D2-1).
 inline bool in_dead_stack(u32 address, u32 entry_r1, u32 dead_stack) noexcept {
     const u32 r1 = canonical_address(entry_r1);
-    return address < r1 && r1 - address <= dead_stack;
+    return (address < r1 && r1 - address <= dead_stack) || address - (r1 + 4u) < 4u;
 }
 } // namespace detail
 
@@ -183,6 +188,34 @@ inline void compare(const reg_state& original, const reg_state& decompiled, u8 k
 
 // Readable form of one difference ("r3: original 00000001, decompiled 00000000").
 inline void describe(const difference& d, char* text, std::size_t size) {
+    // Calls of a non-leaf function (gc_oracle.cpp replay_call): "callN" (target), "callN.rM" / "callN.fM"
+    // (argument), "callN+" (a call the original did not make), "callmemN" (a byte written before call N),
+    // "calls-missing" (calls the decompiled version did not make: original = count, decompiled = calls made).
+    if (d.what[0] == 'c' && d.what[1] == 'a') {
+        if (d.what[4] == 'm') {
+            char o[8], c[8];
+            std::snprintf(o, sizeof(o), d.original == not_written ? "--" : "%02X", static_cast<unsigned>(d.original));
+            std::snprintf(c, sizeof(c), d.decompiled == not_written ? "--" : "%02X",
+                          static_cast<unsigned>(d.decompiled));
+            std::snprintf(text, size, "%s: byte %08X before the call: original %s, decompiled %s (-- = not written)",
+                          d.what, static_cast<unsigned>(d.address), o, c);
+        } else if (d.what[4] == 's') {
+            std::snprintf(text, size, "calls: the original made %llu, the decompiled version %llu (next target %08X)",
+                          static_cast<unsigned long long>(d.original), static_cast<unsigned long long>(d.decompiled),
+                          static_cast<unsigned>(d.address));
+        } else if (std::strchr(d.what, '+')) {
+            std::snprintf(text, size, "%s: call to %08X the original did not make", d.what,
+                          static_cast<unsigned>(d.address));
+        } else if (std::strchr(d.what, '.')) {
+            std::snprintf(text, size, "%s (call to %08X) argument: original %08llX, decompiled %08llX", d.what,
+                          static_cast<unsigned>(d.address), static_cast<unsigned long long>(d.original),
+                          static_cast<unsigned long long>(d.decompiled));
+        } else {
+            std::snprintf(text, size, "%s target: original %08llX, decompiled %08llX", d.what,
+                          static_cast<unsigned long long>(d.original), static_cast<unsigned long long>(d.decompiled));
+        }
+        return;
+    }
     if (d.what[0] == 'm') {
         char o[8], c[8];
         std::snprintf(o, sizeof(o), d.original == not_written ? "--" : "%02X", static_cast<unsigned>(d.original));

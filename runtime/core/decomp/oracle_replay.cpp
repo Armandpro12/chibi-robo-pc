@@ -65,6 +65,17 @@ bool run_guest(GcrtCpu*, u32 address) noexcept {
 GcrtCpu* current_cpu() noexcept {
     return s_cpu;
 }
+// Calls of a non-leaf function: not replayed offline yet (a case that holds calls is skipped by tools/decomp_oracle.py
+// replay); reaching one here is reported like any guest call.
+bool oracle_replaying() noexcept {
+    return false;
+}
+bool call_function(GcrtCpu* g, u32 address, u32, u32) noexcept {
+    return run_guest(g, address);
+}
+u32 address_of_function(void (*)()) noexcept {
+    return 0;
+}
 } // namespace detail
 #if defined(GC_DECOMP_ORACLE_NEGATIVE)
 // Wrong variants of the oracle's negative test (tools/decomp_oracle.py replay --negative). The replay compares only

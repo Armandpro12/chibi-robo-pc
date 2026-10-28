@@ -313,7 +313,8 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         import decomp_functions  # noqa: E402
         clash = []
         blocks: dict[int, tuple[list[int], list[int]]] = {}
-        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout, blocks):
+        calls: dict[int, list[int]] = {}
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout, blocks, calls=calls):
             if a in hooks:
                 clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
@@ -329,6 +330,15 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
                     if b in hooks:
                         clash.append(f"block {b:08X} of the function at {entry:08X}: already hooked as {hooks[b]}")
                     hooks[b] = "oracle-block"
+            # And a hook at every instruction that calls another function or leaves for one (call_sites): the oracle
+            # records the call, runs the callee once and replays it to the decompiled version (non-leaf functions).
+            # A call instruction may also start a block: one hook serves both.
+            for entry, sites in calls.items():
+                for c in sites:
+                    if hooks.get(c, "oracle-block") not in ("oracle-block", "oracle-call"):
+                        clash.append(f"call at {c:08X} of the function at {entry:08X}: already hooked as {hooks[c]}")
+                    elif c not in hooks:
+                        hooks[c] = "oracle-call"
         if clash:
             raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
                              f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
@@ -506,8 +516,11 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     # Floating-point instructions of each original (scan of its code): flag of the registration, the gateway declines
     # while MSR[FP] = 0 so that the original takes the "FPU unavailable" exception itself (gc_abi.h).
     fpu: dict[int, list[int]] = {}
+    # Oracle builds: call instructions and assertion blocks of each function (the oracle's non-leaf comparison).
+    calls: dict[int, list[int]] = {}
+    asserts: dict[int, list[int]] = {}
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
-                                       blocks, fpu)
+                                       blocks, fpu, calls if oracle else None, asserts if oracle else None)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):
@@ -518,7 +531,8 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
-                                                                             sources_hash=sources_hash, fpu=fpu))
+                                                                             sources_hash=sources_hash, fpu=fpu,
+                                                                             calls=calls, asserts=asserts))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     return path.as_posix()
@@ -596,6 +610,10 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
     # Decompilation oracle (--oracle): always set, so that a build folder goes back to a normal build without it.
     defs["GCRT_DECOMP_ORACLE"] = "ON" if oracle else "OFF"
     defs["GCRT_DECOMP_NEGATIVE_DIR"] = oracle["negative"].as_posix() if oracle and oracle.get("negative") else ""
+    # Oracle test functions (games/<game>/decomp/oracle_tests: rows of the table left disabled, enabled by
+    # --decomp-enable): compiled into oracle builds only, never into a production build.
+    tests = tc.load_game(game)["_dir"] / "decomp" / "oracle_tests"
+    defs["GCRT_DECOMP_TEST_DIR"] = tests.as_posix() if oracle and tests.is_dir() else ""
     # Always set (empty list included): sources of rows not enabled in this build are not compiled.
     excluded = decomp_excluded_sources(game, oracle)
     defs["GCRT_DECOMP_EXCLUDE"] = ";".join(x.as_posix() for x in excluded)

@@ -57,3 +57,5 @@ hsd_mtx_get_translation	dol	801CF700	801D1FFC	0x1C	verified	yes
 hsd_pobj_set_shape_blend	dol	801AE9AC	801B12A8	0x4C	verified	yes
 xaction_reset	dol	800BB708	800BDC9C	0x18	verified	yes
 flag_set_clear	dol	800B2518	800B4A74	0x24	verified	yes
+oracle_test_clear_record	dol	801A4318	801A6B90	0x9C	disabled	-
+oracle_test_clear_record_and_tail	dol	8008A4FC	8008C498	0x34	disabled	-

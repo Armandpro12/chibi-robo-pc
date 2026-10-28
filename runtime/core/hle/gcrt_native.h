@@ -115,6 +115,8 @@ bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function);
 /* Depth of the nested calls in progress (0: normal execution of the game). No thread switch is allowed during a
  * nested call. */
 int gcrt_guest_call_depth(void);
+/* Thread switches the native OS refused because a nested call was running (diagnostic, decompilation oracle). */
+u64 gcrt_native_os_refused_nested(void);
 /* Calls a callback "in exception context", as the SDK interrupt handlers do (e.g. __DVDInterruptHandler):
  * OSClearContext(&tmp); OSSetCurrentContext(&tmp); function(args); OSClearContext(&tmp);
  * OSSetCurrentContext(`context`). `tmp` is an OSContext taken on the guest stack. If
