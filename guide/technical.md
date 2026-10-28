@@ -131,6 +131,51 @@ this off, for diagnosis; the trace's `exit:` lines give the times of the end in 
 Code comments sometimes refer to the project's private working notes (`notes/…`, `docs/…`); these are not
 published.
 
+## Optional: class and exception-table scanners
+
+Two read-only scanners help the symbol maps, the Ghidra/REA analysis and the decompilation. They read the extracted
+DOL and REL files (pure Python, no Ghidra, about a second per version) and write their reports under
+`build/rtti/<ID>/` and `build/extab/<ID>/` (derived from your copy of the game: never committed). Both run on every
+version of `game.toml` by default; `--help` gives every option.
+
+```
+py -3 tools/rtti_scan.py chibi-robo            # classes, inheritance, vtables, virtual functions
+py -3 tools/extab_scan.py chibi-robo           # exception tables, function bounds, cleanup actions
+```
+
+- `tools/rtti_scan.py` walks the CodeWarrior RTTI objects (class name and base list) and the vtables that point to
+  them, in the DOL and in the relocated REL modules (`tools/gcimage.py` applies the modules' relocations). It gives
+  the class hierarchy, every vtable with its slots, and for each virtual function the class that defines it (the
+  topmost class with the same function in the same slot). Names it proposes (`__vt__<n><Class>`,
+  `__dt__<n><Class>Fv` for a slot-0 function that stores its own vtable, `<Class>::vfunc_<slot>` otherwise) are
+  hypotheses: they are never written into the symbol maps. It cross-checks existing names (symbol map, dtk symbols of
+  the reference version) against the class of their mangled name, and checks that every slot is a function start.
+- `tools/extab_scan.py` reads `_eti_init_info`, `extabindex` and `extab`: the exact bounds of every function that has
+  an entry, its saved registers (checked against its prologue) and its cleanup actions (with the destructors they
+  call). It compares those bounds with the symbol map, the dtk symbols (reference version), the transposed and
+  gap-filled functions (other versions) and Ghidra's function list, and lists the functions of the covered range that
+  have no entry. Read an agreement as a check of the reading of the index, not as an independent proof of the bounds:
+  the symbol map covers only a few entries, the dtk symbols name every entry (so they probably come from the same
+  index), and the gap filler of the transposition is itself fed with the exception index; only Ghidra's list is
+  potentially independent.
+
+Formats: the extab entry layout, the action names, their numbering and their sizes follow the decoder of
+[cwextab](https://github.com/CelestialAmber/cwextab) (MIT OR Apache-2.0; no code copied); the RTTI and vtable layout
+was measured on this game's two versions (the header of `tools/rtti_scan.py` says which parts are hypotheses). Known
+limits:
+
+- Virtual inheritance, templates and secondary vtables do not occur in this game, so their decoding is untested.
+- A vtable's last zero words cannot be told apart from padding, so they are reported separately.
+- Only 7 of the 17 action types of the exception tables occur in this game's tables (`destroy-local`,
+  `destroy-local-cond`, `branch`, `specification`, `active-catch-block`, `terminate`, `catch-block-32`). The sizes and
+  offsets of the other 10 come from cwextab and are not tested on the game's data. Of the flags, only bits 6-15 (the
+  saved register counts) are cross-checked, against the function prologues.
+- The REL modules of this game have no exception tables.
+
+Exit codes: 0 when every version was scanned, 2 for an unknown game or version, 1 when an input is missing or is not a
+DOL. Local tests: synthetic DOL and REL files built by the test (no game data) plus checks on both versions, among
+them that every relocated call of the REL modules reaches a function start.
+
 ## Optional: reverse engineering with REA
 
 [REA](https://github.com/morluto/rea) (Reverse Engineer Anything, MIT) answers questions about a binary through

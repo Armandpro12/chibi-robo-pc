@@ -2,7 +2,7 @@
 
 Where the project stands, what has been done and what remains. Updated at every milestone.
 
-**Last update: 2026-10-27.**
+**Last update: 2026-10-28.**
 
 Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
@@ -186,6 +186,17 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   whose address and size are not established that way in each version.
 - A function counts as decompiled only once it is `verified`; one that already replaces its recompiled version but is
   not verified yet (`unverified`) is shown in a separate column.
+- **Class and exception-table scanners** (`tools/rtti_scan.py`, `tools/extab_scan.py`,
+  [#42](https://github.com/Armandpro12/chibi-robo-pc/issues/42) points 3 and 4; see [Technical
+  notes](guide/technical.md#optional-class-and-exception-table-scanners)): in both US and PAL, 241 vtables (203 in the
+  DOL, 38 in 11 of the 16 REL modules), 227 classes with their inheritance, and about 1,040 virtual functions, each
+  attached to the class that defines it (proposed names stay hypotheses, outside the symbol maps); 187 of the DOL's
+  virtual functions per version are missing from Ghidra's function list. The exception tables give the exact bounds of
+  380 (US) and 382 (PAL) functions, and none disagrees with the dtk symbols (US), the transposition (PAL) or Ghidra's
+  function list. That confirms the reading of the index, not the bounds themselves: the checks are only partly
+  independent (the symbol maps cover 3 entries; dtk names all the entries, which suggests it reads the same index;
+  the PAL gap filler is fed with the index; only Ghidra's list is potentially independent, and whether its analysis
+  uses the tables is not shown). 14 functions have cleanup actions. The REL modules have no exception tables.
 
 ### Remaining work in D1
 

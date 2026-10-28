@@ -4,7 +4,7 @@ Verified facts about the PAL and US executables of *Chibi-Robo!*, for anyone who
 
 This document is dedicated to the public domain under CC0 1.0 (see `/LICENSES/CC0-1.0.txt`); it contains no game code or data.
 
-Date: 2026-10-13.
+Date: 2026-10-28.
 
 ## Contents
 
@@ -47,6 +47,7 @@ Date: 2026-10-13.
 | `[verified: Dolphin]` | observed in the Dolphin emulator, or read in its source |
 | `[verified: signatures]` | masked-code signatures (section 7) compared between the US and PAL DOLs |
 | `[verified: REL relocations]` | read from the relocation tables of the 16 REL files |
+| `[verified: scan]` | read from the DOL and REL files by `tools/rtti_scan.py` or `tools/extab_scan.py`, with the cross-check stated in the entry, on US and PAL unless the entry says that a check was made on one version only |
 
 **Provenance**:
 - Names from `cbr_decomp/decomp_dtk_main/config/GGTE01/symbols.txt` (CC0) are cited as such. The appendices list only functions that this file leaves as `fn_XXXXXXXX`.
@@ -113,6 +114,30 @@ All `[verified: file]`.
 
 **Global game object** `[verified: Ghidra]`: `CGame` (constructor `__ct__5CGameFv`, named in `cbr_decomp`) is at US `0x8025C400` / PAL `0x80263000` (start of BSS + `0x200`). Its vtable pointer is at +`0x3334` (US) / +`0x333C` (PAL) and points to US `0x8020FC80` / PAL `0x8021638C`.
 
+
+**Exception tables** `[verified: scan]` (`tools/extab_scan.py`; extab layout as decoded by cwextab, MIT OR Apache-2.0):
+
+| | US | PAL |
+|---|---|---|
+| `extab` | `0x80005600`-`0x80006680` | `0x80005600`-`0x80006680` |
+| `extabindex` (12-byte entries) | `0x80006680`-`0x80007850`, 380 entries | `0x80006680`-`0x80007868`, 382 entries |
+| `_eti_init_info` (one record, then 0) | `0x80007850` | `0x80007868` |
+| code range of the record | `0x80150E78` + `0x66B10` | `0x80153728` + `0x66B5C` |
+
+- The bounds (start and size) of every indexed function are identical to Ghidra's function list (both versions), to the `cbr_decomp` symbols (US) and, in PAL, to the US functions transposed to PAL (380 of the 382 entries; the other two are not placed by the transposition). The symbol maps (`games/chibi-robo/symbols/<ID>.map`, named functions only) cover 3 of the 380 / 382 entries and agree on those 3; the other entries are absent from them. Zero disagreement.
+- How independent these checks are: the agreement with `cbr_decomp` and with the transposition confirms that the index is read correctly, not that the bounds are right in some absolute sense. `cbr_decomp` names all 380 US entries (`@etb_` and `@eti_` symbols), which suggests that it takes its bounds from the same index (not verified: the source of decomp-toolkit was not available). In PAL, 349 of the 382 entries are placed by the transposition proper and 31 by gap rows, whose gap filler is given the exception index of both DOLs (`tools/symbols.py`): for those 31 the agreement is partly circular. Ghidra's function list is the only potentially independent source: the Ghidra project was imported with an earlier symbol map of 398 (US) / 397 (PAL) functions, of which only 3 have an entry, and our import scripts do not read the exception tables; whether Ghidra's own analysis uses them is not shown.
+- The saved-register counts of each entry's flags (bits 11-15: GPRs, bits 6-10: FPRs) equal what the function's prologue stores, for every entry (`stmw`, `stw` or `stfd` relative to r1, or a call to a `_savefpr_N` / `_savegpr_N` ladder through r11). Every indexed function opens a stack frame.
+- 14 functions have cleanup actions (US `0x80150E78`, `0x80150EEC` (`__dl__FPv`), `0x80150FBC` (`__construct_array`), `0x80151EAC`, `0x801522BC`, `0x801524CC`, `0x8018D43C` (53 PC ranges), `0x801950C8`, `0x801968BC`, `0x801A0304`, `0x801A211C`, `0x801A4428`, `0x801A50B8`, `0x801A57C0`; PAL `0x80153728`, `0x8015379C`, `0x8015386C`, `0x8015475C`, `0x80154B6C`, `0x80154D7C`, `0x8018FCA4`, `0x80197930`, `0x80199124`, `0x801A2B7C`, `0x801A4994`, `0x801A6CA0`, `0x801A7930`, `0x801A8038`). Every destructor their actions name is a function start.
+- The two PAL-only entries, `0x801AA6D4` and `0x801AB0EC`, are functions that the US-to-PAL transposition does not place.
+- Inside the code range, 601 (US) / 598 (PAL) functions with a stack frame have no entry: tables exist for only part of the functions of that range; why was not established.
+- No REL module has an exception table: no `_eti_init_info` record and no index-shaped data in any module after relocation.
+
+**C++ classes (RTTI) and vtables** `[verified: scan]` (`tools/rtti_scan.py`):
+- Layout, as measured. A vtable is a word holding the address of an RTTI object, a word that is 0 in all 241 vtables, then one word per slot: a code address, or 0 (6 slots; further zero words at the end of 10 vtables in US / 26 in PAL, 83 / 102 words, cannot be told apart from padding and are left out of the 4,033 slots). An RTTI object is 8 bytes: the address of the class name (a plain C string) and 0 or the address of a list of pairs of words ended by a 0 word. The first word of a pair is the address of another RTTI object; the second word is 0 in all 500 pairs of the 258 lists (none is non-zero). Every list contains the list of each of its entries (282 / 282 links in the DOL, 286 / 286 with the RELs, both versions): the lists hold every ancestor, not only the direct parent. What these words mean (a `this` adjustment, a pure virtual function, the offset of a base) is not established; the tool documentation states those readings as hypotheses.
+- DOL: 203 vtables (US `0x8020FC80`-`0x80258A3C`, PAL `0x8021638C`-`0x8025F55C`), all referenced by code; 353 RTTI objects reached from them, 220 class names (19 names have more than one RTTI object; 17 classes have no vtable of their own), inheritance depth up to 5, no template names. The REL modules add 38 vtables (11 modules) and 7 class names. Same classes and same vtable lengths in both versions (4,033 slots, trailing zero words left out).
+- Every function in a vtable slot is a function start of the `cbr_decomp` symbols (US: 1,038 / 1,038). 187 of them (in the DOL, each version) are absent from Ghidra's function list: functions reached only through a vtable, which Ghidra's analysis does not create (e.g. US `0x8000A4B8`, a `blr`-ended leaf in `CGame`'s vtable).
+- Slot 0: in 202 (US) / 209 (PAL) of the 241 vtables, the slot-0 function is the only one of the vtable's slot functions whose code forms the address of its own vtable (39 vtables in US / 29 in PAL have no such function; 3 in PAL have slot 0 and one other). That is what a destructor does (it stores the vtable pointer into the object), but it is confirmed as a destructor only for `__dt__5CGameFv` (US `0x80007880` / PAL `0x800078A0`), which stores `CGame`'s vtable (US `0x8020FC80` / PAL `0x8021638C`) into the object `[verified: Ghidra]` (disassembly), and for the functions that already have a destructor name in our symbol maps (4 in US, 3 in PAL), all of which are in slot 0. For the other vtables, that slot 0 is a destructor is not established.
+- One PAL difference: `XObjSpider` has its own function in slot 30 of its vtable; in US it inherits `XObj`'s.
 ---
 
 ## 4. REL modules
