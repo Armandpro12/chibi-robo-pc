@@ -1,16 +1,24 @@
-# Global data used by the first decompiled functions (D1), US and PAL addresses.
-# Written by hand by the reverse agent (mission D1 no. 6, 2026-10-27); checked in both DOLs.
-# Format (TSV): name  GGTE01_address  GGTP01_address  size  type  used_by_GGTE01  status  evidence
-# name: CodeWarrior-style symbol when the object is a C++ runtime object (__vt__ = virtual table, __RTTI__ = type
-#   descriptor), otherwise a descriptive placeholder (f32_const_<function> = float constant in .sdata2 read by that
-#   function; the real name is unknown).
-# status "verified": same role read in both DOLs (disassembly of the user in each version) and same contents
-#   (constants: same 32-bit word; tables: every function pointer maps through the transposition).
-# This file only contains names, addresses, sizes and types, no game data (no value is copied here).
+# Game globals read or written by decompiled code, US and PAL addresses ([decomp] globals of game.toml). Read and
+# checked in both DOLs by tools/decomp_globals.py, run by tools/build.py, which writes the identifier header
+# (decomp_globals.h, enum class global_id) and the address array of the version being built; decompiled code names a
+# global by its identifier (gc::global<T, global_id::...>, runtime/core/decomp/gc_mem.h), never by its address.
+# Format (TSV, columns by name; full description and checks in the header of tools/decomp_globals.py):
+#   id  name  us_addr  pal_addr  size  section  kind  used_by  status  evidence
+# id: C++ identifier, or "-" for a row only documented and checked (a constant is written as a literal in the code).
+# name: CodeWarrior-style symbol for a C++ runtime object (__vt__ = virtual table, __RTTI__ = type descriptor),
+#   otherwise descriptive (f32_const_<function> = float constant in .sdata2 read by that function).
+# kind: data, const, vtable, callback. used_by: functions of decomp/functions.tsv, or GGTE01 addresses of functions
+#   known to the symbol sources. status: verified (role cross-checked in both versions) or hypothesis (name or role).
+# First rows: reverse agent (mission D1 no. 6, 2026-10-27); format of mission D2-2 (2026-10-29).
+# This file only contains names, addresses and sizes, no game data (no value is copied here).
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
-__vt__4CVec	80210314	80216A20	C	vtable {type descriptor, 0, destructor}	800A2C48,800A2E2C	verified	lis/addi in both constructors; slot 2 = US 80008DC8 -> PAL 80008DE8 (transposition)
-__RTTI__4CVec	80659FA0	80660E24	8	type descriptor {name, bases}	(vtable slot 0)	verified	vtable slot 0 in both; name pointer leads to the class name CVec in both
-f32_const_8010706C	8065E120	80665230	4	f32	8010706C	verified	lfs r2-0x5C20 (US) / r2-0x59B0 (PAL); same word in both
-f32_const_8003D7DC	8065C480	80663320	4	f32	8003D7DC	verified	lfs r2-0x78C0 in both; same word in both
-f32_const_800B3018_a	8065D3C4	806644F8	4	f32	800B3018	verified	lfs f2 r2-0x697C (US) / r2-0x66E8 (PAL); same word in both
-f32_const_800B3018_b	8065D35C	8066448C	4	f32	800B3018	verified	lfs f0 r2-0x69E4 (US) / r2-0x6754 (PAL); same word in both
+id	name	us_addr	pal_addr	size	section	kind	used_by	status	evidence
+cvec_vtable	__vt__4CVec	80210314	80216A20	C	.data	vtable	800A2C48,800A2E2C	verified	{type descriptor, 0, destructor}; lis/addi in both constructors; slot 2 = US 80008DC8 -> PAL 80008DE8 (transposition)
+cvec_type_descriptor	__RTTI__4CVec	80659FA0	80660E24	8	.sdata	data	-	verified	{name, bases}; vtable slot 0 in both; name pointer leads to the class name CVec in both
+-	f32_const_8010706C	8065E120	80665230	4	.sdata2	const	8010706C	verified	lfs r2-0x5C20 (US) / r2-0x59B0 (PAL); same word in both
+-	f32_const_8003D7DC	8065C480	80663320	4	.sdata2	const	8003D7DC	verified	lfs r2-0x78C0 in both; same word in both
+-	f32_const_800B3018_a	8065D3C4	806644F8	4	.sdata2	const	800B3018	verified	lfs f2 r2-0x697C (US) / r2-0x66E8 (PAL); same word in both
+-	f32_const_800B3018_b	8065D35C	8066448C	4	.sdata2	const	800B3018	verified	lfs f0 r2-0x69E4 (US) / r2-0x6754 (PAL); same word in both
+hsd_pobj_mtx_mark	mtx_mark (pobj.c)	8064A4F0	80651370	10	.bss	data	hsd_pobj_clear_mtx_mark	hypothesis	two {object, mark} pairs (name and layout from cbr_decomp pobj.c, CC0): lis 0x8065 then stwu -0x5B10 (US) / +0x1370 (PAL), then stw +4, +8, +0xC
+hsd_state_current_tev	current_tev (tev.c)	8065B990	80662830	4	.sbss	data	hsd_state_init_tev,801B8754	hypothesis	number of TEV stages assigned so far (name from cbr_decomp tev.c, CC0): cleared by HSD_StateInitTev, li r0,0 then stw r13-0x6530 (US) / r13-0x6510 (PAL); read by HSD_StateGetNumTevStages (US 801B8754 / PAL 801BB050), lwz at the same displacements
+hsd_mobj_current	current_mobj (mobj.c)	8065B99C	8066283C	4	.sbss	data	hsd_mobj_set_current	hypothesis	current material object (name from cbr_decomp mobj.c, CC0): stw r13-0x6524 (US) / r13-0x6504 (PAL)

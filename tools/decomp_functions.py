@@ -607,12 +607,14 @@ def fpu_instructions(ranges: list[tuple[int, bytes]], address: int, size: int) -
 
 # Files outside the decompiled sources that decide what an oracle run measures, relative to the repository root
 # (folders: every file below them): the basic-block analysis and the table checks (this file, decomp_common.py, the
+# globals table checks and generation decomp_globals.py, the
 # code reader symbols.py), the generation of the block hooks and of the registration table (build.py), the
 # DolRecomp patch that compiles those hooks, the chassis that runs the original (runtime/core/cpu), the native OS
 # whose idle detection detaches a write journal during the original (runtime/core/hle/native_os.c), and the CMake
 # files that compile the oracle in (runtime/core/cmake/GcrtDecomp.cmake, the root CMakeLists.txt). The DolRecomp
 # checkout itself (commit and local changes, toolchain.git_head) is hashed too: it generates the code of the original.
-ORACLE_HASHED_TOOLS = ["tools/decomp_functions.py", "tools/decomp_common.py", "tools/symbols.py", "tools/build.py",
+ORACLE_HASHED_TOOLS = ["tools/decomp_functions.py", "tools/decomp_common.py", "tools/decomp_globals.py",
+                       "tools/symbols.py", "tools/build.py",
                        "tools/patches/dolrecomp", "runtime/core/cpu", "runtime/core/hle/native_os.c",
                        "runtime/core/cmake/GcrtDecomp.cmake", "CMakeLists.txt"]
 
@@ -654,8 +656,9 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     """SHA-1 of what an oracle verdict is about: the decompiled sources (games/<game>/decomp/src, every file), the
     oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, the tools and runtime
     files that decide the block analysis, the block hooks and how the original runs (ORACLE_HASHED_TOOLS), the state
-    of the DolRecomp checkout (dolrecomp_state), and the name, module, addresses and size of every row of the
-    functions table (not its status columns, which the promotion writes).
+    of the DolRecomp checkout (dolrecomp_state), the globals table ([decomp] globals, tools/decomp_globals.py),
+    and the name, module, addresses and size of every row of the functions table (not its status columns, which the
+    promotion writes).
     Line ends are normalized (a checkout with CRLF gives the same hash). tools/build.py --oracle compiles it into the
     oracle executable (header of its jsonl files); tools/decomp_oracle.py report --promote refuses results whose hash
     is not the current one."""
@@ -668,6 +671,11 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     # Functions that never return ([decomp.no_return]): they decide the assertion blocks of the report.
     for name, per_version in sorted((game_cfg.get("decomp", {}).get("no_return") or {}).items()):
         h.update(f"no_return {name} {sorted((per_version or {}).items())}\n".encode())
+    # The globals table (tools/decomp_globals.py): the addresses the decompiled code reads and writes.
+    import decomp_globals  # noqa: E402
+    gpath = decomp_globals.table_path(game_cfg)
+    if gpath is not None and gpath.exists():
+        h.update(b"globals\0" + gpath.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     _, columns = config(game_cfg)
     for f in read_table(game_cfg):
         h.update("\t".join([f.name, f.module, *(f"{f.addresses.get(v) or 0:08X}" for v in sorted(columns)),
@@ -727,7 +735,7 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                     records: dict[str, str] | None = None,
                     blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "",
                     fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
-                    asserts: dict[int, list[int]] | None = None) -> str:
+                    asserts: dict[int, list[int]] | None = None, globals: list[str] | None = None) -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
     (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
     code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
@@ -735,7 +743,9 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     test of the oracle: name -> record name). `fpu`: fpu_instructions() of each function (resolve); a function whose
     original holds a floating-point instruction is registered with gc::abi::registration_uses_fpu, so that the gateway
     lets the original run when MSR[FP] = 0 (runtime/core/decomp/gc_abi.h). Without `fpu`, every function is flagged
-    (the safe side: declining only lets the original run)."""
+    (the safe side: declining only lets the original run). `globals`: lines of tools/decomp_globals.py table_source
+    (the address array of the game globals in `version`, k_globals / k_global_count), installed by
+    gc::set_global_table before the functions; None: no globals table."""
     records = records or {}
     blocks = blocks or {}
     # Oracle builds: call_sites() (the oracle records the calls made at these instructions) and assertion_blocks()
@@ -744,7 +754,10 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     asserts = asserts or {}
     lines = [f"// Registration table of the decompiled functions for {version}: generated by tools/decomp_functions.py",
              "// (tools/build.py) from the game's functions table. Build folder only, never in Git.",
-             '#include "decomp/gc_abi.h"', '#include "decomp/gc_abi_c.h"', ""]
+             '#include "decomp/gc_abi.h"', '#include "decomp/gc_abi_c.h"']
+    if globals is not None:
+        lines += ['#include "decomp/gc_mem.h"', "", "#include <cstddef>", "#include <cstdint>"]
+    lines.append("")
     for _, f in entries:
         lines.append(f"extern const ::gc::abi::export_record gc_decomp_export_{records.get(f.name, f.name)};")
     if oracle:
@@ -753,6 +766,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                       "const unsigned* block_first, const unsigned* blocks, const unsigned* call_first, const unsigned* calls, "
                       "const char* sources_hash);"]
     lines += ["", "namespace {"]
+    if globals is not None:
+        lines += globals
     if entries:
         lines.append("const ::gc::abi::registration k_table[] = {")
         for a, f in entries:
@@ -792,6 +807,9 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
         lines += ["const ::gc::abi::registration* const k_table = nullptr;", "constexpr unsigned k_count = 0;"]
     lines += ["} // namespace", "",
               'extern "C" void gcrt_decomp_install_generated(struct GcrtCpu* g) {']
+    if globals is not None:
+        # Before the functions: a decompiled function may run as soon as its hook is installed.
+        lines.append("    ::gc::set_global_table(k_globals, k_global_count);")
     if oracle and entries:
         lines.append(f'    gcrt_decomp_oracle_configure(g, "{version}", k_addresses, k_sizes, k_names, k_count, '
                      f'k_block_first, k_blocks, k_call_first, k_calls, "{sources_hash}");')
