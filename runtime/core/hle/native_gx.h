@@ -109,9 +109,20 @@ static inline float u2f(u32 v) {
     return f;
 }
 
-/* Single-precision floating-point arithmetic of the recompiled code (DolRecomp cpu.c: computed in double then rounded
- * to single, FPSCR[NI] = 0; force_25_bit of fmuls has no effect on an operand that is already single precision, which
- * is always the case here). */
+/* Single-precision floating-point arithmetic of the recompiled code (DolRecomp cpu.c, ppc_fadds/fsubs/fmuls/fdivs):
+ * computed in double, then rounded once to single. force_25_bit of fmuls has no effect on a frC operand that is already
+ * single precision, which is always the case here. Not reproduced (issue 48):
+ *   - FPSCR[NI] = 1 (non-IEEE mode), which the SDK's OSInit sets (PPCSetFpNonIEEEMode, mtfsb1 29; US and PAL
+ *     disassembly): cpu.c (force_single) then turns a result whose double value is below 2^-126 in magnitude into a
+ *     zero of its sign, where these helpers return the IEEE value (a subnormal, or 2^-126 when the value rounds up to
+ *     it). A sum or difference of two singles gives such a result only with an operand below 2^-103 in magnitude, and
+ *     256 / y (GXSetDispCopyYScale) never does for a finite single y. Products and the other quotients (the viewport
+ *     and fog fields) have no such bound here: they are covered only by the measurement of issue 48, which found no
+ *     such result, so the helpers keep the IEEE value; a caller that can receive tiny operands must flush like
+ *     force_single;
+ *   - a NaN result: cpu.c returns the first NaN operand made quiet, else the default NaN 0x7FC00000; the host returns
+ *     its own, which depends on the host (for example 0xFFC00000 on x86 for an invalid operation such as inf - inf);
+ *   - the FPSCR status bits (FPRF, FI, FR, sticky exceptions) are not updated; no exception is enabled. */
 static inline float gx_fadds(double a, double b) { return (float)(a + b); }
 static inline float gx_fsubs(double a, double b) { return (float)(a - b); }
 static inline float gx_fmuls(double a, double b) { return (float)(a * b); }

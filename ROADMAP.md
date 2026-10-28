@@ -144,8 +144,10 @@ floating-point instruction, and the gateway does not yet handle a call made whil
 - **Single-precision arithmetic** (`runtime/core/decomp/gc_float.h`): one helper per instruction (`fadds`, `fsubs`,
   `fmuls`, `fmadds`, `fneg`) that gives the recompiled code's results bit for bit where plain host `float` arithmetic
   does not: the 25-bit rounding of the multiplier, the fused multiply-add with its half-way correction, the NaN
-  rules, and the flush of tiny results in the non-IEEE mode (FPSCR[NI], on in every state the oracle captured). The
-  mode is passed explicitly by the caller. Adapted from DolRecomp's CPU runtime (`src/cpu/cpu.c`, GPL-3.0-or-later),
+  rules, and the flush of tiny results in the non-IEEE mode (FPSCR[NI], which the SDK's `OSInit` sets and which is on
+  in every state the oracle captured). The mode is passed explicitly by the caller. The native GX replacements of the
+  runtime do not flush; a diagnostic build found no tiny result in them on the reference scenarios (issue 48).
+  Adapted from DolRecomp's CPU runtime (`src/cpu/cpu.c`, GPL-3.0-or-later),
   whose helpers follow Dolphin's interpreter (`Interpreter_FPUtils.h`, Copyright 2009 Dolphin Emulator Project,
   GPL-2.0-or-later); it stays under GPL-3.0. Checked by a local differential test against DolRecomp's helpers with
   the non-IEEE mode off and on (no difference on 2.66 million cases per mode, at two optimization levels). Equal to
