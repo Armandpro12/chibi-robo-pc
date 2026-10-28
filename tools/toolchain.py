@@ -83,6 +83,23 @@ def find_git() -> Path | None:
     return _first_existing(_configured("git"), _which("git"))
 
 
+def git_head(repo: Path) -> str:
+    """Commit of the Git checkout `repo`, plus "+<SHA-1 of `git diff HEAD`, 12 digits>" when it has local changes
+    (DolRecomp: the patches of tools/patches/dolrecomp applied); "?" without Git or outside a checkout."""
+    import hashlib
+    git = find_git()
+    if not git:
+        return "?"
+    out = subprocess.run([str(git), "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True)
+    head = out.stdout.strip() or "?"
+    if out.returncode != 0:
+        return "?"
+    diff = subprocess.run([str(git), "-C", str(repo), "diff", "HEAD"], capture_output=True)
+    if diff.stdout:
+        head += "+" + hashlib.sha1(diff.stdout).hexdigest()[:12]
+    return head
+
+
 def find_cmake() -> Path | None:
     return _first_existing(_configured("cmake"), _which("cmake"))
 

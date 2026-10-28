@@ -1,0 +1,56 @@
+# Synthetic cases of the decompilation oracle for mode_owner_is_mode_in_effect (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data): they drive the branches the reference
+# scenarios do not reach. The oracle executable injects each one into a scratch area S of the dead stack, runs the
+# recompiled original and the decompiled version from it, compares them and puts everything back
+# (tools/decomp_oracle.py run passes this folder in GCRT_DECOMP_ORACLE_SYNTHETIC).
+# r3 = S - 0x95D0, so that the current mode (+0x95D0) is at S and the pending one (+0x95D4) at S+4;
+# r4 = the mode asked about. A negative pending mode means none.
+
+case mode_owner_is_mode_in_effect no_pending_same
+r3 = S-95D0
+r4 = 00000002
+mem S 4 00000002
+mem S+4 4 FFFFFFFF
+end
+
+case mode_owner_is_mode_in_effect no_pending_other
+r3 = S-95D0
+r4 = 00000003
+mem S 4 00000002
+mem S+4 4 FFFFFFFF
+end
+
+case mode_owner_is_mode_in_effect pending_same
+r3 = S-95D0
+r4 = 00000001
+mem S 4 00000002
+mem S+4 4 00000001
+end
+
+case mode_owner_is_mode_in_effect pending_hides_current
+r3 = S-95D0
+r4 = 00000002
+mem S 4 00000002
+mem S+4 4 00000001
+end
+
+case mode_owner_is_mode_in_effect pending_zero
+r3 = S-95D0
+r4 = 00000000
+mem S 4 00000005
+mem S+4 4 00000000
+end
+
+case mode_owner_is_mode_in_effect pending_most_negative
+r3 = S-95D0
+r4 = 00000003
+mem S 4 00000003
+mem S+4 4 80000000
+end
+
+case mode_owner_is_mode_in_effect negative_mode_asked
+r3 = S-95D0
+r4 = FFFFFFFE
+mem S 4 FFFFFFFE
+mem S+4 4 FFFFFFFF
+end

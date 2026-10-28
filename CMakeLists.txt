@@ -11,6 +11,9 @@ set(GCRT_DISC_ROOT "" CACHE PATH "Root of the extracted disc, used by default at
 set(GCRT_DOL_FNV64 "0" CACHE STRING "FNV-1a 64 hash of the recompiled DOL (0: no check)")
 set(GCRT_RAM_SIZE "0x01800000" CACHE STRING "Size of the host RAM (>= 24 MiB)")
 set(GCRT_DECOMP_REGISTRY "" CACHE FILEPATH "Registration table of the decompiled functions for this version (tools/build.py)")
+option(GCRT_DECOMP_ORACLE "Decompilation oracle executable (tools/build.py --oracle): compares each decompiled function with its recompiled original on every call" OFF)
+set(GCRT_DECOMP_NEGATIVE_DIR "" CACHE PATH "Negative test of the oracle (tools/build.py --oracle-negative): folder of deliberately wrong variants")
+set(GCRT_DECOMP_EXCLUDE "" CACHE STRING "Decompiled sources left out of this build (tools/build.py: files whose functions are all disabled)")
 set(DOLRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/DolRecomp" CACHE PATH "DolRecomp sources")
 option(GCRT_CPU_FAST_PATHS "Inline fast paths for the generated code (runtime/core/cpu/gcrt_cpu_inline.h)" ON)
 # Optional profile-guided optimization (GCRT_PGO, tools/build.py --pgo): before any add_subdirectory, so that the

@@ -1,0 +1,46 @@
+# Synthetic cases of the decompilation oracle for state_cell_is_state_active (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data): they drive the branches the reference
+# scenarios do not reach. The oracle executable injects each one into a scratch area S of the dead stack, runs the
+# recompiled original and the decompiled version from it, compares them and puts everything back
+# (tools/decomp_oracle.py run passes this folder in GCRT_DECOMP_ORACLE_SYNTHETIC).
+# r3 points at a word holding the state; states 1 to 5 are active (signed test).
+
+case state_cell_is_state_active state_0
+r3 = S
+mem S 4 00000000
+end
+
+case state_cell_is_state_active state_1
+r3 = S
+mem S 4 00000001
+end
+
+case state_cell_is_state_active state_3
+r3 = S
+mem S 4 00000003
+end
+
+case state_cell_is_state_active state_5
+r3 = S
+mem S 4 00000005
+end
+
+case state_cell_is_state_active state_6
+r3 = S
+mem S 4 00000006
+end
+
+case state_cell_is_state_active state_minus_1
+r3 = S
+mem S 4 FFFFFFFF
+end
+
+case state_cell_is_state_active state_max
+r3 = S
+mem S 4 7FFFFFFF
+end
+
+case state_cell_is_state_active state_min
+r3 = S
+mem S 4 80000000
+end

@@ -1,0 +1,98 @@
+# Synthetic cases of the decompilation oracle for hsd_archive_get_public (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data): they drive the branches the reference
+# scenarios do not reach. The oracle executable injects each one into a scratch area S of the dead stack, runs the
+# recompiled original and the decompiled version from it, compares them and puts everything back
+# (tools/decomp_oracle.py run passes this folder in GCRT_DECOMP_ORACLE_SYNTHETIC).
+# Archive at S: count of public symbols at +0x0C, pointer to their table at +0x28, pointer to the names at
+# +0x30. Table at S+0x80 (8 bytes per symbol: data offset, name offset), names area at S+0x100. r4 = index.
+
+case hsd_archive_get_public first
+area 200
+r3 = S
+r4 = 00000000
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public second
+area 200
+r3 = S
+r4 = 00000001
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public index_equals_count
+area 200
+r3 = S
+r4 = 00000002
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public index_past_count
+area 200
+r3 = S
+r4 = 00000007
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public negative_index
+area 200
+r3 = S
+r4 = FFFFFFFF
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public empty_archive
+area 200
+r3 = S
+r4 = 00000000
+mem S+C 4 00000000
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end
+
+case hsd_archive_get_public most_negative_index
+area 200
+r3 = S
+r4 = 80000000
+mem S+C 4 00000002
+mem S+28 4 S+80
+mem S+30 4 S+100
+mem S+80 4 00000010
+mem S+84 4 00000000
+mem S+88 4 00000020
+mem S+8C 4 00000009
+end

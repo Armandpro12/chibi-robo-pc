@@ -68,6 +68,9 @@ dir = "decomp"
 # tools/decomp_functions.py and tools/build.py (HLE hook and registration of each enabled function at its address
 # in the version being built).
 functions = "decomp/functions.tsv"
+# Reference scenarios (games/<game>/scenarios/) that tools/decomp_oracle.py run replays on the oracle executable when
+# no --scenarios is given: every scenario of the A/B bench, so that the promotion sees every state they reach.
+oracle_scenarios = ["title-boot", "new-game", "load-game", "overwrite-save", "intro-no-card"]
 # Statuses of the table (compared whole, case-insensitive, surrounding brackets ignored; never by prefix):
 #   verified   = replaces its recompiled version and passed the oracle: the only status counted as decompiled
 #   unverified = replaces its recompiled version, not yet checked by the oracle: shown as "replaced, not

@@ -9,11 +9,23 @@
 #   pal_addr  GGTP01: same; "-" if not known yet. A function without an address in BOTH versions cannot be enabled
 #   size      size in bytes of the original function: must be its size in BOTH versions (one column only, so a
 #             function whose size differs between versions cannot be enabled yet)
-#   status    disabled   = listed, not built (no hook, no registration)
-#             unverified = replaces its recompiled version, NOT yet checked by the oracle (D1 mission 4)
-#             verified   = replaces it and passed the oracle on its captured cases
+#   status    disabled   = listed, not built (no hook, no registration; a source file whose functions are all
+#                          disabled is not compiled either, tools/build.py)
+#             unverified = replaces its recompiled version, has NOT passed the oracle's promotion rule
+#             verified   = replaces it and passed the promotion rule of tools/decomp_oracle.py in every version: no
+#                          difference on every compared call of the reference scenarios and on every synthetic case
+#                          (decomp/oracle_cases/), every basic block of the original reachable from its entry
+#                          exercised by them, at least 10 distinct real starting states or saturated after 1000
+#                          comparisons (thresholds: hypothesis), no call left uncompared, the oracle at its default
+#                          settings, accidental copies of a run refused (forged results are out of scope: nothing is
+#                          signed). Basic-block coverage (not edge or path coverage), not a proof on states never
+#                          compared
 #             (compared whole and case-insensitive, as tools/decomp_progress.py does; any other status refuses the table)
 #   pal_oracle  optional column: "yes" once the oracle has passed on GGTP01; "no", "-" or empty otherwise
+# The oracle does not compare FPSCR (runtime/core/decomp/gc_oracle_compare.h). This holds for this game because its
+# own code never reads or writes FPSCR: no mffs, mtfsf, mtfsfi, mtfsb0, mtfsb1 or mcrfs in the 16 RELs of either
+# version, and those of the two DOLs (9 each) are all in the Nintendo and Metrowerks libraries, which are not
+# decompiled (instruction scan of both versions).
 # Activation lock (tools/decomp_functions.py, run by tools/build.py; the build is refused otherwise). For an enabled
 # line, in each version:
 #   (a) a GGTP01 address that symbols/GGTP01-gaps.tsv places at the level position or sized is refused unless
@@ -29,8 +41,9 @@
 #   before it ends a function or is padding, the last one is blr/bctr/b).
 # Source file of each function: decomp/src/ (one file per original unit; subfolders as in the original split, e.g.
 # src/sysdolphin/baselib/archive.cpp).
-name	module	us_addr	pal_addr	size	status
-mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	unverified
-state_cell_is_state_active	dol	800313A4	80031CE0	0x24	unverified
-hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	unverified
-hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	unverified
+name	module	us_addr	pal_addr	size	status	pal_oracle
+mode_owner_is_mode_in_effect	dol	800B2F4C	800B54A8	0x28	verified	yes
+state_cell_is_state_active	dol	800313A4	80031CE0	0x24	verified	yes
+hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	verified	yes
+hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	verified	yes
+vec3_copy	dol	800A2CC8	800A50F8	0x1C	disabled	-

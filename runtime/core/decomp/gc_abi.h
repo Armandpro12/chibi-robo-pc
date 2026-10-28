@@ -226,6 +226,27 @@ template <class R, class... A, R (*Fn)(A...)> struct function_traits<Fn> {
     static_assert(alloc.next_gpr <= 11u, "gc_abi: more than 8 integer argument registers (stack arguments)");
     static_assert(alloc.next_fpr <= 9u, "gc_abi: more than 8 floating-point argument registers (stack arguments)");
 
+#if defined(GC_DECOMP_ORACLE)
+    // Argument and result registers, for the oracle's fingerprint of a starting state (gc_oracle.cpp).
+    static constexpr u32 argument_gpr_mask() {
+        u32 mask = hidden_result ? (1u << 3) : 0u;
+        for (std::size_t i = 0; i < sizeof...(A); i++) {
+            if (alloc.slots[i].kind == slot_word)
+                mask |= 1u << alloc.slots[i].reg;
+            else if (alloc.slots[i].kind == slot_pair)
+                mask |= 3u << alloc.slots[i].reg;
+        }
+        return mask;
+    }
+    static constexpr u32 argument_fpr_mask() {
+        u32 mask = 0;
+        for (std::size_t i = 0; i < sizeof...(A); i++)
+            if (alloc.slots[i].kind == slot_fpr)
+                mask |= 1u << alloc.slots[i].reg;
+        return mask;
+    }
+#endif
+
     template <std::size_t... I> static R call(const registers& r, std::index_sequence<I...>) {
         return Fn(read_value<A>(r, alloc.slots[I])...);
     }
@@ -262,6 +283,23 @@ void first_call(u32 address);
 bool run_guest(GcrtCpu* g, u32 address) noexcept;
 GcrtCpu* current_cpu() noexcept;
 
+#if defined(GC_DECOMP_ORACLE)
+// Oracle executable only (build option GCRT_DECOMP_ORACLE, tools/build.py --oracle; gc_oracle.cpp): what the oracle
+// needs to know of a decompiled function's C++ signature.
+struct oracle_signature {
+    u32 argument_gprs; // bit n: rn holds an argument (or the hidden result pointer)
+    u32 argument_fprs; // bit n: fn holds an argument
+    u8 result_kind;    // result_kind
+};
+// Runs the recompiled original, then the decompiled version (`invoke`) from the same state, compares them and leaves
+// the original's results (registers and memory). False: not handled (nested call during another comparison), the
+// caller runs the decompiled version as usual.
+bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), const oracle_signature& signature);
+// Nested guest runs started through run_guest (gc_abi.cpp), counted so that the oracle sees a decompiled version that
+// calls guest code (not comparable as a leaf).
+extern u64 guest_calls;
+#endif
+
 } // namespace detail
 
 // HLE entry of the decompiled function Fn (recompiled -> decompiled).
@@ -272,6 +310,17 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     const u32 return_address = *r.lr;
     if (detail::call_count<Fn>++ == 0)
         detail::first_call(address);
+#if defined(GC_DECOMP_ORACLE)
+    {
+        using traits = detail::function_traits<Fn>;
+        static constexpr detail::oracle_signature signature{traits::argument_gpr_mask(), traits::argument_fpr_mask(),
+                                                            detail::result_kind_of<typename traits::result>()};
+        if (detail::oracle_entry(g, address, &traits::invoke, signature)) {
+            *r.pc = return_address; // the registers and memory are the original's
+            return true;
+        }
+    }
+#endif
     if (detail::crosscheck_enabled) {
         u32 gpr[11];
         f64 fpr[9], ps1[9];
@@ -334,6 +383,15 @@ template <class R, class... A> R call_address(u32 address, A... args) {
     }
     return call_guest<R, A...>(address, args...);
 }
+
+#if defined(GC_DECOMP_ORACLE_NEGATIVE)
+// Negative test of the oracle only (tools/build.py --oracle-negative, never in another build): deliberately wrong
+// variants of decompiled functions use these to stand for a gateway that would not preserve a register.
+namespace testing {
+void clobber_gpr(unsigned reg, u32 value) noexcept;
+void clobber_cr(u32 value) noexcept;
+} // namespace testing
+#endif
 
 } // namespace gc::abi
 
