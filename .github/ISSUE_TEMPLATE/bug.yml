@@ -1,0 +1,40 @@
+name: Bug or crash
+description: Something looks wrong, sounds wrong, or the game crashes or freezes.
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: game-version
+    attributes:
+      label: Which version of the game?
+      options:
+        - US / North America (GGTE01)
+        - PAL / Europe (GGTP01)
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Where in the game, what you did, and what you expected. A few lines are enough. A screenshot of a visual problem is welcome (crop it to the problem).
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Your PC (optional)
+      description: Windows version and graphics card, plus the port version (it is in the installer's file name, or use the release you downloaded).
+      placeholder: Windows 11, NVIDIA RTX 3060, port 0.1.1
+  - type: markdown
+    attributes:
+      value: |
+        If the game crashed or froze, attach the `crash-*.txt` or `hang-*.txt` report, after reading it
+        ([what to share](https://github.com/Armandpro12/chibi-robo-pc/blob/main/guide/reporting-crashes.md)).
+  - type: checkboxes
+    id: no-game-files
+    attributes:
+      label: Before sending
+      options:
+        - label: I am not attaching my disc image, files extracted from it, or memory dumps (`.dmp`, `-guest-ram.bin`).
+          required: true
