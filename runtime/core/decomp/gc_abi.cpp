@@ -3,7 +3,11 @@
 #include "decomp/gc_abi.h"
 #include "decomp/gc_abi_c.h"
 
+// C headers: DolRecomp's cpu.h (included by gcrt_cpu.h before its own extern "C") declares the write journal, a C
+// symbol, without extern "C" of its own.
+extern "C" {
 #include "cpu/gcrt_cpu.h"
+}
 #include "hle/gcrt_hle.h"
 #include "hle/gcrt_native.h"
 
@@ -50,6 +54,20 @@ void report_at_exit() {
     std::fflush(stdout);
 }
 
+// Store hook of gc_mem.h: a store of decompiled code into guest RAM has the side effects of a store of recompiled
+// code (DolRecomp cpu.c mem_write8/16/32/64, in that order, before the bytes change): it clears the lwarx
+// reservation when it falls in the reserved 32-byte block (same test as cpu.c clear_matching_reservation, both
+// mirrors seen as one), then calls the write journal with the RAM offset and the size. Without it, the idle detection
+// of a looping OSYieldThread (hle/native_os.c, spin_journal) would not see the stores of decompiled functions, and a
+// stwcx. after such a store would succeed where the console's fails.
+void guest_store(std::uint32_t address, std::uint32_t size) noexcept {
+    CPUState* c = &s_cpu->state;
+    if (c->reserve_valid && (((c->reserve_addr & ~0x40000000u) ^ (address & ~0x40000000u)) & ~31u) == 0)
+        c->reserve_valid = false;
+    if (g_mem_write_journal)
+        g_mem_write_journal(address - 0x80000000u, size, g_mem_write_journal_user);
+}
+
 void memory_fault(const char* reason, std::uint32_t address, std::uint32_t size) {
     std::fprintf(stderr, "gc_abi: guest memory fault in decompiled code: %s (address %08X, %u bytes)\n", reason,
                  static_cast<unsigned>(address), static_cast<unsigned>(size));
@@ -70,6 +88,7 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     // the RELs placed after the 24 MiB (tools/build.py, host_ram_size).
     gc::init_guest_memory(g->state.ram, g->state.ram_size);
     gc::set_memory_fault_handler(&memory_fault);
+    gc::set_guest_store_hook(&guest_store);
     s_entries.assign(count, entry_state{});
     std::size_t size = 16;
     while (size < 2u * count)

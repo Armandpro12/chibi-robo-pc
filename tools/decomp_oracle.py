@@ -465,6 +465,12 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                 if int(header.get("test_detaching_journal", 0)):
                     problems.append(f"{path.name}: test mode GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL="
                                     f"{header['test_detaching_journal']} (results never promote)")
+                if "test_no_store_hook" not in header:
+                    problems.append(f"{path.name}: header without test_no_store_hook (oracle executable older than the "
+                                    f"routing of decompiled stores: rebuild and rerun)")
+                elif int(header["test_no_store_hook"]):
+                    problems.append(f"{path.name}: test mode GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK="
+                                    f"{header['test_no_store_hook']} (results never promote)")
                 if current is not None and header.get("sources") != current["sources"]:
                     problems.append(f"{path.name}: built from sources {header.get('sources') or '(no hash)'}, not the "
                                     f"current ones {current['sources']} (rebuild the oracle executable and rerun)")

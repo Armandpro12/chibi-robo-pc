@@ -18,7 +18,9 @@
 //      as a leaf; the RAM writes of that guest code are journaled into W2 so that they are undone too;
 //   4. comparison (gc_oracle_compare.h): result registers, registers the EABI preserves, bytes written (not the dead
 //      stack under r1, GCRT_DECOMP_ORACLE_DEAD_STACK bytes, default 64 KiB); FPSCR is not compared (see
-//      gc_oracle_compare.h);
+//      gc_oracle_compare.h). Then the side effects of the stores on the CPU layer: the lwarx reservation after each
+//      version, and every byte the decompiled code stored must have been told to the write journal (the store hook
+//      of gc_mem.h, installed by gc_abi.cpp), as every store of the original is;
 //   5. W2 is undone, W1 and R1 put back: the game goes on with the ORIGINAL's results, the oracle changes nothing
 //      in the game's behavior (it only runs both versions);
 //   6. the starting state (argument registers and the bytes the decompiled version read) is fingerprinted; distinct
@@ -37,6 +39,9 @@
 // ends: W1 is always complete. GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL=1 (test only, refused by the promotion)
 // attaches, when no other journal is there, a journal that detaches itself on its first store as the idle detection
 // does, to exercise that case on every call; =2 also turns the oracle's re-attachment off, to show what it prevents.
+// GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK=1 (test only, refused by the promotion) removes the store hook of gc_mem.h
+// (gc_abi.cpp): every function whose decompiled version stores must then show an "unjournaled" difference, and a
+// "reservation" one when a synthetic case holds a reservation in the stored block.
 //
 // Synthetic cases (GCRT_DECOMP_ORACLE_SYNTHETIC=<folder of .txt files>, format below): starting states written by
 // hand to reach branches the scenarios do not reach. At the first comparable call of F, each case of F is injected
@@ -51,6 +56,7 @@
 //   area <bytes>                size of the scratch area (default 0x100, at most 0x400), zero-filled first
 //   rN = <value>                gpr N; fN = <hex bits> (fpr N), pN = <hex bits> (ps1 of fpr N)
 //   mem <address> <1|2|4> <value>   big-endian store into the area before the run
+//   reserve <value>             a lwarx reservation is valid at that address when both versions start
 //   end
 // <value> and <address>: hexadecimal, or S, S+<hex>, S-<hex> with S the start of the scratch area. r1 is set by the
 // oracle (0x100 bytes under the area, so the area is above the stack pointer and compared). '#' starts a comment.
@@ -127,6 +133,11 @@ struct synthetic_case {
         s64 value;
     };
     std::vector<mem_set> mem;
+    // `reserve <value>`: a lwarx reservation valid at that address when both versions start (default: none, as the
+    // scenarios almost always call a function).
+    bool reserve = false;
+    bool reserve_relative = false;
+    s64 reserve_value = 0;
 };
 
 struct function_state {
@@ -181,6 +192,7 @@ u32 s_dead_stack = oracle::default_dead_stack;
 // the function may use 0x300 bytes under its r1; below that, every store is compared.
 constexpr u32 synthetic_dead_stack = 0x300u;
 unsigned s_test_detaching_journal = 0; // GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL (test only)
+unsigned s_test_no_store_hook = 0;     // GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK (test only)
 unsigned s_depth = 0;                // > 0 while a comparison runs
 function_state* s_running = nullptr; // function being compared
 bool s_in_original = false;          // the original of s_running is running (block hooks record)
@@ -249,6 +261,9 @@ void write_byte(u32 address, u8 value) {
 // back at once and the change is kept for detach_journal (see "Write journal" at the top).
 oracle::write_set s_original_writes;
 oracle::write_set* s_journal_target = &s_original_writes;
+// While the decompiled version runs: every store the write journal is told of (gc_mem.h store hook, gc_abi.cpp), so
+// that a store of decompiled code the journal never saw (the idle detection would miss it) is a difference.
+oracle::write_set* s_journal_seen = nullptr;
 PPCMemWriteJournal s_previous_journal = nullptr;
 void* s_previous_user = nullptr;
 u64 s_reattached = 0; // re-attachments during the current run
@@ -273,6 +288,8 @@ void journal(u32 offset, u32 size, void* /*user*/) {
     for (u32 i = 0; i < size && i < 8; i++)
         old_value = (old_value << 8) | (offset + i < s_state->ram_size ? s_state->ram[offset + i] : 0u);
     s_journal_target->add(0x80000000u + offset, size < 8 ? size : 8, old_value);
+    if (s_journal_seen)
+        s_journal_seen->add(0x80000000u + offset, size < 8 ? size : 8, old_value);
 }
 
 // `test_previous`: the original's run, where the test journal (if asked for) stands in for an absent one.
@@ -318,13 +335,15 @@ struct read_record {
     u64 value;
 };
 struct decompiled_observer final : gc::memory_observer {
-    oracle::write_set writes;
+    oracle::write_set writes;   // everything to undo: the observed stores and the journal's (guest code it calls)
+    oracle::write_set observed; // the stores of the decompiled code itself
     std::vector<read_record> reads;
     void on_read(std::uint32_t address, std::uint32_t size, std::uint64_t value) override {
         reads.push_back(read_record{oracle::canonical_address(address), size, value});
     }
     void on_write(std::uint32_t address, std::uint32_t size, std::uint64_t old_value, std::uint64_t) override {
         writes.add(address, size, old_value);
+        observed.add(address, size, old_value);
     }
 };
 
@@ -647,6 +666,14 @@ void load_synthetic_file(const std::string& path) {
             }
             m.offset = static_cast<u32>(addr);
             c.mem.push_back(m);
+        } else if (tag == "reserve") {
+            std::string v;
+            ls >> v;
+            if (!parse_value(v, c.reserve_relative, c.reserve_value)) {
+                error("reserve <value>");
+                continue;
+            }
+            c.reserve = true;
         } else if (tag == "end") {
             if (f) {
                 bool ok = true;
@@ -828,18 +855,23 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     undo_original();
     put(c, r0);
     decompiled_observer observer;
+    oracle::write_set journaled;
     gc::memory_observer* previous = gc::set_memory_observer(&observer);
     attach_journal(&observer.writes);
+    s_journal_seen = &journaled;
     const u64 guest_calls_before = guest_calls;
     s_depth++;
     s_running = &f;
     invoke(registers_of(g));
     s_running = nullptr;
     s_depth--;
+    s_journal_seen = nullptr;
     detach_journal();
     gc::set_memory_observer(previous);
     const cpu_snapshot r2 = take(c);
     observer.writes.finish(&read_byte);
+    observer.observed.finish(&read_byte);
+    journaled.finish(&read_byte);
     const std::vector<byte_write>& w2 = observer.writes.bytes();
     // Self-check of the undo: a byte both versions wrote had, before the decompiled version, the value it had before
     // the original (both sorted by address).
@@ -884,6 +916,24 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     // 4. Comparison.
     std::vector<difference> diffs;
     oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, dead_stack);
+    // Side effects of the stores on the CPU layer, which the comparison of the bytes does not see: the lwarx
+    // reservation (cleared by a store to the reserved block), and the write journal, which must be told of every store
+    // of the decompiled code as it is of every store of the original (both sorted by address).
+    if (r1.reserve_valid != r2.reserve_valid)
+        diffs.push_back(difference{"reservation", r0.reserve_addr, r1.reserve_valid ? 1u : 0u,
+                                   r2.reserve_valid ? 1u : 0u});
+    {
+        const std::vector<byte_write>& seen = journaled.bytes();
+        std::size_t j = 0;
+        for (const byte_write& b : observer.observed.bytes()) {
+            while (j < seen.size() && seen[j].address < b.address)
+                j++;
+            if (j == seen.size() || seen[j].address != b.address) {
+                diffs.push_back(difference{"unjournaled", b.address, 0, 0});
+                break; // one is enough: the store hook is missing or bypassed
+            }
+        }
+    }
 
     // Coverage and results (compared calls only).
     for (std::size_t i = 0; i < f.call_blocks.size(); i++)
@@ -984,6 +1034,11 @@ void run_synthetic(GcrtCpu* g, function_state& f, void (*invoke)(const registers
             else
                 std::memcpy(&c->ps1[r.index], &v, sizeof(v));
         }
+        if (sc.reserve) {
+            c->reserve_addr = static_cast<u32>(sc.reserve_relative ? static_cast<s64>(base) + sc.reserve_value
+                                                                   : sc.reserve_value);
+            c->reserve_valid = true;
+        }
         compare_call(g, f, invoke, signature, sc.label.c_str(), synthetic_dead_stack);
         for (u32 i = 0; i < save_size; i++)
             write_byte(save_from + i, saved_bytes[i]);
@@ -1001,6 +1056,10 @@ void initialize() {
         s_dead_stack = static_cast<u32>(std::strtoul(n, nullptr, 0));
     if (const char* n = std::getenv("GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL"); n && n[0])
         s_test_detaching_journal = static_cast<unsigned>(std::strtoul(n, nullptr, 0));
+    if (const char* n = std::getenv("GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK"); n && n[0])
+        s_test_no_store_hook = static_cast<unsigned>(std::strtoul(n, nullptr, 0));
+    if (s_test_no_store_hook)
+        gc::set_guest_store_hook(nullptr); // the stores of decompiled code bypass the CPU layer, as before mission 8
     if (const char* dir = std::getenv("GCRT_DECOMP_ORACLE_SYNTHETIC"); dir && dir[0])
         load_synthetic(dir);
     for (const std::string& e : s_synthetic_errors)
@@ -1025,12 +1084,12 @@ void initialize() {
                          "{\"kind\":\"header\",\"version\":\"%s\",\"run\":\"%s\",\"functions\":%zu,\"negative\":%s,"
                          "\"sources\":\"%s\",\"dead_stack\":\"%08X\",\"synthetic_dead_stack\":\"%08X\","
                          "\"case_limit\":%llu,\"crosscheck\":%s,\"synthetic_cases\":%u,\"synthetic_content\":\"%016llX\","
-                         "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u}\n",
+                         "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u,\"test_no_store_hook\":%u}\n",
                          s_version, run, s_functions.size(), negative_build ? "true" : "false", s_sources_hash,
                          static_cast<unsigned>(s_dead_stack), static_cast<unsigned>(synthetic_dead_stack),
                          static_cast<unsigned long long>(s_case_limit), crosscheck_enabled ? "true" : "false",
                          s_synthetic_loaded, static_cast<unsigned long long>(s_synthetic_content),
-                         s_synthetic_errors.size(), s_test_detaching_journal);
+                         s_synthetic_errors.size(), s_test_detaching_journal, s_test_no_store_hook);
             std::fflush(s_out);
         }
     }
