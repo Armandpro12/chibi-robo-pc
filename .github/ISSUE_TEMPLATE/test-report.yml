@@ -1,0 +1,51 @@
+name: Test report
+description: You tried the game. Tell us how it went, even if everything worked.
+labels: ["testing"]
+body:
+  - type: dropdown
+    id: game-version
+    attributes:
+      label: Which version of the game?
+      options:
+        - US / North America (GGTE01)
+        - PAL / Europe (GGTP01)
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Your PC
+      description: Windows version, graphics card, and the port version (it is in the installer's file name, or use the release you downloaded).
+      placeholder: Windows 10, AMD RX 6600, port 0.1.1
+    validations:
+      required: true
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: What worked? (tick what you did)
+      options:
+        - label: The installer ran and the game started
+        - label: I reached the title screen
+        - label: I played for 30 minutes or more
+        - label: Music and sound effects were right
+        - label: A gamepad worked
+        - label: Saving and loading worked
+  - type: input
+    id: how-far
+    attributes:
+      label: How far did you get?
+      placeholder: New game, up to the backyard
+  - type: textarea
+    id: anything-off
+    attributes:
+      label: Anything off? (optional, say what did not work)
+      description: Graphics, sound, speed, a cutscene, a crash. If it is a clear bug, a "Bug or crash" report is even better.
+  - type: checkboxes
+    id: no-game-files
+    attributes:
+      label: Before sending
+      options:
+        - label: I am not attaching my disc image, files extracted from it, or memory dumps.
+          required: true
