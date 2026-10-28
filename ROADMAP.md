@@ -120,12 +120,15 @@ and assets are read from the player's files.
 | # | Milestone | State | Notes |
 |---|---|---|---|
 | D1 | Tooling | ✅ | Validated 2026-10-28. Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking; 12 leaf functions replace their recompiled versions and are verified in US and PAL. Follow-ups below. |
-| D2 | Batches | ⬜ | Not started. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. |
+| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions), part A: 23 functions verified, not merged yet. |
 | D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
 | D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
 | D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
 
-Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below). Two
+Progress: 35 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below), 1,364 bytes of code
+(0.92 % of the 3,772 functions). The 23 latest are leaf functions of the sysdolphin (HSD) library: flags and fields of
+materials, polygons, cameras, lights, joints and world objects, reference-object lookup, TEV expression nodes and
+particle helpers, with shared structure headers. Two
 more, `hsd_hermite_interpolate` and `hsd_mtx_get_translation`, are decompiled but disabled: they start with a
 floating-point instruction, and the gateway does not yet handle a call made while the floating-point unit is off (see
 "Follow-ups from D1" below).

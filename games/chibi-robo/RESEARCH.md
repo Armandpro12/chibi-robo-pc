@@ -1707,3 +1707,45 @@ Facts this settles:
 | `0x8017EE74` | `0x801816DC` | `0x1C` | `CARDGetFastMode` |
 
 US addresses: PAL − `0x28B0` for `OSLink.c`, PAL − `0x2868` for AX, AXFX and CARD (appendix E).
+
+## Appendix H. sysdolphin (HSD) leaf functions checked by the decompilation oracle on 2026-10-28
+
+Twenty-three small functions of the game's copy of the HAL sysdolphin library, none of which calls another
+function or touches a global, were rewritten in C++ (`decomp/`) and checked by the decompilation oracle in both
+versions. **Method:** an oracle build ran the five reference scenarios (`title-boot`, `new-game`, `load-game`,
+`overwrite-save`, `intro-no-card`) on US and PAL. On every call it ran the recompiled original and the C++ version
+from the same state, and compared result registers, preserved registers and the bytes written. It
+also ran hand-written cases with invented values for branches the scenarios do not reach. Result: 0 differences in
+13,039,629 (US) and 13,227,795 (PAL) comparisons on real calls, and every basic block of each original compared. The bench verdict of
+the oracle executables was `ok` for the 10 runs (screenshots, audio and saves identical to the reference). The
+behaviour below is what the oracle checked. The names in the right column are the identifiers of the decompiled
+code, taken from cbr_decomp (CC0) and the Melee decompilation (names only); they are labels, not verified facts.
+
+| US | PAL | size | behaviour (pointer argument null: no access, result as given) | code name |
+|---|---|---|---|---|
+| `0x801AEB70` | `0x801B146C` | `0x18` | clears the bits of r4 in the 16-bit field at +0xC of r3 | `HSD_PObjClearFlags` |
+| `0x801AEB88` | `0x801B1484` | `0x18` | sets the bits of r4 in the 16-bit field at +0xC of r3 | `HSD_PObjSetFlags` |
+| `0x801B8E5C` | `0x801BB758` | `0x18` | returns the word at +4 of r3 (0 if null) | `HSD_MObjGetFlags` |
+| `0x801B8E74` | `0x801BB770` | `0x18` | sets the bits of r4 in the word at +4 of r3 | `HSD_MObjSetFlags` |
+| `0x801BA42C` | `0x801BCD28` | `0x18` | returns the word at +8 of r3 (0 if null) | `HSD_MObjGetTObj` |
+| `0x801BE984` | `0x801C1280` | `0xC` | copies the word at r4 to +0x10 of r3 (no null test) | `HSD_LObjSetColor` |
+| `0x801C15B0` | `0x801C3EAC` | `0x1C` | copies 8 bytes from r4 to +0x1C of r3 | `HSD_CObjSetScissor` |
+| `0x801C1674` | `0x801C3F70` | `0x2C` | copies 16 bytes from r4 to +0xC of r3, as integers (float bits kept) | `HSD_CObjSetViewportf` |
+| `0x801C16BC` | `0x801C3FB8` | `0x18` | returns the byte at +0x50 of r3 (1 if null) | `HSD_CObjGetProjectionType` |
+| `0x801C1734` | `0x801C4030` | `0x18` | sets the bits of r4 in the word at +8 of r3 | `HSD_CObjSetFlags` |
+| `0x801C174C` | `0x801C4048` | `0x18` | clears the bits of r4 in the word at +8 of r3 | `HSD_CObjClearFlags` |
+| `0x801C4B10` | `0x801C740C` | `0x58` | in the list that starts at +0x14 of r3 (link at +0 of each node), moves the first node whose byte at +0x13 is 12 to the front | `JObjSortAnim` |
+| `0x801C7014` | `0x801C9910` | `0x2C` | returns the word at +0x18 of r3 when the word at +0x14 has neither bit 5 nor bit 14 set, else 0 | `HSD_JObjGetDObj` |
+| `0x801CAFC0` | `0x801CD8BC` | `0x4` | does nothing | `HSD_EndRender` |
+| `0x801D0CC4` | `0x801D35C0` | `0x58` | walks the list at r3 (link at +0); returns the first node whose word at +4 has bit 31 set, bits 28-30 equal to r4 and, unless r5 is 0, bits 0-27 equal to r5; 0 if none | `HSD_RObjGetByType` |
+| `0x801D32BC` | `0x801D5BB8` | `0x48` | copies 12 bytes from r4 to +0xC of r3, then sets bit 1 and clears bit 0 of the word at +8 (two separate writes) | `HSD_WObjSetPosition` |
+| `0x801D61F8` | `0x801D8AF4` | `0x8` | returns 0 | `_hsdClassInit` |
+| `0x801D6200` | `0x801D8AFC` | `0x4` | does nothing | `_hsdClassRelease` |
+| `0x801D65E0` | `0x801D8EDC` | `0x3C` | returns 0 for a null r3, 2 for r3 = `0xFFFFFFFF`, 3 for r3 = `0xFFFFFFFE`, else the word at +0 | `HSD_TExpGetType` |
+| `0x801D661C` | `0x801D8F18` | `0x88` | same type as above; type 1: adds 1 to the word at +8 if the low byte of r4 is 1, else to the word at +0x14; type 4: adds 1 to the byte at +0x10; other types: nothing | `HSD_TExpRef` |
+| `0x801DE698` | `0x801E0F94` | `0x30` | reads a count from the byte stream at r3 into the halfword at r4: one byte, or two when the first has bit 7 set (15-bit big-endian value); returns the position after it | `psReadCount` |
+| `0x801E2354` | `0x801E4C50` | `0x8` | returns the word at +0 of r3 | `psGetNextParticle` |
+| `0x801E5790` | `0x801E808C` | `0x3C` | if r3 and r4 are not null and the word at +0x90 of r3 is 0: stores r4 there, adds 1 to the halfword at +0x32 of r4 and returns the new value; else returns -1 | `psAttachParticleAppSRT` |
+
+The code of each pair is identical in US and PAL once addresses are masked. Only the layout facts in the table are
+checked (offsets and sizes of the fields these functions use); the rest of each structure is not.
