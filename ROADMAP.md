@@ -14,7 +14,7 @@ one has been validated.
 | # | Stage | Goal | State |
 |---|---|---|---|
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
-| 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first public release | 🟡 in progress |
+| 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first release of the C++ version | 🟡 in progress |
 | 3 | Multiplayer | Two players in the same house | ⬜ |
 | 3b | PS Vita port | Planned, after multiplayer, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
 | 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack | ⬜ |
@@ -117,18 +117,18 @@ Rewrite every function of the game (DOL and 16 REL modules) as readable C++ with
 against the recompiled build by an automated oracle. The decompiled code contains no game data: tables, strings
 and assets are read from the player's files.
 
-| # | Milestone | Goal |
-|---|---|---|
-| D1 | Tooling | Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking |
-| D2 | Batches | Decompile batch by batch (by unit or REL), each one checked by the oracle |
-| D3 | No recompiled code, no virtual CPU | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one |
-| D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
-| D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
+| # | Milestone | State | Notes |
+|---|---|---|---|
+| D1 | Tooling | ✅ | Validated 2026-10-28. Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking; 12 leaf functions replace their recompiled versions and are verified in US and PAL. Follow-ups below. |
+| D2 | Batches | ⬜ | Not started. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. |
+| D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
+| D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
+| D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
 
 Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below). Two
 more, `hsd_hermite_interpolate` and `hsd_mtx_get_translation`, are decompiled but disabled: they start with a
 floating-point instruction, and the gateway does not yet handle a call made while the floating-point unit is off (see
-"Remaining work in D1" below).
+"Follow-ups from D1" below).
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
@@ -206,7 +206,9 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   the PAL gap filler is fed with the index; only Ghidra's list is potentially independent, and whether its analysis
   uses the tables is not shown). 14 functions have cleanup actions. The REL modules have no exception tables.
 
-### Remaining work in D1
+### Follow-ups from D1
+
+D1 is validated; these items are carried over to the start of D2.
 
 1. **Floating-point unit off.** The game's OS turns the floating-point unit off when it switches threads and restores
    a thread's floating-point registers on that thread's first floating-point instruction. The recompiled original
@@ -216,7 +218,7 @@ floating-point instruction, and the gateway does not yet handle a call made whil
    calls apart. Then `hsd_hermite_interpolate` and `hsd_mtx_get_translation` are enabled again and rechecked by the
    oracle. `hsd_pobj_set_shape_blend`, verified, also moves a float with floating-point loads and stores; the
    scenarios never called it with the unit off, and it is part of the same fix.
-2. Full A/B bench of the production build of this batch, then review and merge.
+2. Measure what the replacement and write hooks cost per call, before the batches multiply them.
 
 ## Stage 3 — Multiplayer ⬜
 
