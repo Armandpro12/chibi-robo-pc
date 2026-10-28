@@ -463,9 +463,24 @@ def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tup
 # Files outside the decompiled sources that decide what an oracle run measures, relative to the repository root
 # (folders: every file below them): the basic-block analysis and the table checks (this file, decomp_common.py, the
 # code reader symbols.py), the generation of the block hooks and of the registration table (build.py), the
-# DolRecomp patch that compiles those hooks, and the chassis that runs the original (runtime/core/cpu).
+# DolRecomp patch that compiles those hooks, the chassis that runs the original (runtime/core/cpu), the native OS
+# whose idle detection detaches a write journal during the original (runtime/core/hle/native_os.c), and the CMake
+# files that compile the oracle in (runtime/core/cmake/GcrtDecomp.cmake, the root CMakeLists.txt). The DolRecomp
+# checkout itself (commit and local changes, toolchain.git_head) is hashed too: it generates the code of the original.
 ORACLE_HASHED_TOOLS = ["tools/decomp_functions.py", "tools/decomp_common.py", "tools/symbols.py", "tools/build.py",
-                       "tools/patches/dolrecomp", "runtime/core/cpu"]
+                       "tools/patches/dolrecomp", "runtime/core/cpu", "runtime/core/hle/native_os.c",
+                       "runtime/core/cmake/GcrtDecomp.cmake", "CMakeLists.txt"]
+
+
+def files_below(root: Path) -> list[Path]:
+    """Every file below `root`, sorted by its relative path as a case-sensitive string (Path ordering is
+    case-insensitive on Windows only: sorting by the string gives the same order, so the same hash, everywhere)."""
+    return sorted((p for p in Path(root).rglob("*") if p.is_file()), key=lambda p: p.relative_to(root).as_posix())
+
+
+def dolrecomp_state() -> str:
+    """Commit and local changes of the DolRecomp checkout (external/DolRecomp), "?" if there is none."""
+    return tc.git_head(tc.EXTERNAL / "DolRecomp")
 
 
 def oracle_hash_inputs(game_cfg: dict, negative: Path | None = None) -> list[tuple[str, Path]]:
@@ -475,11 +490,11 @@ def oracle_hash_inputs(game_cfg: dict, negative: Path | None = None) -> list[tup
         roots.append(Path(negative))
     out: list[tuple[str, Path]] = []
     for root in roots:
-        out += [(p.relative_to(root).as_posix(), p) for p in sorted(Path(root).rglob("*")) if p.is_file()]
+        out += [(p.relative_to(root).as_posix(), p) for p in files_below(root)]
     for rel in ORACLE_HASHED_TOOLS:
         path = tc.ROOT / rel
         if path.is_dir():
-            out += [(p.relative_to(tc.ROOT).as_posix(), p) for p in sorted(path.rglob("*")) if p.is_file()]
+            out += [(p.relative_to(tc.ROOT).as_posix(), p) for p in files_below(path)]
         elif path.is_file():
             out.append((rel, path))
         else:
@@ -490,9 +505,9 @@ def oracle_hash_inputs(game_cfg: dict, negative: Path | None = None) -> list[tup
 def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     """SHA-1 of what an oracle verdict is about: the decompiled sources (games/<game>/decomp/src, every file), the
     oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, the tools and runtime
-    files that decide the block analysis, the block hooks and how the original runs (ORACLE_HASHED_TOOLS), and the
-    name, module, addresses and size of every row of the functions table (not its status columns, which the promotion
-    writes).
+    files that decide the block analysis, the block hooks and how the original runs (ORACLE_HASHED_TOOLS), the state
+    of the DolRecomp checkout (dolrecomp_state), and the name, module, addresses and size of every row of the
+    functions table (not its status columns, which the promotion writes).
     Line ends are normalized (a checkout with CRLF gives the same hash). tools/build.py --oracle compiles it into the
     oracle executable (header of its jsonl files); tools/decomp_oracle.py report --promote refuses results whose hash
     is not the current one."""
@@ -501,6 +516,7 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     for name, path in oracle_hash_inputs(game_cfg, negative):
         h.update(name.encode() + b"\0")
         h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    h.update(b"dolrecomp " + dolrecomp_state().encode() + b"\n")
     _, columns = config(game_cfg)
     for f in read_table(game_cfg):
         h.update("\t".join([f.name, f.module, *(f"{f.addresses.get(v) or 0:08X}" for v in sorted(columns)),

@@ -64,6 +64,9 @@
 // ("ORACLE ..."). Every case and difference line is flushed when written, so that a run cut short keeps them (its
 // missing summaries and end line tell tools/decomp_oracle.py it did not finish). GCRT_DECOMP_ORACLE_CASES=<n>: cases
 // stored per function (default 64).
+// Every setting that changes what is compared or stored (dead stack, stored cases, cross-check, test mode of the
+// journal, content of the synthetic cases) is written in the header, with a run identifier; tools/decomp_oracle.py
+// refuses to promote results whose settings are not the defaults, and counts one run only once.
 #include "decomp/gc_abi.h"
 #include "decomp/gc_oracle_compare.h"
 
@@ -78,7 +81,9 @@ extern "C" {
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <chrono>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <sstream>
 #include <string>
@@ -166,6 +171,9 @@ std::FILE* s_out = nullptr;
 std::string s_out_path;
 std::string s_synthetic_dir;
 unsigned s_synthetic_loaded = 0;
+// FNV-1a 64 of the synthetic files loaded, in load order: name, 0, content with CRLF read as LF, 0 (the same as
+// synthetic_content_hash of tools/decomp_oracle.py over the current files).
+u64 s_synthetic_content = oracle::fnv_offset;
 std::vector<std::string> s_synthetic_errors;
 u64 s_case_limit = 64;
 u32 s_dead_stack = oracle::default_dead_stack;
@@ -683,8 +691,22 @@ void load_synthetic(const char* dir) {
         return;
     }
     std::sort(files.begin(), files.end());
-    for (const auto& file : files)
+    for (const auto& file : files) {
+        std::ifstream raw(file, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(raw)), std::istreambuf_iterator<char>());
+        std::string normalized;
+        normalized.reserve(content.size());
+        for (std::size_t i = 0; i < content.size(); i++)
+            if (!(content[i] == '\r' && i + 1 < content.size() && content[i + 1] == '\n'))
+                normalized.push_back(content[i]);
+        const std::string name = file.filename().string();
+        const char zero = 0;
+        s_synthetic_content = oracle::fnv1a(s_synthetic_content, name.data(), name.size());
+        s_synthetic_content = oracle::fnv1a(s_synthetic_content, &zero, 1);
+        s_synthetic_content = oracle::fnv1a(s_synthetic_content, normalized.data(), normalized.size());
+        s_synthetic_content = oracle::fnv1a(s_synthetic_content, &zero, 1);
         load_synthetic_file(file.string());
+    }
 }
 
 // --- one comparison ------------------------------------------------------------------------------------------------
@@ -985,20 +1007,30 @@ void initialize() {
         std::fprintf(stderr, "gc_oracle: synthetic cases: %s\n", e.c_str());
     if (const char* dir = std::getenv("GCRT_DECOMP_ORACLE_OUT"); dir && dir[0]) {
         char name[96];
-        std::snprintf(name, sizeof(name), "/oracle-%s-%d-%lld.jsonl", s_version, static_cast<int>(GC_ORACLE_GETPID()),
-                      static_cast<long long>(std::time(nullptr)));
+        const int pid = static_cast<int>(GC_ORACLE_GETPID());
+        const long long started = static_cast<long long>(std::time(nullptr));
+        std::snprintf(name, sizeof(name), "/oracle-%s-%d-%lld.jsonl", s_version, pid, started);
+        // Run identifier: process, start time and a high-resolution clock reading (two runs never share one, a copy
+        // of a result file keeps it).
+        char run[80];
+        std::snprintf(run, sizeof(run), "%d-%lld-%016llX", pid, started,
+                      static_cast<unsigned long long>(
+                          std::chrono::high_resolution_clock::now().time_since_epoch().count()));
         s_out_path = std::string(dir) + name;
         s_out = std::fopen(s_out_path.c_str(), "w");
         if (!s_out)
             std::fprintf(stderr, "gc_oracle: cannot write %s: no report file\n", s_out_path.c_str());
         else {
             std::fprintf(s_out,
-                         "{\"kind\":\"header\",\"version\":\"%s\",\"functions\":%zu,\"negative\":%s,\"sources\":\"%s\","
-                         "\"dead_stack\":\"%08X\",\"synthetic_dead_stack\":\"%08X\",\"synthetic_cases\":%u,"
+                         "{\"kind\":\"header\",\"version\":\"%s\",\"run\":\"%s\",\"functions\":%zu,\"negative\":%s,"
+                         "\"sources\":\"%s\",\"dead_stack\":\"%08X\",\"synthetic_dead_stack\":\"%08X\","
+                         "\"case_limit\":%llu,\"crosscheck\":%s,\"synthetic_cases\":%u,\"synthetic_content\":\"%016llX\","
                          "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u}\n",
-                         s_version, s_functions.size(), negative_build ? "true" : "false", s_sources_hash,
+                         s_version, run, s_functions.size(), negative_build ? "true" : "false", s_sources_hash,
                          static_cast<unsigned>(s_dead_stack), static_cast<unsigned>(synthetic_dead_stack),
-                         s_synthetic_loaded, s_synthetic_errors.size(), s_test_detaching_journal);
+                         static_cast<unsigned long long>(s_case_limit), crosscheck_enabled ? "true" : "false",
+                         s_synthetic_loaded, static_cast<unsigned long long>(s_synthetic_content),
+                         s_synthetic_errors.size(), s_test_detaching_journal);
             std::fflush(s_out);
         }
     }

@@ -58,18 +58,6 @@ def fnv1a64_file(path: Path) -> int:
     return h
 
 
-def git_head(repo: Path) -> str:
-    git = tc.find_git()
-    if not git:
-        return "?"
-    out = subprocess.run([str(git), "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True)
-    head = out.stdout.strip() or "?"
-    diff = subprocess.run([str(git), "-C", str(repo), "diff", "HEAD"], capture_output=True)
-    if diff.stdout:
-        head += "+" + hashlib.sha1(diff.stdout).hexdigest()[:12]
-    return head
-
-
 def parse_int(value) -> int:
     if isinstance(value, int):
         return value
@@ -392,7 +380,7 @@ def recompile(game_cfg: dict, version: str, disc_root: Path, recomp_dir: Path, a
     fingerprint = {
         "scheme": RECOMP_SCHEME,
         "dolrecomp_exe": sha1_file(dolrecomp),
-        "dolrecomp_commit": git_head(tc.EXTERNAL / "DolRecomp"),
+        "dolrecomp_commit": tc.git_head(tc.EXTERNAL / "DolRecomp"),
         "dol": sha1_file(dol),
         "rels": {str(p.relative_to(rel_dir)).replace("\\", "/"): sha1_file(p) for p in rels},
         "rel_base": rel_base,

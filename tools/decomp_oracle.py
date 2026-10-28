@@ -29,9 +29,13 @@ Promotion rule (report). A row of the game's functions table is proposed `verifi
   * the results are whole and current: every oracle file has a header, an end line and a summary per function, no
     unreadable line, the header's source hash is the current one (tools/decomp_functions.py oracle_sources_hash: the
     decompiled sources, runtime/core/decomp, the tools and runtime files of the block analysis and the hooks, the
-    address columns of the table), run-<ID>.json exists, its bench verdict is 0 and its synthetic-case hash is the
-    current one; none comes from a negative-test executable or a test mode of the oracle, no self-check of the undo
-    and redo failed. A label given twice is refused. Any problem refuses every promotion;
+    DolRecomp checkout, the address columns of the table), run-<ID>.json exists, its bench verdict is 0 and its
+    synthetic-case hash is the current one, and the synthetic cases the executable loaded (header synthetic_content)
+    are the current ones; every setting in the header is the default (DEFAULT_SETTINGS: dead stack, stored cases,
+    cross-check); none comes from a negative-test executable or a test mode of the oracle, no self-check of the undo
+    and redo failed. One run is never counted twice: two labels naming one folder (by resolved, case-folded path or
+    file identity: "L,l", "L,L/", a junction) are refused, and two result files with the same content or the same
+    run (executable SHA-1 + header run identifier) are a problem. Any problem refuses every promotion;
   * the oracle compared the function at least once, never saw a difference (real calls and synthetic cases), found
     it to be a leaf in every run that called it, could compare every synthetic case, and left at most
     --max-not-compared real calls uncompared (default 0: a call whose original did not return, for instance, is not
@@ -71,6 +75,13 @@ import toolchain as tc  # noqa: E402
 DEFAULT_MIN_CASES = 10
 DEFAULT_SATURATION = 1000
 DEFAULT_MAX_NOT_COMPARED = 0
+# Settings of the oracle executable (environment variables read by runtime/core/decomp, written in the header of each
+# result file): only results produced with these defaults promote. dead_stack: GCRT_DECOMP_ORACLE_DEAD_STACK (bytes
+# under r1 not compared; 0xFFFFFFFF would hide every write below r1); case_limit: GCRT_DECOMP_ORACLE_CASES (cases
+# stored per function, the ones replay rechecks); crosscheck: GCRT_DECOMP_CROSSCHECK (the gateway also reruns the
+# original). GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL (test mode) is refused on its own, and the synthetic cases
+# (GCRT_DECOMP_ORACLE_SYNTHETIC) are checked by content (header field synthetic_content).
+DEFAULT_SETTINGS = {"dead_stack": "00010000", "case_limit": 64, "crosscheck": False}
 
 
 def main_checkout() -> Path:
@@ -117,9 +128,26 @@ def synthetic_hash(game_cfg: dict) -> str:
     import hashlib
     h = hashlib.sha1()
     folder = synthetic_dir(game_cfg)
-    for path in sorted(folder.glob("*.txt")) if folder.is_dir() else []:
+    for path in synthetic_files(game_cfg):
         h.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     return h.hexdigest()
+
+
+def synthetic_files(game_cfg: dict) -> list[Path]:
+    """The .txt files of the synthetic cases, sorted by name as a case-sensitive string (the order of the oracle
+    executable's std::sort, the same on Windows and POSIX)."""
+    folder = synthetic_dir(game_cfg)
+    return sorted(folder.glob("*.txt"), key=lambda p: p.name) if folder.is_dir() else []
+
+
+def synthetic_content_hash(game_cfg: dict) -> str:
+    """FNV-1a 64 of the synthetic files the way the oracle executable hashes the ones it loaded (header field
+    synthetic_content, runtime/core/decomp/gc_oracle.cpp load_synthetic): name, 0, content with CRLF read as LF, 0."""
+    h = 0xCBF29CE484222325
+    for path in synthetic_files(game_cfg):
+        for b in path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n") + b"\0":
+            h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016X}"
 
 
 def sha1_file(path: Path) -> str:
@@ -174,6 +202,7 @@ def cmd_run(args) -> int:
         print(f"== {version}: tools/ab.py check returned {rc} (bench verdict of the oracle executable)")
         info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
+                "dolrecomp": df.dolrecomp_state(),
                 "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg)}
         (out / f"run-{version}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         code = code or rc
@@ -186,6 +215,8 @@ def cmd_hash(args) -> int:
     game_cfg = tc.load_game(game_name(args.game))
     print(f"sources {df.oracle_sources_hash(game_cfg)}")
     print(f"synthetic {synthetic_hash(game_cfg)}")
+    print(f"synthetic_content {synthetic_content_hash(game_cfg)}")
+    print(f"dolrecomp {df.dolrecomp_state()}")
     return 0
 
 
@@ -205,14 +236,18 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
     """{function: aggregate} over every oracle file of `labels` for `version`, and the problems found. A problem is
     blocking: --promote refuses, and every verdict of the version fails. `current`: {"sources": hash, "synthetic":
     hash} the results must have been produced with (None: not checked)."""
+    import hashlib
     agg: dict[str, dict] = {}
     problems: list[str] = []
+    seen_content: dict[str, str] = {}  # SHA-1 of a result file -> label/version/file that has it
+    seen_run: dict[tuple[str, str], str] = {}  # (SHA-1 of the executable, run identifier) -> label/version/file
     for label in labels:
         folder = oracle_dir(bench, game, label, version)
         files = sorted(folder.glob("oracle-*.jsonl"))
         if not files:
             problems.append(f"{label}/{version}: no oracle file in {folder}")
         info_path = folder / f"run-{version}.json"
+        info: dict = {}
         if not info_path.exists():
             problems.append(f"{label}/{version}: no run-{version}.json (results not produced by "
                             f"tools/decomp_oracle.py run)")
@@ -225,6 +260,13 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                 problems.append(f"{label}/{version}: synthetic cases {info.get('synthetic')} differ from the current "
                                 f"ones {current['synthetic']} (or were not run)")
         for path in files:
+            # One run is never counted twice: not under two labels, not as a copy under another name.
+            where = f"{label}/{version}/{path.name}"
+            content = hashlib.sha1(path.read_bytes()).hexdigest()
+            if content in seen_content:
+                problems.append(f"{where}: same content as {seen_content[content]} (one run counted twice: copied "
+                                f"results; nothing promotes)")
+            seen_content.setdefault(content, where)
             header = None
             summaries = 0
             ended = False
@@ -290,6 +332,24 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
             if header is None:
                 problems.append(f"{path.name}: no header line")
             else:
+                run_key = (str(info.get("exe_sha1") or "?"), str(header.get("run") or path.name))
+                if run_key in seen_run:
+                    problems.append(f"{where}: same run as {seen_run[run_key]} (executable {run_key[0][:12]}, run "
+                                    f"{run_key[1]}): one run counted twice; nothing promotes")
+                seen_run.setdefault(run_key, where)
+                for key, default in DEFAULT_SETTINGS.items():
+                    if key not in header:
+                        problems.append(f"{path.name}: header without {key} (old oracle executable: rebuild and rerun)")
+                    elif header[key] != default:
+                        problems.append(f"{path.name}: setting {key} = {header[key]!r}, not the default {default!r} "
+                                        f"(an environment variable of the run changed what the oracle compares or "
+                                        f"stores: results never promote)")
+                if current is not None and "synthetic_content" in current and \
+                        header.get("synthetic_content") != current["synthetic_content"]:
+                    problems.append(f"{path.name}: synthetic cases loaded by the executable "
+                                    f"{header.get('synthetic_content') or '(no hash: old oracle executable)'} are not "
+                                    f"the current ones {current['synthetic_content']} (GCRT_DECOMP_ORACLE_SYNTHETIC "
+                                    f"pointed elsewhere, or the cases changed)")
                 if header.get("negative"):
                     problems.append(f"{path.name}: negative-test executable (results never promote)")
                 if int(header.get("test_detaching_journal", 0)):
@@ -366,6 +426,36 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
     return True, f"{a['compared']} comparisons, {n} distinct cases, {cov}, 0 differences"
 
 
+def folder_key(path: Path) -> str:
+    """Identity of a folder by its path: resolved (links and junctions followed) and case-folded the way the system
+    compares names (os.path.normcase: case-insensitive on Windows only)."""
+    import os
+    return os.path.normcase(str(path.resolve()))
+
+
+def same_folders(bench: Path, game: str, labels: list[str], versions: list[str]) -> list[str]:
+    """Pairs of labels that name one folder ("L" and "l" on Windows, "L/", "./L", "L.", a junction or a symbolic link
+    to it, for the label or for one of its version folders), by resolved path or by file identity
+    (os.path.samefile)."""
+    import os
+    out = []
+    for i, a in enumerate(labels):
+        for b in labels[i + 1:]:
+            for sub in [None, *versions]:
+                pa = oracle_dir(bench, game, a, sub) if sub else oracle_dir(bench, game, a, "x").parent
+                pb = oracle_dir(bench, game, b, sub) if sub else oracle_dir(bench, game, b, "x").parent
+                same = folder_key(pa) == folder_key(pb)
+                if not same and pa.exists() and pb.exists():
+                    try:
+                        same = os.path.samefile(pa, pb)
+                    except OSError:
+                        pass
+                if same:
+                    out.append(f"labels {a!r} and {b!r} are the same folder {pa.resolve()}")
+                    break
+    return out
+
+
 def cmd_report(args) -> int:
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
@@ -375,13 +465,17 @@ def cmd_report(args) -> int:
     if duplicates:
         raise SystemExit(f"--label {args.label}: {', '.join(duplicates)} given more than once (its results would be "
                          f"counted twice)")
+    same = same_folders(bench, game, labels, versions_of(game_cfg, args.versions))
+    if same:
+        raise SystemExit(f"--label {args.label}: {'; '.join(same)} (one run would be counted twice)")
     weaker = weaker_thresholds(args)
     if args.promote and weaker:
         raise SystemExit(f"--promote refused: thresholds weaker than the promotion rule ({'; '.join(weaker)}); the "
                          f"table is only promoted under the defaults (or stricter ones)")
     versions = versions_of(game_cfg, args.versions)
     functions = df.read_table(game_cfg)
-    current = {"sources": df.oracle_sources_hash(game_cfg), "synthetic": synthetic_hash(game_cfg)}
+    current = {"sources": df.oracle_sources_hash(game_cfg), "synthetic": synthetic_hash(game_cfg),
+               "synthetic_content": synthetic_content_hash(game_cfg)}
     results = {}
     problems: list[str] = []
     for v in versions:

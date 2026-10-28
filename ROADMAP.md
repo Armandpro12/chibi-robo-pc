@@ -144,13 +144,15 @@ Progress: 4 functions decompiled and verified by the oracle, on both US and PAL 
   reach branches the scenarios do not. A function is **verified** when, in every version, it showed no difference on
   every compared call and synthetic case, every basic block of the original reachable from its entry was exercised,
   and enough distinct real starting states were seen (and every call was compared). This is basic-block coverage (not
-  edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish, from a failing bench run, or from other sources than the
-  current ones are refused.
-- **Results**: over the five reference scenarios, the four functions were compared about 181,000 times in US and
-  216,000 in PAL, plus 30 synthetic cases per run, without a difference; all their blocks were covered (for three of
-  them, some branches only by the synthetic cases). Every reference scenario stays identical to the bench references
-  with the oracle on, and a deliberately wrong variant of each function, plus a floating-point test leaf, is reported
-  on every compared call in both versions.
+  edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
+  from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
+  defaults are refused, and one run is never counted twice.
+- **Results**: over the five reference scenarios, the four functions were compared 180,746 times in US and 216,342
+  in PAL (every call compared), without a difference. Their 30 synthetic cases run once in each scenario run that
+  calls the function: 143 synthetic comparisons per version, without a difference. All their blocks were covered
+  (for three of them, some branches only by the synthetic cases). Every reference scenario stays identical to the
+  bench references with the oracle on, and a deliberately wrong variant of each function, plus a floating-point test
+  leaf, is reported on every compared call in both versions.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 4 verified (0.10 %; 208 bytes, 0.01 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the

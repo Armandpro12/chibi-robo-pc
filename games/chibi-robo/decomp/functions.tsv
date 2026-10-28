@@ -16,8 +16,9 @@
 #                          difference on every compared call of the reference scenarios and on every synthetic case
 #                          (decomp/oracle_cases/), every basic block of the original reachable from its entry
 #                          exercised by them, at least 10 distinct real starting states or saturated after 1000
-#                          comparisons (thresholds: hypothesis), no call left uncompared. Basic-block coverage (not edge or path
-#                          coverage), not a proof on states never compared
+#                          comparisons (thresholds: hypothesis), no call left uncompared, the oracle at its default
+#                          settings and each run counted once. Basic-block coverage (not edge or path coverage), not
+#                          a proof on states never compared
 #             (compared whole and case-insensitive, as tools/decomp_progress.py does; any other status refuses the table)
 #   pal_oracle  optional column: "yes" once the oracle has passed on GGTP01; "no", "-" or empty otherwise
 # The oracle does not compare FPSCR (runtime/core/decomp/gc_oracle_compare.h). This holds for this game because its
