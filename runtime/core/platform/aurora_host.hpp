@@ -47,8 +47,10 @@ bool host_poll_events();
 // the events queued for the next host_poll_events. Returns false if a close request is waiting.
 bool host_pump_events();
 // Waits until Aurora's pipeline compilation queue is empty (otherwise the draws whose
-// pipeline is not ready are skipped by Aurora). Returns the time waited in seconds.
-double host_wait_pipelines(double timeoutSeconds);
+// pipeline is not ready are skipped by Aurora). Returns the time waited in seconds. If given, queuedAtStart receives
+// the queue length when the wait began and compiled the number of pipeline objects Aurora created during the wait
+// (diagnostic: compilation throughput).
+double host_wait_pipelines(double timeoutSeconds, uint32_t* queuedAtStart = nullptr, uint32_t* compiled = nullptr);
 // Pipelines requested from Aurora and not compiled yet (same statistic, without waiting).
 uint32_t host_pending_pipelines();
 // Test of the crash handler (GCRT_CRASH_TEST=render): queues an access violation on Aurora's render worker thread.
