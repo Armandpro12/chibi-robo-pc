@@ -312,12 +312,20 @@ void crosscheck(GcrtCpu* g, u32 address, const u32* saved_gpr, const f64* saved_
 void first_call(u32 address);
 // Nested run of guest code with the registers already set (runtime/core/hle: gcrt_guest_call_prepared).
 bool run_guest(GcrtCpu* g, u32 address) noexcept;
-// A call of decompiled code to the function at `address` (call_guest, call_address, call): run_guest, except in an
-// oracle build while the caller is being compared, where the oracle compares it with the original's call and replays
-// it (`argument_gprs`, `argument_fprs`: bit n = rn / fn holds an argument of the call's C++ type).
+#if defined(GC_DECOMP_ORACLE)
+// Oracle builds: a call of decompiled code to the function at `address` (call_guest, call_address, call): run_guest,
+// except while the caller is being compared, where the oracle compares it with the original's call and replays it
+// (`argument_gprs`, `argument_fprs`: bit n = rn / fn holds an argument of the call's C++ type).
 bool call_function(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
 // True while the oracle compares a decompiled function (its calls must go through call_function).
 bool oracle_replaying() noexcept;
+#else
+// Other builds: no oracle, the calls are plain (the tests below fold away at compile time; nothing of the oracle is
+// left in a production executable).
+constexpr bool oracle_replaying() noexcept {
+    return false;
+}
+#endif
 // Guest address, in this build, of the registered decompiled function whose C++ function is `direct`, 0 if none.
 u32 address_of_function(void (*direct)()) noexcept;
 GcrtCpu* current_cpu() noexcept;
@@ -344,14 +352,21 @@ bool oracle_is_replaying() noexcept;
 // The entry of `address` declined because MSR[FP] = 0 (decline_without_fpu): counted apart by the oracle ("declined,
 // FPU off"), neither compared nor "not compared"; during another comparison it also makes that function not a leaf.
 void oracle_declined_fpu(u32 address) noexcept;
+// The entry of the registered function declined because its original runs (bypass_address): `lr` is the return
+// address that original was entered with (the nested run's), which a non-leaf original saves in its caller's frame.
+void oracle_bypassed_entry(u32 lr) noexcept;
 #endif
 
 } // namespace detail
 
 // HLE entry of the decompiled function Fn (recompiled -> decompiled).
 template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
-    if (address == detail::bypass_address)
-        return false; // cross-check in progress: the recompiled original runs
+    if (address == detail::bypass_address) {
+#if defined(GC_DECOMP_ORACLE)
+        detail::oracle_bypassed_entry(*registers_of(g).lr); // the LR the original runs with (gc_oracle.cpp)
+#endif
+        return false; // cross-check or oracle in progress: the recompiled original runs
+    }
     if (detail::fpu_off() && detail::decline_without_fpu(address))
         return false; // FPU not given to this thread yet: the original runs and raises "FPU unavailable" itself
     const registers r = registers_of(g);
@@ -403,21 +418,34 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
     (detail::check_argument<A>(), ...);
     detail::check_result<R>();
     static_assert(!detail::is_hidden_struct_v<R>, "gc_abi: call_guest does not return structures yet");
-    constexpr auto alloc = detail::allocation<A...>::compute(3u);
+    // static: read by the lambdas below (oracle builds).
+    static constexpr auto alloc = detail::allocation<A...>::compute(3u);
     static_assert(alloc.next_gpr <= 11u && alloc.next_fpr <= 9u, "gc_abi: stack arguments not supported");
     GcrtCpu* g = detail::current_cpu();
     const registers r = registers_of(g);
     unsigned i = 0;
     ((detail::write_value<A>(r, alloc.slots[i++], args)), ...);
     (void)i;
-    u32 gprs = 0, fprs = 0;
-    for (std::size_t k = 0; k < sizeof...(A); k++) {
-        if (alloc.slots[k].kind == detail::slot_fpr)
-            fprs |= 1u << alloc.slots[k].reg;
-        else
-            gprs |= (alloc.slots[k].kind == detail::slot_pair ? 3u : 1u) << alloc.slots[k].reg;
-    }
+#if defined(GC_DECOMP_ORACLE)
+    // Argument registers of the call's C++ type, for the oracle's comparison of the call (computed at compile time).
+    constexpr u32 gprs = [] {
+        u32 m = 0;
+        for (std::size_t k = 0; k < sizeof...(A); k++)
+            if (alloc.slots[k].kind != detail::slot_fpr)
+                m |= (alloc.slots[k].kind == detail::slot_pair ? 3u : 1u) << alloc.slots[k].reg;
+        return m;
+    }();
+    constexpr u32 fprs = [] {
+        u32 m = 0;
+        for (std::size_t k = 0; k < sizeof...(A); k++)
+            if (alloc.slots[k].kind == detail::slot_fpr)
+                m |= 1u << alloc.slots[k].reg;
+        return m;
+    }();
     detail::call_function(g, address, gprs, fprs);
+#else
+    detail::run_guest(g, address);
+#endif
     if constexpr (!std::is_void_v<R>) {
         constexpr detail::slot result{detail::is_pair_v<R> ? detail::slot_pair
                                                            : (detail::is_fpr_v<R> ? detail::slot_fpr : detail::slot_word),
@@ -431,6 +459,8 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
 // FPU is reached through the guest code while MSR[FP] = 0 (its entry declines there, registration_uses_fpu).
 // Limit: a plain C++ call between decompiled functions does not go through the gateway; see notes/decomp.md.
 template <class R, class... A> R call_address(u32 address, A... args) {
+    // While the oracle compares the caller (oracle builds only), the call goes through call_guest, so that the oracle
+    // records it.
     if (const export_record* e = find(address);
         e && !detail::oracle_replaying() && !(detail::fpu_off() && detail::registered_uses_fpu(address))) {
         using pointer = R (*)(A...);
@@ -454,10 +484,12 @@ template <class R, class... P, class... A> R call_through_oracle(R (*)(P...), u3
 } // namespace detail
 
 template <auto Fn, class... A> auto call(A... args) {
+#if defined(GC_DECOMP_ORACLE)
     if (detail::oracle_replaying()) {
         static const u32 address = detail::address_of_function(reinterpret_cast<void (*)()>(Fn));
         return detail::call_through_oracle(Fn, address, args...);
     }
+#endif
     return Fn(args...);
 }
 
@@ -467,6 +499,8 @@ template <auto Fn, class... A> auto call(A... args) {
 namespace testing {
 void clobber_gpr(unsigned reg, u32 value) noexcept;
 void clobber_cr(u32 value) noexcept;
+// A store of `value` at (entry r1 + `offset`), through gc_mem.h: a variant that writes into its caller's frame.
+void store_word_at_entry_sp(u32 offset, u32 value) noexcept;
 } // namespace testing
 #endif
 

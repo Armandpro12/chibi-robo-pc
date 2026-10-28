@@ -834,8 +834,12 @@ def write_status(game_cfg: dict, names: list[str], versions: list[str]) -> None:
 
 def case_lines(rec: dict) -> list[str]:
     """Case record (oracle jsonl) -> text form read by runtime/core/decomp/oracle_replay.cpp."""
+    # call_sites and original_entry_lr (the LR the original was entered with): the LR save word rule of
+    # gc_oracle_compare.h (0 for a case written before these fields existed: the word is then compared, the strict
+    # side).
     out = [f"case {rec['function']} {rec['address']} {rec['result_kind']} {rec.get('fingerprint', '-')} "
-           f"{rec.get('dead_stack', '00010000')}"]
+           f"{rec.get('dead_stack', '00010000')} {int(rec.get('call_sites', 0))} "
+           f"{rec.get('original_entry_lr', '00000000')}"]
     for key, tag in (("entry", "I"), ("original", "O")):
         r = rec[key]
         out.append(f"{tag}G " + " ".join(r["gpr"]))

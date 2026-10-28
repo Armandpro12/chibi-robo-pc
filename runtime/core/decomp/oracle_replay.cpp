@@ -66,13 +66,8 @@ GcrtCpu* current_cpu() noexcept {
     return s_cpu;
 }
 // Calls of a non-leaf function: not replayed offline yet (a case that holds calls is skipped by tools/decomp_oracle.py
-// replay); reaching one here is reported like any guest call.
-bool oracle_replaying() noexcept {
-    return false;
-}
-bool call_function(GcrtCpu* g, u32 address, u32, u32) noexcept {
-    return run_guest(g, address);
-}
+// replay); reaching one here (call_guest -> run_guest, gc_abi.h without GC_DECOMP_ORACLE) is reported like any guest
+// call.
 u32 address_of_function(void (*)()) noexcept {
     return 0;
 }
@@ -86,6 +81,10 @@ void clobber_gpr(unsigned reg, u32 value) noexcept {
         s_cpu->gpr[reg] = value;
 }
 void clobber_cr(u32) noexcept {}
+void store_word_at_entry_sp(u32 offset, u32 value) noexcept {
+    if (s_cpu)
+        gc::store(*gc::ptr_from_guest_address<gc::be<u32>>(s_cpu->gpr[1] + offset), value);
+}
 } // namespace testing
 #endif
 } // namespace gc::abi
@@ -133,6 +132,11 @@ struct replay_case {
     u32 address = 0;
     unsigned result_kind = 0;
     u32 dead_stack = gc::oracle::default_dead_stack; // size the in-game oracle compared this case with
+    // Call sites of the function and the LR its original was entered with (in-game oracle, "call_sites" and
+    // "original_entry_lr"): the LR save word rule of gc_oracle_compare.h. Absent (a case written before they were
+    // recorded): 0, the word is compared.
+    unsigned call_sites = 0;
+    u32 original_entry_lr = 0;
     reg_state entry{}, original{};
     std::vector<std::pair<u32, std::string>> reads;  // address, value hex (big-endian)
     std::vector<byte_write> original_writes;
@@ -180,11 +184,15 @@ bool next_case(std::istream& in, replay_case& c) {
         ls >> tag;
         if (tag == "case") {
             std::string address;
-            std::string dead_stack;
-            ls >> c.function >> address >> c.result_kind >> c.fingerprint >> dead_stack;
+            std::string dead_stack, call_sites, entry_lr;
+            ls >> c.function >> address >> c.result_kind >> c.fingerprint >> dead_stack >> call_sites >> entry_lr;
             c.address = static_cast<u32>(hex(address));
             if (!dead_stack.empty())
                 c.dead_stack = static_cast<u32>(hex(dead_stack));
+            if (!call_sites.empty())
+                c.call_sites = static_cast<unsigned>(std::strtoul(call_sites.c_str(), nullptr, 10));
+            if (!entry_lr.empty())
+                c.original_entry_lr = static_cast<u32>(hex(entry_lr));
             started = true;
         } else if (tag.size() == 2 && (tag[0] == 'I' || tag[0] == 'O')) {
             read_regs(ls, tag[1], tag[0] == 'I' ? c.entry : c.original);
@@ -281,7 +289,9 @@ int main(int argc, char** argv) {
         });
         std::vector<gc::oracle::difference> diffs;
         gc::oracle::compare(c.original, after, static_cast<u8>(c.result_kind), c.entry.gpr[1], c.original_writes,
-                            observer.writes.bytes(), diffs, c.dead_stack);
+                            observer.writes.bytes(), diffs, c.dead_stack,
+                            gc::oracle::lr_save_rule{c.call_sites != 0 && c.original_entry_lr != 0,
+                                                     c.original_entry_lr});
         if (diffs.empty() && s_outside.empty()) {
             passed++;
             std::printf("PASS %s %s\n", c.function.c_str(), c.fingerprint.c_str());

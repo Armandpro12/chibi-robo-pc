@@ -7,8 +7,10 @@
 //     (ps0 and ps1 for f32, ps0 for f64);
 //   * registers the PowerPC EABI preserves: r1, r2, r13, r14..r31, f14..f31 (ps0 and ps1 bits), cr2..cr4;
 //   * bytes written to guest memory, address and final value, except the dead stack under the entry r1
-//     ([r1 - dead stack, r1), default_dead_stack bytes unless the caller gives another size) and the LR save word
-//     [r1 + 4, r1 + 8): a byte written by only one side is a difference even if its value did not change;
+//     ([r1 - dead stack, r1), default_dead_stack bytes unless the caller gives another size): a byte written by only
+//     one side is a difference even if its value did not change. The LR save word [r1 + 4, r1 + 8) is compared too,
+//     with one exception (lr_save_rule below): for a function that has call sites, the original's store there of the
+//     LR it was entered with, which the decompiled C++ does not make;
 //   * FPSCR is not compared. This is only sound for a game whose own code never reads FPSCR (no mffs, mtfsf, mtfsb,
 //     mcrfs): a sticky exception bit or a rounding mode left by one side would then never change a result. Each game
 //     states why that holds for it next to its functions table (games/<game>/decomp/); a game that reads FPSCR needs
@@ -105,22 +107,60 @@ inline void push(std::vector<difference>& out, const char* what, u32 address, u6
     d.decompiled = decompiled;
     out.push_back(d);
 }
-// Not compared: the dead stack under the entry r1, and the LR save word of the caller's frame, 4(r1) at entry (the
-// PowerPC EABI has a function that calls others save its return address there: the decompiled C++ keeps it on the host
-// instead, and the value is dead once the function returned; seen on every compared call of a non-leaf original,
-// D2-1).
+// Not compared: the dead stack under the entry r1.
 inline bool in_dead_stack(u32 address, u32 entry_r1, u32 dead_stack) noexcept {
     const u32 r1 = canonical_address(entry_r1);
-    return (address < r1 && r1 - address <= dead_stack) || address - (r1 + 4u) < 4u;
+    return address < r1 && r1 - address <= dead_stack;
+}
+// The LR save word of the caller's frame, [r1 + 4, r1 + 8) at entry.
+inline bool in_lr_word(u32 address, u32 entry_r1) noexcept {
+    return address - (canonical_address(entry_r1) + 4u) < 4u;
 }
 } // namespace detail
 
+// The one store into the caller's frame that the comparison leaves out. The PowerPC EABI has a function that calls
+// others save its return address in the caller's frame, at 4(r1) on entry (Metrowerks prologues of this kind of game:
+// mflr r0 then stw r0,4(r1) before the stwu, or stw r0,<frame + 4>(r1) after it); the decompiled C++ keeps its return
+// address on the host instead, and the word is dead once the function returned. So the original's bytes there are
+// left out only if all three hold:
+//   * `has_call_sites`: the function's code has call instructions (a leaf has no reason to save LR: any store of a
+//     leaf there stays a difference);
+//   * the original wrote all four bytes of the word, and its final value there is exactly `entry_lr`, the LR that
+//     original was entered with (in the in-game oracle, the return address of the nested run that ran it, not the
+//     game caller's: gc_oracle.cpp oracle_bypassed_entry); any other value, or a partial store, stays a difference;
+//   * only bytes the decompiled version did not write are left out: a byte it wrote there is compared as usual (the
+//     decompiled C++ has no reason to store into its caller's frame).
+struct lr_save_rule {
+    bool has_call_sites = false;
+    u32 entry_lr = 0;
+};
+
+// True if `writes` (sorted, final values) hold the four bytes of the LR save word of `entry_r1` with exactly
+// `entry_lr` (big-endian).
+inline bool holds_entry_lr(const std::vector<byte_write>& writes, u32 entry_r1, u32 entry_lr) noexcept {
+    const u32 word = canonical_address(entry_r1) + 4u;
+    auto it = std::lower_bound(writes.begin(), writes.end(), word,
+                               [](const byte_write& b, u32 address) { return b.address < address; });
+    for (u32 i = 0; i < 4; i++, ++it) {
+        if (it == writes.end() || it->address != word + i ||
+            it->after != static_cast<u8>(entry_lr >> (8u * (3u - i))))
+            return false;
+    }
+    return true;
+}
+
+// True if the bytes of the LR save word that only the original wrote are left out (rule above).
+inline bool lr_word_masked(const lr_save_rule& rule, const std::vector<byte_write>& original_writes, u32 entry_r1) {
+    return rule.has_call_sites && holds_entry_lr(original_writes, entry_r1, rule.entry_lr);
+}
+
 // Differences between the original's outputs (registers `original`, writes `original_writes`) and the decompiled
 // version's, for a function whose result is of kind `kind`, entered with r1 = `entry_r1`, `dead_stack` bytes under
-// it not compared. Appends to `out`.
+// it not compared, `lr` its LR save word rule (default: a leaf, the word is compared). Appends to `out`.
 inline void compare(const reg_state& original, const reg_state& decompiled, u8 kind, u32 entry_r1,
                     const std::vector<byte_write>& original_writes, const std::vector<byte_write>& decompiled_writes,
-                    std::vector<difference>& out, u32 dead_stack = default_dead_stack) {
+                    std::vector<difference>& out, u32 dead_stack = default_dead_stack, lr_save_rule lr = {}) {
+    const bool mask_lr = lr_word_masked(lr, original_writes, entry_r1);
     char name[16];
     auto gpr = [&](unsigned i) {
         if (original.gpr[i] != decompiled.gpr[i]) {
@@ -170,7 +210,8 @@ inline void compare(const reg_state& original, const reg_state& decompiled, u8 k
     const auto& b = decompiled_writes;
     while (i < a.size() || j < b.size()) {
         if (j == b.size() || (i < a.size() && a[i].address < b[j].address)) {
-            if (!detail::in_dead_stack(a[i].address, entry_r1, dead_stack))
+            if (!detail::in_dead_stack(a[i].address, entry_r1, dead_stack) &&
+                !(mask_lr && detail::in_lr_word(a[i].address, entry_r1)))
                 detail::push(out, "mem", a[i].address, a[i].after, not_written);
             i++;
         } else if (i == a.size() || b[j].address < a[i].address) {

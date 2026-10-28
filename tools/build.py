@@ -312,9 +312,13 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
     if game_cfg.get("decomp"):
         import decomp_functions  # noqa: E402
         clash = []
+        # Basic blocks and call instructions are only scanned for an oracle build (its hooks, below): a production
+        # build neither computes nor uses them.
+        oracle_build = bool(game_cfg.get("_oracle_build"))
         blocks: dict[int, tuple[list[int], list[int]]] = {}
         calls: dict[int, list[int]] = {}
-        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout, blocks, calls=calls):
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout,
+                                             blocks if oracle_build else None, calls=calls if oracle_build else None):
             if a in hooks:
                 clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
@@ -322,7 +326,7 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         # (reachable or not), so that the oracle sees which blocks of the recompiled original ran (block coverage,
         # runtime/core/decomp/gc_oracle.cpp). Inside a function, branches are compiled as goto: without these hooks
         # the chassis only sees the entry. The hook declines (the original goes on); production builds have none.
-        if game_cfg.get("_oracle_build"):
+        if oracle_build:
             for entry, (reach, dead) in blocks.items():
                 for b in reach + dead:
                     if b == entry:
@@ -519,8 +523,10 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     # Oracle builds: call instructions and assertion blocks of each function (the oracle's non-leaf comparison).
     calls: dict[int, list[int]] = {}
     asserts: dict[int, list[int]] = {}
+    # Basic blocks too are for the oracle only (its table); a production table holds addresses and flags only.
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
-                                       blocks, fpu, calls if oracle else None, asserts if oracle else None)
+                                       blocks if oracle else None, fpu, calls if oracle else None,
+                                       asserts if oracle else None)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):

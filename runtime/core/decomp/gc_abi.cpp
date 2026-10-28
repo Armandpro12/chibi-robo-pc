@@ -188,23 +188,17 @@ GcrtCpu* current_cpu() noexcept {
 u64 guest_calls = 0;
 #endif
 
-bool oracle_replaying() noexcept {
 #if defined(GC_DECOMP_ORACLE)
+bool oracle_replaying() noexcept {
     return oracle_is_replaying();
-#else
-    return false;
-#endif
 }
 
 bool call_function(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept {
-#if defined(GC_DECOMP_ORACLE)
     if (oracle_replay_call(g, address, argument_gprs, argument_fprs))
         return true;
-#else
-    (void)argument_gprs, (void)argument_fprs;
-#endif
     return run_guest(g, address);
 }
+#endif
 
 u32 address_of_function(void (*direct)()) noexcept {
     for (const entry_state& e : s_entries)

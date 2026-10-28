@@ -2,9 +2,12 @@
 // oracle test functions of games/<game>/decomp/oracle_tests (built only by tools/build.py --oracle-negative, see
 // wrong_variants.cpp, with --decomp-enable naming those disabled rows).
 //
-//   oracle_test_clear_record            (leaf callee) word 0x0C not cleared
-//   oracle_test_clear_record_and_tail   one of six errors of a caller, chosen by GCRT_ORACLE_TEST_VARIANT (one run per
-//                                       variant: tools/decomp_oracle.py run --env GCRT_ORACLE_TEST_VARIANT=<name>):
+//   oracle_test_clear_record            (leaf callee) word 0x0C not cleared; with GCRT_ORACLE_TEST_VARIANT=
+//                                       leaf_lr_word instead: every word cleared, and a store of 0 into the LR save
+//                                       word of its caller's frame, 4(r1) at entry (a leaf's original never writes
+//                                       there: the LR save word rule of gc_oracle_compare.h must not hide it)
+//   oracle_test_clear_record_and_tail   one of seven errors of a caller, chosen by GCRT_ORACLE_TEST_VARIANT (one run
+//                                       per variant: tools/decomp_oracle.py run --env GCRT_ORACLE_TEST_VARIANT=<name>):
 //                                         missing_store      the store at +0x80 is not made
 //                                         wrong_argument     the callee gets record + 4
 //                                         extra_call         the callee is called twice
@@ -12,6 +15,10 @@
 //                                         store_before_call  the store at +0x80 is made before the call
 //                                         wrong_target       the call goes to the callee's address + 4 (never run:
 //                                                            under comparison a call is replayed, not made)
+//                                         lr_word_other_value  after the call, 0 is stored into the LR save word,
+//                                                            4(r1) at entry, where the original saved its entry LR
+//                                                            (another value there must stay a difference)
+//                                         leaf_lr_word       the caller is right (the leaf's variant above is wrong)
 //                                       unset or unknown: the run stops at the first call (no silent default)
 //   oracle_test_free_chain              calls in the wrong order: the walked nodes released from the head to the
 //                                       deepest (and the deepest one before the recursive call)
@@ -45,15 +52,42 @@ struct ClearedRecord {
     be<u32> word_80;
 };
 
+enum class caller_variant {
+    missing_store,
+    wrong_argument,
+    extra_call,
+    missing_call,
+    store_before_call,
+    wrong_target,
+    lr_word_other_value,
+    leaf_lr_word,
+};
+caller_variant selected_variant();
+
+// The leaf's variant: read without stopping when the variable is unset (the offline replay of its cases, tools/
+// decomp_oracle.py replay --negative, runs it without one).
+bool leaf_stores_lr_word() {
+    static const bool chosen = [] {
+        const char* name = std::getenv("GCRT_ORACLE_TEST_VARIANT");
+        return name && std::strcmp(name, "leaf_lr_word") == 0;
+    }();
+    return chosen;
+}
+
 void clear_record_wrong_missing_word(ptr<ClearedRecord> record) {
     record->word_00 = 0u;
     record->word_04 = 0u;
+    if (leaf_stores_lr_word()) {
+        record->word_0c = 0u;
+        for (unsigned i = 0; i < 25; i++)
+            record->words_18[i] = 0u;
+        gc::abi::testing::store_word_at_entry_sp(4u, 0u); // wrong on purpose: into the caller's LR save word
+        return;
+    }
     // wrong on purpose: word_0c not cleared
     for (unsigned i = 0; i < 25; i++)
         record->words_18[i] = 0u;
 }
-
-enum class caller_variant { missing_store, wrong_argument, extra_call, missing_call, store_before_call, wrong_target };
 
 caller_variant selected_variant() {
     static const caller_variant chosen = [] {
@@ -66,7 +100,9 @@ caller_variant selected_variant() {
                      {"extra_call", caller_variant::extra_call},
                      {"missing_call", caller_variant::missing_call},
                      {"store_before_call", caller_variant::store_before_call},
-                     {"wrong_target", caller_variant::wrong_target}};
+                     {"wrong_target", caller_variant::wrong_target},
+                     {"lr_word_other_value", caller_variant::lr_word_other_value},
+                     {"leaf_lr_word", caller_variant::leaf_lr_word}};
         for (const auto& k : known)
             if (name && std::strcmp(name, k.name) == 0) {
                 std::fprintf(stderr, "oracle negative: oracle_test_clear_record_and_tail variant %s\n", k.name);
@@ -108,6 +144,15 @@ void clear_record_and_tail_wrong(ptr<ClearedRecord> record) {
         record->word_80 = 0u;
         break;
     }
+    case caller_variant::lr_word_other_value:
+        gc::abi::call<&clear_record_wrong_missing_word>(record);
+        record->word_80 = 0u;
+        gc::abi::testing::store_word_at_entry_sp(4u, 0u); // wrong on purpose: not the entry LR
+        break;
+    case caller_variant::leaf_lr_word:
+        gc::abi::call<&clear_record_wrong_missing_word>(record);
+        record->word_80 = 0u;
+        break;
     }
 }
 

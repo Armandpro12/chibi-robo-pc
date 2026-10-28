@@ -17,7 +17,8 @@
 //      written, L2 = bytes read), R2 = registers after it. If it calls guest code (run_guest), F is not comparable
 //      as a leaf; the RAM writes of that guest code are journaled into W2 so that they are undone too;
 //   4. comparison (gc_oracle_compare.h): result registers, registers the EABI preserves, bytes written (not the dead
-//      stack under r1, GCRT_DECOMP_ORACLE_DEAD_STACK bytes, default 64 KiB); FPSCR is not compared (see
+//      stack under r1, GCRT_DECOMP_ORACLE_DEAD_STACK bytes, default 64 KiB; nor, for a function with call sites, the
+//      original's store of its entry LR into the LR save word 4(r1), lr_save_rule); FPSCR is not compared (see
 //      gc_oracle_compare.h). Then the side effects of the stores on the CPU layer: the lwarx reservation after each
 //      version, and every byte the decompiled code stored must have been told to the write journal (the store hook
 //      of gc_mem.h, installed by gc_abi.cpp), as every store of the original is;
@@ -82,6 +83,7 @@
 // refuses to promote results whose settings are not the defaults, and counts one run only once.
 #include "decomp/gc_abi.h"
 #include "decomp/gc_float.h"
+#include "decomp/gc_oracle_branch.h"
 #include "decomp/gc_oracle_compare.h"
 
 // C headers without their own extern "C" (DolRecomp's cpu.h): the write journal is a C symbol.
@@ -257,6 +259,10 @@ bool s_synthetic_call_missing = false;            // the original made more call
 oracle::write_set* s_callee_writes = nullptr;     // journal segment of the running callee
 std::vector<difference> s_call_diffs;             // differences found at the calls of the decompiled version
 u32 s_entry_r1 = 0, s_compare_dead_stack = 0;     // r1 at the entry of the compared run and its dead stack
+// LR the original of the compared run was entered with (the nested run's return address, oracle_bypassed_entry; 0
+// until its entry hook declined): the value its prologue saves in the LR save word (gc_oracle_compare.h).
+u32 s_entry_lr = 0;
+bool s_entry_lr_wanted = false; // the next bypassed entry is the compared original's
 std::unordered_map<u32, u32> s_frame_helpers;     // call target -> end of a register save/restore helper (0: not one)
 
 // --- registers -----------------------------------------------------------------------------------------------------
@@ -461,34 +467,18 @@ u32 read_word(u32 a) {
     return (u32{read_byte(a)} << 24) | (u32{read_byte(a + 1)} << 16) | (u32{read_byte(a + 2)} << 8) | read_byte(a + 3);
 }
 
-// End (address after its blr) of the register save/restore helper of the ABI at `target` (_savegpr_N, _restgpr_N,
-// _savefpr_N, _restfpr_N and their _x forms), 0 if `target` is not one. Recognized from its code: up to 18 stores or
-// loads of r14..r31 / f14..f31 relative to r11 (stw/lwz/stfd/lfd), then, for a restore that also returns from the
-// caller, lwz r0,4(r11) / mtlr r0 / mr r1,r11, and a blr. Such a call is part of the caller's prologue or epilogue
-// (its own stack frame, preserved registers): the decompiled C++ has no such call, so it runs inline, not recorded.
+// End (address after its blr) of the register save/restore helper of the ABI at `target`, 0 if `target` is not one
+// (gc_oracle_branch.h register_helper_end), cached: check_history also accepts the blocks of the helpers seen.
 u32 frame_helper_end(u32 target) {
     if (const auto it = s_frame_helpers.find(target); it != s_frame_helpers.end())
         return it->second;
-    u32 end = 0, a = target;
-    unsigned ladder = 0;
-    for (unsigned i = 0; i < 24; i++, a += 4) {
-        const u32 w = read_word(a);
-        const u32 op = w >> 26, rt = (w >> 21) & 31u, ra = (w >> 16) & 31u;
-        if ((op == 36 || op == 32 || op == 54 || op == 50) && ra == 11 && rt >= 14) {
-            ladder++;
-            continue;
-        }
-        if (ladder && (w == 0x800B0004u || w == 0x7C0803A6u || w == 0x7D615B78u)) // lwz r0,4(r11); mtlr r0; mr r1,r11
-            continue;
-        if (ladder && w == 0x4E800020u) // blr
-            end = a + 4;
-        break;
-    }
+    const u32 end = oracle::register_helper_end(target, &read_word);
     s_frame_helpers[target] = end;
     return end;
 }
 
-// Bytes of `writes` (sorted, current values read now) outside the dead stack of the compared run.
+// Bytes of `writes` (sorted, current values read now) outside the dead stack of the compared run (the LR save word
+// included: replay_call applies its rule).
 std::vector<byte_write> live_writes(oracle::write_set writes) {
     writes.finish(&read_byte);
     std::vector<byte_write> out;
@@ -506,27 +496,20 @@ std::vector<byte_write> live_writes(oracle::write_set writes) {
 // at such an instruction (if the branch is taken, BO/BI/CTR evaluated as the instruction would) records the call: its
 // target (immediate, ctr or lr), the registers, and the bytes F wrote so far (outside the dead stack); then the callee
 // runs ONCE, for real, in a nested run of the chassis with a journal segment of its own (its stores), and the hook
-// resumes F after the instruction (or, for a tail branch, at F's return address). Calls to the register save/restore
-// helpers of the ABI (frame_helper_end) run inline, unrecorded. In a synthetic case the callee never runs: its
-// results are the case's `call` lines. While the decompiled version runs, each of its calls (run_guest: call_guest,
-// call_address, gc::abi::call) is not executed: replay_call compares it with the next recorded call (target, the
-// argument registers of its C++ type, the bytes written so far) and replays the callee (its stores, then the
-// volatile registers it left). [hypothesis, code read] The callee sees lr = the nested run's return address (saved in
-// its own frame, dead stack); a native replacement that stores through the host directly, not through cpu.c, is not
-// replayed; thread switches are refused during a nested run (counted: the function becomes not comparable).
-
-bool branch_taken(const CPUState* c, u32 w, u32* ctr_after) {
-    const u32 op = w >> 26, bo = (w >> 21) & 31u, bi = (w >> 16) & 31u;
-    *ctr_after = c->ctr;
-    if (op == 18)
-        return true;
-    const bool decrement = !(bo & 4u) && !(op == 19 && ((w >> 1) & 0x3FFu) == 528); // bcctr never decrements
-    if (decrement)
-        *ctr_after = c->ctr - 1u;
-    const bool ctr_ok = !decrement || ((*ctr_after != 0) != ((bo & 2u) != 0));
-    const bool cond_ok = (bo & 16u) || (((c->cr >> (31u - bi)) & 1u) == ((bo >> 3) & 1u));
-    return ctr_ok && cond_ok;
-}
+// resumes F after the instruction (or, for a tail branch, at F's return address). Branches to the register
+// save/restore helpers of the ABI (frame_helper_end), with link or not, run inline, unrecorded. How the instruction is
+// read: gc_oracle_branch.h (tested on hand-written words, tests/decomp/test_call_sites.py). In a synthetic case the
+// callee never runs: its results are the case's `call` lines. While the decompiled version runs, each of its calls
+// (run_guest: call_guest, call_address, gc::abi::call) is not executed: replay_call compares it with the next
+// recorded call (target, the argument registers of its C++ type, the bytes written so far) and replays the callee
+// (its stores, then the volatile registers it left). [hypothesis, code read] The callee sees lr = the nested run's
+// return address (saved in its own frame, dead stack); a native replacement that stores through the host directly,
+// not through cpu.c, is not replayed; thread switches are refused during a nested run (counted: the function becomes
+// not comparable).
+// Known defect, oracle executable only [verified on a game function]: a callee, or the original of F itself (also
+// run nested), that waits for another thread or an interrupt never returns from its nested run (block budget of the
+// chassis), and the game stops there instead of F becoming not comparable; a refused switch is only seen once the
+// nested run returned, after a run made in altered conditions. Production builds have no nested run of this kind.
 
 void set_regs(CPUState* c, const std::vector<synthetic_case::reg_set>& regs, u32 base) {
     for (const auto& r : regs) {
@@ -578,30 +561,17 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
     if (s_running != &f || !s_in_original || s_call_active)
         return false;
     CPUState* c = &g->state;
-    const u32 w = read_word(address);
-    const u32 op = w >> 26, xo = (w >> 1) & 0x3FFu, lk = w & 1u;
-    u32 ctr_after = c->ctr;
-    if (!branch_taken(c, w, &ctr_after))
-        return false; // not taken: the instruction runs and falls through (CTR decremented by itself)
-    u32 target;
-    if (op == 18 || op == 16) {
-        s32 off = op == 18 ? static_cast<s32>(w & 0x03FFFFFCu) : static_cast<s32>(w & 0xFFFCu);
-        if (op == 18 && (off & 0x02000000))
-            off -= 0x04000000;
-        if (op == 16 && (off & 0x8000))
-            off -= 0x10000;
-        target = (w & 2u) ? static_cast<u32>(off) : address + static_cast<u32>(off);
-        if (!lk && target >= f.address && target < f.address + f.size)
-            return false; // a branch inside the function
-    } else if (op == 19 && xo == 16) {
-        target = c->lr & ~3u;
-    } else if (op == 19 && xo == 528) {
-        target = c->ctr & ~3u;
-    } else {
+    const oracle::branch_decision d =
+        oracle::decode_branch(read_word(address), address, f.address, f.size, c->cr, c->ctr, c->lr);
+    // Not taken (the instruction falls through, CTR decremented by itself), a branch inside the function, a return,
+    // or a register save/restore helper reached by bl or by a tail b (part of the prologue or epilogue): the
+    // instruction runs as compiled.
+    const bool taken = d.kind == oracle::branch_kind::call || d.kind == oracle::branch_kind::tail;
+    if (!taken || !oracle::is_recorded_call(d, frame_helper_end(d.target)))
         return false;
-    }
-    if (lk && frame_helper_end(target))
-        return false; // part of the prologue or epilogue: runs inline
+    const u32 target = d.target;
+    const bool lk = d.kind == oracle::branch_kind::call;
+    const u32 ctr_after = d.ctr_after;
     // The instruction is replaced by the hook: its own side effects first (CTR, LR).
     c->ctr = ctr_after;
     call_record rec;
@@ -739,10 +709,11 @@ void print_case(const char* kind, const function_state& f, u64 fingerprint, u8 r
     if (!s_out)
         return;
     std::fprintf(s_out, "{\"kind\":\"%s\",\"function\":\"%s\",\"version\":\"%s\",\"address\":\"%08X\",\"size\":%u,"
-                        "\"result_kind\":%u,\"fingerprint\":\"%016llX\",\"dead_stack\":\"%08X\",",
+                        "\"result_kind\":%u,\"fingerprint\":\"%016llX\",\"dead_stack\":\"%08X\",\"call_sites\":%zu,"
+                        "\"original_entry_lr\":\"%08X\",",
                  kind, f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                  static_cast<unsigned>(result_kind), static_cast<unsigned long long>(fingerprint),
-                 static_cast<unsigned>(dead_stack));
+                 static_cast<unsigned>(dead_stack), f.call_sites.size(), static_cast<unsigned>(s_entry_lr));
     if (synthetic)
         std::fprintf(s_out, "\"synthetic\":\"%s\",", synthetic);
     print_block_list(s_out, "blocks", f.blocks, &f.call_blocks);
@@ -1104,6 +1075,8 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_calls.clear();
     s_synthetic_call_missing = false;
     s_entry_r1 = r0.regs.gpr[1];
+    s_entry_lr = 0;
+    s_entry_lr_wanted = true;
     s_compare_dead_stack = dead_stack;
     const u64 refused_before = f.refused_switches;
     std::fill(f.call_blocks.begin(), f.call_blocks.end(), u8{0});
@@ -1121,6 +1094,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     bypass_address = f.address;
     const bool returned = run_guest(g, f.address);
     bypass_address = 0;
+    s_entry_lr_wanted = false;
     s_in_original = false;
     s_running = nullptr;
     s_depth--;
@@ -1251,7 +1225,10 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
 
     // 4. Comparison.
     std::vector<difference> diffs;
-    oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, dead_stack);
+    // The LR save word: the original's store of the LR it was entered with is left out for a function with call sites
+    // only (gc_oracle_compare.h lr_save_rule; s_entry_lr = 0 if its entry was not seen: never left out then).
+    oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, dead_stack,
+                    oracle::lr_save_rule{!f.call_sites.empty() && s_entry_lr != 0, s_entry_lr});
     // The calls: target, arguments and memory at each call, extra or missing calls (replay_call).
     diffs.insert(diffs.end(), s_call_diffs.begin(), s_call_diffs.end());
     // Side effects of the stores on the CPU layer, which the comparison of the bytes does not see: the lwarx
@@ -1515,6 +1492,15 @@ bool oracle_is_replaying() noexcept {
     return s_replaying;
 }
 
+void oracle_bypassed_entry(u32 lr) noexcept {
+    // The first declined entry after compare_call armed it is the compared original's own (its nested run starts at
+    // its address); later ones are functions reached inside recorded callees.
+    if (s_entry_lr_wanted) {
+        s_entry_lr = lr;
+        s_entry_lr_wanted = false;
+    }
+}
+
 // A call of the decompiled version being compared (run_guest): compared with the next call the original made, then
 // replayed instead of run (see "Calls" at the top). False when no comparison runs: the call is made as usual.
 bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept {
@@ -1551,11 +1537,14 @@ bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument
             std::snprintf(s_call_diffs.back().what, sizeof(what), "%s", what);
         }
     }
-    // Memory at the call: the bytes each side wrote so far (outside the dead stack), same rule as the final
-    // comparison (written by one side only = a difference). The callee may read any of them.
+    // Memory at the call: the bytes each side wrote so far (outside the dead stack), same rules as the final
+    // comparison (written by one side only = a difference; the LR save word rule, gc_oracle_compare.h: a function
+    // with a call site). The callee may read any of them.
     if (s_observer) {
         const std::vector<byte_write> mine = live_writes(s_observer->writes);
         const std::vector<byte_write>& theirs = k.written_before;
+        const bool mask_lr =
+            oracle::lr_word_masked(oracle::lr_save_rule{s_entry_lr != 0, s_entry_lr}, theirs, s_entry_r1);
         std::size_t i = 0, j = 0;
         while (i < theirs.size() || j < mine.size()) {
             difference d{};
@@ -1563,6 +1552,8 @@ bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument
             if (j == mine.size() || (i < theirs.size() && theirs[i].address < mine[j].address)) {
                 d.address = theirs[i].address, d.original = theirs[i].after, d.decompiled = oracle::not_written;
                 i++;
+                if (mask_lr && oracle::detail::in_lr_word(d.address, s_entry_r1))
+                    continue;
             } else if (i == theirs.size() || mine[j].address < theirs[i].address) {
                 d.address = mine[j].address, d.original = oracle::not_written, d.decompiled = mine[j].after;
                 j++;
@@ -1628,6 +1619,12 @@ void clobber_gpr(unsigned reg, u32 value) noexcept {
 void clobber_cr(u32 value) noexcept {
     if (GcrtCpu* g = detail::current_cpu())
         g->state.cr = value;
+}
+void store_word_at_entry_sp(u32 offset, u32 value) noexcept {
+    // r1 is the entry r1 while a decompiled function runs (the C++ never moves the guest stack pointer). Through
+    // gc_mem.h, so that the oracle's observer sees the store as one of the decompiled version's.
+    if (GcrtCpu* g = detail::current_cpu())
+        gc::store(*gc::ptr_from_guest_address<gc::be<u32>>(g->state.gpr[1] + offset), value);
 }
 } // namespace gc::abi::testing
 #endif
