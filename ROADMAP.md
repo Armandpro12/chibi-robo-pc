@@ -146,7 +146,7 @@ Progress: 4 functions decompiled and verified by the oracle, on both US and PAL 
   and enough distinct real starting states were seen (and every call was compared). This is basic-block coverage (not
   edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
-  defaults are refused, and one run is never counted twice.
+  defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
 - **Results**: over the five reference scenarios, the four functions were compared 180,746 times in US and 216,342
   in PAL (every call compared), without a difference. Their 30 synthetic cases run once in each scenario run that
   calls the function: 143 synthetic comparisons per version, without a difference. All their blocks were covered

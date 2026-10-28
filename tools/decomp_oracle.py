@@ -23,7 +23,12 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
 next to the results: executable and its SHA-1, hash of the sources and of the synthetic cases, scenarios, bench
-verdict. Without --scenarios it replays the list `oracle_scenarios` of the [decomp] section of games/<game>/game.toml.
+verdict, and the GCRT_* environment variables it passed (inherited ones and --env). Without --scenarios it replays
+the list `oracle_scenarios` of the [decomp] section of games/<game>/game.toml. It refuses, before any launch, an
+inherited or --env variable that can change what the oracle compares or the starting states (RESTRICTED_ENV_*: names
+starting with GCRT_DECOMP_ or GCRT_HLE_, GCRT_FORCE_ARG, GCRT_HOST_CALL_FILTER, GCRT_GUEST_HISTORY; the tool sets
+GCRT_DECOMP_ORACLE_OUT and GCRT_DECOMP_ORACLE_SYNTHETIC itself) unless --allow-env is given; such results never
+promote.
 
 Promotion rule (report). A row of the game's functions table is proposed `verified` only if, in EVERY version:
   * the results are whole and current: every oracle file has a header, an end line and a summary per function, no
@@ -33,9 +38,15 @@ Promotion rule (report). A row of the game's functions table is proposed `verifi
     synthetic-case hash is the current one, and the synthetic cases the executable loaded (header synthetic_content)
     are the current ones; every setting in the header is the default (DEFAULT_SETTINGS: dead stack, stored cases,
     cross-check); none comes from a negative-test executable or a test mode of the oracle, no self-check of the undo
-    and redo failed. One run is never counted twice: two labels naming one folder (by resolved, case-folded path or
-    file identity: "L,l", "L,L/", a junction) are refused, and two result files with the same content or the same
-    run (executable SHA-1 + header run identifier) are a problem. Any problem refuses every promotion;
+    and redo failed, and run-<ID>.json lists no restricted environment variable (`run --allow-env`). Accidental
+    copies of a run are refused: two labels naming one folder (by resolved, case-folded path or file identity: "L,l",
+    "L,L/", a junction) are refused, and, across every label and version read, a result file is a problem when its
+    content, or its records apart from the header line, are another file's, or when its run is another file's
+    (executable SHA-1 + header run identifier, or + process and start time of its name oracle-<ID>-<pid>-<time>.jsonl);
+    so are a header without a run identifier, a file name that disagrees with it, a header or records of another
+    version than the folder's, and a summary address other than the table's (DOL rows). Forged evidence (a run
+    identifier, executable hash or record written by hand) is out of scope: results are not signed. Any problem
+    refuses every promotion;
   * the oracle compared the function at least once, never saw a difference (real calls and synthetic cases), found
     it to be a leaf in every run that called it, could compare every synthetic case, and left at most
     --max-not-compared real calls uncompared (default 0: a call whose original did not return, for instance, is not
@@ -82,6 +93,19 @@ DEFAULT_MAX_NOT_COMPARED = 0
 # original). GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL (test mode) is refused on its own, and the synthetic cases
 # (GCRT_DECOMP_ORACLE_SYNTHETIC) are checked by content (header field synthetic_content).
 DEFAULT_SETTINGS = {"dead_stack": "00010000", "case_limit": 64, "crosscheck": False}
+# Environment variables `run` refuses (inherited or --env) without --allow-env: they change what the oracle compares
+# or stores (GCRT_DECOMP_*), how the native SDK replacements and the stack behave (GCRT_HLE_*, e.g.
+# GCRT_HLE_STACK_FILL), or the calls and arguments of the run (GCRT_FORCE_ARG, GCRT_HOST_CALL_FILTER,
+# GCRT_GUEST_HISTORY), so the starting states would not be the ones of a normal run.
+RESTRICTED_ENV_PREFIXES = ("GCRT_DECOMP_", "GCRT_HLE_")
+RESTRICTED_ENV_NAMES = frozenset({"GCRT_FORCE_ARG", "GCRT_HOST_CALL_FILTER", "GCRT_GUEST_HISTORY"})
+# Name of a result file, as runtime/core/decomp/gc_oracle.cpp writes it; its header run is "<pid>-<time>-<clock>".
+ORACLE_FILE = re.compile(r"oracle-(?P<version>[^-]+)-(?P<pid>-?\d+)-(?P<time>-?\d+)\.jsonl")
+
+
+def restricted_env(name: str) -> bool:
+    upper = name.upper()  # Windows names are case-insensitive
+    return upper.startswith(RESTRICTED_ENV_PREFIXES) or upper in RESTRICTED_ENV_NAMES
 
 
 def main_checkout() -> Path:
@@ -168,7 +192,26 @@ def default_scenarios(game_cfg: dict) -> str:
     return ",".join(names)
 
 
+def run_environment(args) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """({name: value} of the inherited GCRT_* variables, {name: value} of the --env items, [restricted names among
+    them]). Refuses a malformed --env item."""
+    import os
+    inherited = {k: v for k, v in os.environ.items() if k.upper().startswith("GCRT_")}
+    cli: dict[str, str] = {}
+    for item in args.env:
+        if "=" not in item or not item.split("=", 1)[0]:
+            raise SystemExit(f"--env {item!r}: expected KEY=VALUE")
+        key, value = item.split("=", 1)
+        cli[key] = value
+    return inherited, cli, sorted({k for k in [*inherited, *cli] if restricted_env(k)})
+
+
 def cmd_run(args) -> int:
+    env_inherited, env_cli, env_restricted = run_environment(args)
+    if env_restricted and not args.allow_env:
+        raise SystemExit(f"run refused: environment variables {', '.join(env_restricted)} (inherited or --env) can "
+                         f"change what the oracle compares or the starting states; unset them, or pass --allow-env "
+                         f"for an experiment (its results never promote)")
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
     bench = Path(args.bench_root).resolve() if args.bench_root else main_checkout()
@@ -190,11 +233,13 @@ def cmd_run(args) -> int:
         exe = exes[version]
         out = oracle_dir(bench, game, args.label, version)
         out.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, str(bench / "tools" / "ab.py"), "--game", game, "--versions", version, "check",
-               "--exe", str(exe), "--scenarios", scenarios, "--label", args.label,
-               "--env", f"GCRT_DECOMP_ORACLE_OUT={out}"]
+        own = {"GCRT_DECOMP_ORACLE_OUT": str(out)}
         if not args.no_synthetic and synth.is_dir():
-            cmd += ["--env", f"GCRT_DECOMP_ORACLE_SYNTHETIC={synth}"]
+            own["GCRT_DECOMP_ORACLE_SYNTHETIC"] = str(synth)
+        cmd = [sys.executable, str(bench / "tools" / "ab.py"), "--game", game, "--versions", version, "check",
+               "--exe", str(exe), "--scenarios", scenarios, "--label", args.label]
+        for key, value in own.items():
+            cmd += ["--env", f"{key}={value}"]
         for item in args.env:
             cmd += ["--env", item]
         print("+", " ".join(cmd), flush=True)
@@ -203,7 +248,12 @@ def cmd_run(args) -> int:
         info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
                 "dolrecomp": df.dolrecomp_state(),
-                "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg)}
+                "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg),
+                # GCRT_* variables passed to tools/ab.py (inherited, then this tool's, then --env: ab.py merges them
+                # in this order over its own environment); tools/run.py adds its own (GCRT_USER_DIR, ...) below.
+                "gcrt_env": {k: v for k, v in {**env_inherited, **own, **env_cli}.items()
+                             if k.upper().startswith("GCRT_")},
+                "env_restricted": env_restricted, "allow_env": bool(args.allow_env)}
         (out / f"run-{version}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         code = code or rc
     print(f"== Oracle files: {oracle_dir(bench, game, args.label, '<ID>')}; next: "
@@ -231,16 +281,26 @@ def new_aggregate(rec: dict) -> dict:
             "journal_reattached": 0, "restore_errors": 0}
 
 
+def new_seen() -> dict[str, dict]:
+    """Identities of the result files already read, shared by every label and version of one report (accidental
+    copies of a run are refused, also across versions): "content" (SHA-1 of the file), "body" (SHA-1 of its records
+    apart from the header line: a copy whose header was edited), "run" ((executable SHA-1, header run identifier)),
+    "name" ((executable SHA-1, pid, start time) of the file name) -> label/version/file that has it."""
+    return {"content": {}, "body": {}, "run": {}, "name": {}}
+
+
 def read_results(bench: Path, game: str, labels: list[str], version: str,
-                 current: dict | None = None) -> tuple[dict, list[str]]:
+                 current: dict | None = None, seen: dict | None = None,
+                 addresses: dict[str, int] | None = None) -> tuple[dict, list[str]]:
     """{function: aggregate} over every oracle file of `labels` for `version`, and the problems found. A problem is
     blocking: --promote refuses, and every verdict of the version fails. `current`: {"sources": hash, "synthetic":
-    hash} the results must have been produced with (None: not checked)."""
+    hash} the results must have been produced with (None: not checked). `seen`: new_seen(), shared by the calls of one
+    report (None: this call only). `addresses`: {function: address in `version`} of the table's DOL rows, which every
+    summary must carry (None: not checked)."""
     import hashlib
     agg: dict[str, dict] = {}
     problems: list[str] = []
-    seen_content: dict[str, str] = {}  # SHA-1 of a result file -> label/version/file that has it
-    seen_run: dict[tuple[str, str], str] = {}  # (SHA-1 of the executable, run identifier) -> label/version/file
+    seen = seen if seen is not None else new_seen()
     for label in labels:
         folder = oracle_dir(bench, game, label, version)
         files = sorted(folder.glob("oracle-*.jsonl"))
@@ -259,34 +319,67 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
             if current is not None and info.get("synthetic") != current["synthetic"]:
                 problems.append(f"{label}/{version}: synthetic cases {info.get('synthetic')} differ from the current "
                                 f"ones {current['synthetic']} (or were not run)")
+            if info.get("env_restricted"):
+                problems.append(f"{label}/{version}: run with restricted environment variables "
+                                f"{', '.join(info['env_restricted'])} (run --allow-env: an experiment, results never "
+                                f"promote)")
+        exe_sha1 = str(info.get("exe_sha1") or "?")
         for path in files:
-            # One run is never counted twice: not under two labels, not as a copy under another name.
+            # Accidental copies of a run are refused: under two labels, under another name, in another version's
+            # folder, with an edited header (forged evidence is out of scope: nothing is signed).
             where = f"{label}/{version}/{path.name}"
-            content = hashlib.sha1(path.read_bytes()).hexdigest()
-            if content in seen_content:
-                problems.append(f"{where}: same content as {seen_content[content]} (one run counted twice: copied "
-                                f"results; nothing promotes)")
-            seen_content.setdefault(content, where)
+            data = path.read_bytes()
+            content = hashlib.sha1(data).hexdigest()
+            copied = content in seen["content"]
+            if copied:
+                problems.append(f"{where}: same content as {seen['content'][content]} (accidental copy of a run: it "
+                                f"would be counted twice; nothing promotes)")
+            seen["content"].setdefault(content, where)
+            named = ORACLE_FILE.fullmatch(path.name)
+            if not named:
+                problems.append(f"{where}: file name not oracle-<version>-<pid>-<time>.jsonl (renamed file)")
+            elif named["version"] != version:
+                problems.append(f"{where}: file name of version {named['version']} in the {version} folder")
+            if named:
+                name_key = (exe_sha1, named["pid"], named["time"])
+                if name_key in seen["name"]:
+                    problems.append(f"{where}: same executable, process and start time as {seen['name'][name_key]} "
+                                    f"(accidental copy of a run; nothing promotes)")
+                seen["name"].setdefault(name_key, where)
+            body = hashlib.sha1()
             header = None
             summaries = 0
             ended = False
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            other_version = None
+            for line in data.decode("utf-8", errors="replace").splitlines():
                 try:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     problems.append(f"{path.name}: unreadable line (run cut short?)")
+                    body.update(line.encode() + b"\n")
                     continue
                 kind = rec.get("kind")
-                if kind == "header":
+                if kind == "header" and header is None:
                     header = rec
+                    continue
+                body.update(line.encode() + b"\n")
+                if kind == "header":
+                    problems.append(f"{where}: second header line (two result files joined?)")
                     continue
                 if kind == "end":
                     ended = True
                     continue
+                if rec.get("version") not in (None, version) and other_version is None:
+                    other_version = rec["version"]
+                    problems.append(f"{where}: records of version {other_version} in the {version} folder")
                 name = rec.get("function")
                 a = agg.setdefault(name, new_aggregate(rec))
                 if kind == "summary":
                     summaries += 1
+                    expected = (addresses or {}).get(name)
+                    if expected is not None and str(rec.get("address", "")).upper() != f"{expected:08X}":
+                        problems.append(f"{where}: {name} at {rec.get('address')}, the functions table gives "
+                                        f"{expected:08X} in {version} (results of another version or table)")
                     a["runs"] += 1
                     for k in ("calls", "compared", "mismatches", "not_compared", "synthetic_compared",
                               "synthetic_mismatches", "synthetic_not_compared", "journal_reattached"):
@@ -329,14 +422,31 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                     if len(a["examples"]) < 3:
                         a["examples"].append(f"{path.name}{' synthetic ' + rec['synthetic'] if rec.get('synthetic') else ''}"
                                              f": " + "; ".join(rec.get("differences", [])[:4]))
+            digest = body.hexdigest()
+            if digest in seen["body"] and not copied:  # a whole-file copy is already reported
+                problems.append(f"{where}: same records as {seen['body'][digest]} apart from the header line (a copy "
+                                f"with an edited header, or a rerun of one executable on one scenario, which adds no "
+                                f"evidence; nothing promotes)")
+            seen["body"].setdefault(digest, where)
             if header is None:
                 problems.append(f"{path.name}: no header line")
             else:
-                run_key = (str(info.get("exe_sha1") or "?"), str(header.get("run") or path.name))
-                if run_key in seen_run:
-                    problems.append(f"{where}: same run as {seen_run[run_key]} (executable {run_key[0][:12]}, run "
-                                    f"{run_key[1]}): one run counted twice; nothing promotes")
-                seen_run.setdefault(run_key, where)
+                if header.get("version") != version:
+                    problems.append(f"{where}: header version {header.get('version')!r}, not {version} (a result "
+                                    f"file of another version in this folder)")
+                run = header.get("run")
+                if not isinstance(run, str) or not run:
+                    problems.append(f"{where}: header without run identifier (old oracle executable: rebuild and "
+                                    f"rerun)")
+                else:
+                    if named and not run.startswith(f"{named['pid']}-{named['time']}-"):
+                        problems.append(f"{where}: header run {run} does not match the file name (renamed file or "
+                                        f"edited header)")
+                    run_key = (exe_sha1, run)
+                    if run_key in seen["run"]:
+                        problems.append(f"{where}: same run as {seen['run'][run_key]} (executable {exe_sha1[:12]}, "
+                                        f"run {run}): accidental copy of a run; nothing promotes")
+                    seen["run"].setdefault(run_key, where)
                 for key, default in DEFAULT_SETTINGS.items():
                     if key not in header:
                         problems.append(f"{path.name}: header without {key} (old oracle executable: rebuild and rerun)")
@@ -478,8 +588,10 @@ def cmd_report(args) -> int:
                "synthetic_content": synthetic_content_hash(game_cfg)}
     results = {}
     problems: list[str] = []
+    seen = new_seen()  # shared by every version: a copy into another version's folder is refused too
     for v in versions:
-        results[v], p = read_results(bench, game, labels, v, current)
+        addresses = {f.name: f.addresses[v] for f in functions if f.module == "dol" and f.addresses.get(v) is not None}
+        results[v], p = read_results(bench, game, labels, v, current, seen, addresses)
         problems += p
     print(f"Oracle report, labels {', '.join(labels)}; thresholds: --min-cases {args.min_cases} distinct cases per "
           f"version (or fewer, saturated, after --saturation {args.saturation} comparisons), --max-not-compared "
@@ -701,6 +813,9 @@ def main() -> int:
     r.add_argument("--versions")
     r.add_argument("--scenarios", help="comma-separated (default: [decomp] oracle_scenarios of game.toml)")
     r.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+    r.add_argument("--allow-env", action="store_true",
+                   help="accept restricted GCRT_* variables (inherited or --env; see RESTRICTED_ENV_*): an experiment, "
+                        "its results never promote")
     r.add_argument("--no-synthetic", action="store_true",
                    help="do not run the synthetic cases (the report then refuses the promotion)")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
