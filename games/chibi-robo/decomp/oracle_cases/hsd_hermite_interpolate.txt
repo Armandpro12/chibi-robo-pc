@@ -1,0 +1,57 @@
+# Synthetic cases of the decompilation oracle for hsd_hermite_interpolate (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data): f1 = 1 / duration, f2 = time,
+# f3/f4 = start/end values, f5/f6 = start/end slopes (double-precision register bits).
+
+case hsd_hermite_interpolate start_of_interval
+f1 = 3FD0000000000000
+f2 = 0000000000000000
+f3 = 4024000000000000
+f4 = C024000000000000
+f5 = 3FF0000000000000
+f6 = BFF0000000000000
+end
+
+case hsd_hermite_interpolate middle
+f1 = 3FB999999A000000
+f2 = 4014000000000000
+f3 = 3FF0000000000000
+f4 = 4000000000000000
+f5 = 0000000000000000
+f6 = 0000000000000000
+end
+
+case hsd_hermite_interpolate zero_inverse_duration
+f1 = 0000000000000000
+f2 = 3FE0000000000000
+f3 = 3FF0000000000000
+f4 = 4000000000000000
+f5 = 4008000000000000
+f6 = 4010000000000000
+end
+
+case hsd_hermite_interpolate infinite_slope
+f1 = 3FF0000000000000
+f2 = 3FE0000000000000
+f3 = 3FF0000000000000
+f4 = 4000000000000000
+f5 = 7FF0000000000000
+f6 = FFF0000000000000
+end
+
+case hsd_hermite_interpolate nan_value
+f1 = 3FF0000000000000
+f2 = 3FD0000000000000
+f3 = 7FF8000020000000
+f4 = 4000000000000000
+f5 = 0000000000000000
+f6 = 0000000000000000
+end
+
+case hsd_hermite_interpolate tiny_values
+f1 = 47E0000000000000
+f2 = 3800000000000000
+f3 = 3690000000000000
+f4 = 3810000000000000
+f5 = 36A0000000000000
+f6 = B6A0000000000000
+end

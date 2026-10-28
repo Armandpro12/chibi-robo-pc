@@ -1,0 +1,33 @@
+# Synthetic cases of the decompilation oracle for flag_set_clear (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data). Owner at S+14 (only
+# 4-aligned): flags at S+23C (high word, last word of a 32-byte block) and S+240 (low word, next block); mask in
+# r5:r6 (high word in r5).
+
+case flag_set_clear both_words
+area 260
+r3 = S+14
+r5 = 80000001
+r6 = 0000FFFF
+mem S+23C 4 FFFFFFFF
+mem S+240 4 12345678
+end
+
+case flag_set_clear reservation_on_high_block
+area 260
+r3 = S+14
+r5 = 00000001
+r6 = 00000000
+mem S+23C 4 FFFFFFFF
+mem S+240 4 FFFFFFFF
+reserve S+220
+end
+
+case flag_set_clear reservation_on_low_block
+area 260
+r3 = S+14
+r5 = 00000000
+r6 = 00000001
+mem S+23C 4 FFFFFFFF
+mem S+240 4 FFFFFFFF
+reserve S+25C
+end

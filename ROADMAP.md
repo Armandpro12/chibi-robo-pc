@@ -125,17 +125,19 @@ and assets are read from the player's files.
 | D4 | Native memory | Native types, pointers and byte order; the 24 MB guest RAM disappears |
 | D5 | No GameCube GPU commands | Models converted to native geometry; no GX command stream decoded at run time |
 
-Progress: 4 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below).
+Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below).
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
   three memory modes (local tests, not in the repository).
 - **Gateway** between recompiled and decompiled functions (`runtime/core/decomp/gc_abi.h`: PowerPC EABI arguments and
   results, nested calls back into recompiled code) and per-version table `games/chibi-robo/decomp/functions.tsv`,
-  checked against each version's code by `tools/build.py`. The first four decompiled leaf functions replace their
-  recompiled versions in US and PAL builds (three of them are called during the boot, through both paths a call can
+  checked against each version's code by `tools/build.py`. Twelve decompiled leaf functions replace their recompiled
+  versions in US and PAL builds; the first four (three of them are called during the boot, through both paths a call can
   take: a direct call within the same block of generated code, and a call through the dispatcher). A source file whose
-  functions are all disabled is not built.
+  functions are all disabled is not built. A store of decompiled code reaches the CPU layer exactly as a store of
+  recompiled code does (the write journal used by the idle detection, and the clearing of a `lwarx` reservation),
+  through a store hook of the type layer; checked by a local test against the real idle detection and by the oracle.
 - **Oracle** (`tools/build.py --oracle`, `tools/decomp_oracle.py`, `runtime/core/decomp/gc_oracle.cpp`; not in the
   normal build): on every call of a decompiled function, an oracle build runs the recompiled original and then the
   decompiled version from the same state and compares the result registers, the registers the PowerPC EABI preserves
@@ -147,15 +149,18 @@ Progress: 4 functions decompiled and verified by the oracle, on both US and PAL 
   edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
   defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
-- **Results**: over the five reference scenarios, the four functions were compared 180,746 times in US and 216,342
-  in PAL (every call compared), without a difference. Their 30 synthetic cases run once in each scenario run that
-  calls the function: 143 synthetic comparisons per version, without a difference. All their blocks were covered
-  (for three of them, some branches only by the synthetic cases). Every reference scenario stays identical to the
-  bench references with the oracle on, and a deliberately wrong variant of each function, plus a floating-point test
-  leaf, is reported on every compared call in both versions.
+- **Results**: over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
+  and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
+  blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
+  the decompiled version reached the write journal and that the `lwarx` reservation ends in the same state; with the
+  store hook removed (test mode), every compared call of each storing function is reported, and no read-only one.
+  Every reference scenario stays identical to the bench references with the oracle on, and a deliberately wrong
+  variant of each function is reported on every compared call in both versions (except a variant of the Hermite
+  interpolation written with plain host float arithmetic, which differs on 12 % (US) and 14 % (PAL) of its calls:
+  the share of calls where the console's single-precision rounding and fused multiply-add change the result).
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 4 verified (0.10 %; 208 bytes, 0.01 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 12 verified (0.32 %; 468 bytes, 0.02 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as

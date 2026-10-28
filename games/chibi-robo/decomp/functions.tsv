@@ -47,3 +47,13 @@ state_cell_is_state_active	dol	800313A4	80031CE0	0x24	verified	yes
 hsd_archive_get_public	dol	801D44CC	801D6DC8	0x38	verified	yes
 hsd_cobj_mtx_is_dirty	dol	801C0CD8	801C35D4	0x4C	verified	yes
 vec3_copy	dol	800A2CC8	800A50F8	0x1C	disabled	-
+hsd_hermite_interpolate	dol	801CE238	801D0B34	0x60	disabled	-
+flag_set_test	dol	800B26BC	800B4C18	0x14	verified	yes
+table_entry_at	dol	801A4E98	801A7710	0x10	verified	yes
+hsd_obj_alloc_free	dol	801D0B34	801D3430	0x28	verified	yes
+hsd_mobj_clear_flags	dol	801B8E8C	801BB788	0x18	verified	yes
+hsd_jobj_get_flags	dol	801C7040	801C993C	0x18	verified	yes
+hsd_mtx_get_translation	dol	801CF700	801D1FFC	0x1C	disabled	-
+hsd_pobj_set_shape_blend	dol	801AE9AC	801B12A8	0x4C	verified	yes
+xaction_reset	dol	800BB708	800BDC9C	0x18	verified	yes
+flag_set_clear	dol	800B2518	800B4A74	0x24	verified	yes

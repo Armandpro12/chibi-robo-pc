@@ -1,0 +1,24 @@
+# Synthetic cases of the decompilation oracle for xaction_reset (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data). Action at S: words at +4,
+# +0xC, +0x20, +0x24.
+
+case xaction_reset all_set
+r3 = S
+mem S+0 4 11111111
+mem S+4 4 22222222
+mem S+8 4 33333333
+mem S+C 4 44444444
+mem S+20 4 55555555
+mem S+24 4 66666666
+end
+
+case xaction_reset reservation_on_last
+r3 = S
+mem S+24 4 1
+reserve S+3C
+end
+
+case xaction_reset reservation_untouched
+r3 = S
+reserve S+40
+end

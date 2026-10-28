@@ -1,0 +1,55 @@
+# Synthetic cases of the decompilation oracle for hsd_obj_alloc_free (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data). Pool at S: free list head at
+# +4, used count at +8, free count at +0xC. Blocks at S+40 and S+80.
+
+case hsd_obj_alloc_free first_free
+r3 = S
+r4 = S+40
+mem S+4 4 0
+mem S+8 4 3
+mem S+C 4 0
+end
+
+case hsd_obj_alloc_free onto_list
+r3 = S
+r4 = S+80
+mem S+4 4 S+40
+mem S+8 4 1
+mem S+C 4 7
+mem S+40 4 0
+end
+
+case hsd_obj_alloc_free counts_wrap
+r3 = S
+r4 = S+40
+mem S+4 4 S+80
+mem S+8 4 0
+mem S+C 4 FFFFFFFF
+end
+
+case hsd_obj_alloc_free reservation_on_pool
+r3 = S
+r4 = S+40
+mem S+4 4 S+80
+mem S+8 4 2
+mem S+C 4 2
+reserve S+8
+end
+
+case hsd_obj_alloc_free reservation_on_block
+r3 = S
+r4 = S+80
+mem S+4 4 0
+mem S+8 4 2
+mem S+C 4 2
+reserve S+84
+end
+
+case hsd_obj_alloc_free reservation_untouched
+r3 = S
+r4 = S+80
+mem S+4 4 0
+mem S+8 4 2
+mem S+C 4 2
+reserve S+C0
+end
