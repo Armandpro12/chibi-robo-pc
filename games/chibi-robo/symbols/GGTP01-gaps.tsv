@@ -18,6 +18,11 @@
 # This file only contains names, addresses and sizes, no game data.
 # Function names from cbr_decomp (https://github.com/eavpsp/cbr_decomp),
 # folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LICENSE).
+# Names of sysdolphin (HSD) functions from doldecomp/melee (https://github.com/doldecomp/melee, src/sysdolphin):
+# names only, reused with its maintainers' permission
+# (https://github.com/doldecomp/melee/issues/3681#issuecomment-6375433261), no code or comment copied;
+# and from TeamOrre/xd-decomp (https://github.com/TeamOrre/xd-decomp, config/GXXE01, CC0 1.0).
+# Both were matched to this game by this project's analysis (supplement.tsv).
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
 # Functions without a target after the transposition: 357; placed: 352.
 #   strong: 294

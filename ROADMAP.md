@@ -184,6 +184,14 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   addresses come from the transposition of the US symbols and from the gap filling of
   `games/chibi-robo/symbols/GGTP01-gaps.tsv` (levels strong and graph); `tools/build.py` refuses to enable a function
   whose address and size are not established that way in each version.
+- **HAL library (sysdolphin) names** (#46): 67 of the 742 functions of the HSD range are now named in the symbol maps,
+  in US and PAL. Before, only 2 were named: the cbr_decomp names `THPSimpleAudioStop__Fv` and
+  `THPSimpleAudioResume__Fv` (US `0x801B66EC` / `0x801B6700`), which sit in the middle of `dobj.c` in the Melee
+  decompilation and are doubtful. 64 of the 65 new names come from the Melee decompilation (names only, with its
+  maintainers' permission), checked against xd-decomp (CC0), plus `HSD_AudioInit` (named by one of the game's own
+  error messages). A name is kept only when this game's code confirms it: an assertion found only in that function, or two calls to functions
+  already named; 15 of them were read by hand in the US and PAL disassembly. 382 more matches are recorded as
+  hypotheses in `games/chibi-robo/symbols/supplement.tsv`, outside the maps.
 - A function counts as decompiled only once it is `verified`; one that already replaces its recompiled version but is
   not verified yet (`unverified`) is shown in a separate column.
 - **Class and exception-table scanners** (`tools/rtti_scan.py`, `tools/extab_scan.py`,

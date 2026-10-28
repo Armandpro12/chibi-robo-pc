@@ -74,6 +74,13 @@ agent before each merge, and the project owner's validation at the end of each s
   Copyright 2009 Dolphin Emulator Project) comes to this project through DolRecomp's helpers.
 - [cbr_decomp](https://github.com/eavpsp/cbr_decomp) — function names in `games/chibi-robo/symbols/` come from its
   `decomp_dtk_main` folder (CC0 1.0). Thanks to its author for the groundwork.
+- [doldecomp/melee](https://github.com/doldecomp/melee) — names of sysdolphin (HSD) functions in
+  `games/chibi-robo/symbols/`. Names only, reused with its maintainers' permission
+  ([doldecomp/melee#3681](https://github.com/doldecomp/melee/issues/3681#issuecomment-6375433261)); none of its code or
+  comments is copied. Thanks to the Melee decompilation team.
+- [xd-decomp](https://github.com/TeamOrre/xd-decomp) (CC0 1.0) — a second reference to check the sysdolphin
+  matches. The 22 names that only xd-decomp gives are recorded as hypotheses in
+  `games/chibi-robo/symbols/supplement.tsv`; none of them is in the symbol maps.
 - [unplug](https://github.com/adierking/unplug) (MIT) — the stage numbers in `games/chibi-robo/game.toml`
   (`[stage.names]`), and the reference for the disc and stage formats.
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) (Apache-2.0) — binary analysis.

@@ -2,10 +2,15 @@
 # Format: ADDRESS SIZE NAME (hexadecimal), read by dolrecomp --map and tools/ghidra/ApplySymbolMap.java.
 # Function names from cbr_decomp (https://github.com/eavpsp/cbr_decomp),
 # folder decomp_dtk_main/config/GGTE01, licensed under CC0 1.0 (decomp_dtk_main/LICENSE).
+# Names of sysdolphin (HSD) functions from doldecomp/melee (https://github.com/doldecomp/melee, src/sysdolphin):
+# names only, reused with its maintainers' permission
+# (https://github.com/doldecomp/melee/issues/3681#issuecomment-6375433261), no code or comment copied;
+# and from TeamOrre/xd-decomp (https://github.com/TeamOrre/xd-decomp, config/GXXE01, CC0 1.0).
+# Both were matched to this game by this project's analysis (supplement.tsv).
 # This file only contains names and addresses, no game data.
 # This file is dedicated to the public domain under CC0 1.0 (see /LICENSES/CC0-1.0.txt).
 # Source: 376 named functions out of 4506 (dtk symbols.txt)
-# + 589 verified names from supplement.tsv (this project's analysis).
+# + 654 verified names from supplement.tsv (this project's analysis).
 80003100 00000030 TRK_memset
 80003130 00000024 TRK_memcpy
 80005088 0000002C __TRK_reset
@@ -968,6 +973,71 @@
 8018D0C0 00000010 GXClearGPMetric
 8018D42C 00000008 AMC_IsStub
 8018D434 00000008 Hu_IsStub
+801AAABC 00000210 HSD_ViewingRectAddRect
+801ABAB4 00000070 HSD_ShadowInit
+801ACB7C 00000720 drawShapeAnim
+801ADD44 0000038C get_shape_vertex_xyz
+801AEDDC 00000058 HSD_ImageDescAlloc
+801AF00C 00000348 HSD_TObjSetup
+801B0ED0 000001D4 MakeTextureMtx
 801B66EC 00000014 THPSimpleAudioStop__Fv
 801B6700 00000014 THPSimpleAudioResume__Fv
+801B8190 000003A4 HSD_SetupChannel
+801BA150 00000078 MObjSetupTev
+801BA4F0 00000060 HSD_MaterialAlloc
+801BA550 00000064 HSD_MObjAddShadowTexture
+801BAC28 0000006C HSD_AObjAlloc
+801BC034 00000358 JObjForeachAnim
+801BD51C 00000164 HSD_LObjSetup
+801BE9C8 00000088 HSD_LObjSetPosition
+801BEA90 00000088 HSD_LObjSetInterest
+801BEF9C 000000F0 HSD_LObjLoadDesc
+801BF640 00000264 setupTopHalfCamera
+801BF8A4 000002CC setupBottomHalfCamera
+801C5084 00000944 JObjUpdateFunc
+801CA0B4 0000010C _HSD_mkEnvelopeModelNodeMtx
+801CAB40 000000AC HSD_GXInit
+801CB32C 00000054 HSD_VISetUserPostRetraceCallback
+801CB380 00000054 HSD_VISetUserGXDrawDoneCallback
+801CB3D4 00000270 HSD_VIPreRetraceCB
+801CB644 0000020C HSD_VIPostRetraceCB
+801CB850 00000044 HSD_VIGXDrawDoneCB
+801CB894 00000010 HSD_VIGetDrawDoneWaitingFlag
+801CB8A4 00000258 HSD_VICopyEFB2XFBPtr
+801CBD04 000000D4 HSD_VIDrawDoneXFB
+801CBE78 00000228 HSD_VIInit
+801CDA18 0000004C HSD_PadRumbleOffN
+801CDA64 00000094 HSD_PadRumbleRemove
+801CDAF8 000000BC HSD_PadRumbleRemoveAll
+801CDBB4 00000080 HSD_PadRumblePauseAll
+801CDC34 00000080 HSD_PadRumbleUnpauseAll
+801CDCB4 000000F8 HSD_PadRumbleAdd
+801CDDAC 00000190 HSD_PadRumbleInterpret1
+801CDF3C 00000128 HSD_PadRumbleInterpret
+801CE064 000001D4 HSD_PadRumbleInit
+801D0358 0000004C HSD_VecAlloc
+801D03D8 0000004C HSD_MtxAlloc
+801D05E4 000000A0 HSD_Index2PosNrmMtx
+801D2418 0000005C HSD_RObjAlloc
+801D3AB4 0000005C HSD_PerfCountEnvelopeBlending
+801D3CB0 00000070 HSD_SListAppendList
+801D3D20 00000050 HSD_SListPrependList
+801D5C34 000000E8 hsdInitClassInfo
+801D5D1C 00000264 GetMemoryEntry
+801D64E0 00000100 HSD_HashSearch
+801D72F0 000005B8 HSD_TExpColorInSub
+801D79B0 000003F8 HSD_TExpAlphaInSub
+801D8B48 00000400 TExp2TevDesc
+801D8F48 000004FC HSD_TExpSetReg
+801D9FB8 000004B0 HSD_TExpMakeDag
+801DD248 0000005C __assert
+801DD2A4 00000098 HSD_Panic
+801E4E00 00000130 psSetupTevCommon
+801E4F3C 000006D8 psSetupTev
+801E60F8 00000060 AXDriverAlloc
+801E8D84 0000030C AXDriverSetupAux
+801EA5CC 000004D8 HSD_DevComARAMWakeUp
+801EAE54 000002A4 HSD_DevComDVDCallback
+801EB3A4 00000270 HSD_DevComRequest
+801F29A8 00000468 HSD_AudioInit
 801FD144 000000A0 THPInit
