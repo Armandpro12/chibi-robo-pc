@@ -112,6 +112,7 @@ struct replay_case {
     std::string function, fingerprint;
     u32 address = 0;
     unsigned result_kind = 0;
+    u32 dead_stack = gc::oracle::default_dead_stack; // size the in-game oracle compared this case with
     reg_state entry{}, original{};
     std::vector<std::pair<u32, std::string>> reads;  // address, value hex (big-endian)
     std::vector<byte_write> original_writes;
@@ -159,8 +160,11 @@ bool next_case(std::istream& in, replay_case& c) {
         ls >> tag;
         if (tag == "case") {
             std::string address;
-            ls >> c.function >> address >> c.result_kind >> c.fingerprint;
+            std::string dead_stack;
+            ls >> c.function >> address >> c.result_kind >> c.fingerprint >> dead_stack;
             c.address = static_cast<u32>(hex(address));
+            if (!dead_stack.empty())
+                c.dead_stack = static_cast<u32>(hex(dead_stack));
             started = true;
         } else if (tag.size() == 2 && (tag[0] == 'I' || tag[0] == 'O')) {
             read_regs(ls, tag[1], tag[0] == 'I' ? c.entry : c.original);
@@ -257,7 +261,7 @@ int main(int argc, char** argv) {
         });
         std::vector<gc::oracle::difference> diffs;
         gc::oracle::compare(c.original, after, static_cast<u8>(c.result_kind), c.entry.gpr[1], c.original_writes,
-                            observer.writes.bytes(), diffs);
+                            observer.writes.bytes(), diffs, c.dead_stack);
         if (diffs.empty() && s_outside.empty()) {
             passed++;
             std::printf("PASS %s %s\n", c.function.c_str(), c.fingerprint.c_str());

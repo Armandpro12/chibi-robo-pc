@@ -7,9 +7,12 @@
 //     (ps0 and ps1 for f32, ps0 for f64);
 //   * registers the PowerPC EABI preserves: r1, r2, r13, r14..r31, f14..f31 (ps0 and ps1 bits), cr2..cr4;
 //   * bytes written to guest memory, address and final value, except the dead stack under the entry r1
-//     ([r1 - dead_stack_window, r1)): a byte written by only one side is a difference even if its value did not
-//     change;
-//   * FPSCR is not compared (the game code never reads it: no mffs/mtfsf/mtfsb outside the libraries, D1 framing).
+//     ([r1 - dead stack, r1), default_dead_stack bytes unless the caller gives another size): a byte written by only
+//     one side is a difference even if its value did not change;
+//   * FPSCR is not compared. This is only sound for a game whose own code never reads FPSCR (no mffs, mtfsf, mtfsb,
+//     mcrfs): a sticky exception bit or a rounding mode left by one side would then never change a result. Each game
+//     states why that holds for it next to its functions table (games/<game>/decomp/); a game that reads FPSCR needs
+//     it compared first.
 #ifndef GC_ORACLE_COMPARE_H
 #define GC_ORACLE_COMPARE_H
 
@@ -46,8 +49,10 @@ enum result_kind : u8 { result_none, result_word, result_pair, result_f32, resul
 // cr2, cr3, cr4: CR field n occupies bits 31-4n..28-4n counted from the least significant bit (cr0 is the top
 // nibble).
 inline constexpr u32 preserved_cr_mask = 0x00FFF000u;
-// Bytes under the entry r1 that are not compared (stack frame of the function itself, dead after its return).
-inline constexpr u32 dead_stack_window = 0x10000u;
+// Default size of the dead stack under the entry r1 that is not compared (stack frame of the function itself, dead
+// after its return): 64 KiB. The in-game oracle takes another size from GCRT_DECOMP_ORACLE_DEAD_STACK; each case
+// records the size it was compared with.
+inline constexpr u32 default_dead_stack = 0x10000u;
 
 inline u32 canonical_address(u32 address) noexcept {
     return 0x80000000u | (address & 0x3FFFFFFFu);
@@ -99,17 +104,18 @@ inline void push(std::vector<difference>& out, const char* what, u32 address, u6
     d.decompiled = decompiled;
     out.push_back(d);
 }
-inline bool in_dead_stack(u32 address, u32 entry_r1) noexcept {
+inline bool in_dead_stack(u32 address, u32 entry_r1, u32 dead_stack) noexcept {
     const u32 r1 = canonical_address(entry_r1);
-    return address < r1 && r1 - address <= dead_stack_window;
+    return address < r1 && r1 - address <= dead_stack;
 }
 } // namespace detail
 
 // Differences between the original's outputs (registers `original`, writes `original_writes`) and the decompiled
-// version's, for a function whose result is of kind `kind`, entered with r1 = `entry_r1`. Appends to `out`.
+// version's, for a function whose result is of kind `kind`, entered with r1 = `entry_r1`, `dead_stack` bytes under
+// it not compared. Appends to `out`.
 inline void compare(const reg_state& original, const reg_state& decompiled, u8 kind, u32 entry_r1,
                     const std::vector<byte_write>& original_writes, const std::vector<byte_write>& decompiled_writes,
-                    std::vector<difference>& out) {
+                    std::vector<difference>& out, u32 dead_stack = default_dead_stack) {
     char name[16];
     auto gpr = [&](unsigned i) {
         if (original.gpr[i] != decompiled.gpr[i]) {
@@ -159,15 +165,15 @@ inline void compare(const reg_state& original, const reg_state& decompiled, u8 k
     const auto& b = decompiled_writes;
     while (i < a.size() || j < b.size()) {
         if (j == b.size() || (i < a.size() && a[i].address < b[j].address)) {
-            if (!detail::in_dead_stack(a[i].address, entry_r1))
+            if (!detail::in_dead_stack(a[i].address, entry_r1, dead_stack))
                 detail::push(out, "mem", a[i].address, a[i].after, not_written);
             i++;
         } else if (i == a.size() || b[j].address < a[i].address) {
-            if (!detail::in_dead_stack(b[j].address, entry_r1))
+            if (!detail::in_dead_stack(b[j].address, entry_r1, dead_stack))
                 detail::push(out, "mem", b[j].address, not_written, b[j].after);
             j++;
         } else {
-            if (a[i].after != b[j].after && !detail::in_dead_stack(a[i].address, entry_r1))
+            if (a[i].after != b[j].after && !detail::in_dead_stack(a[i].address, entry_r1, dead_stack))
                 detail::push(out, "mem", a[i].address, a[i].after, b[j].after);
             i++;
             j++;

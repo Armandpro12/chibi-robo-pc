@@ -387,9 +387,106 @@ def check_pairing(game_cfg: dict, version: str, f: Function, addr: int, known: K
     return None
 
 
-def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -> list[tuple[int, Function]]:
+def _locate(f: Function, addr: int, dol, rels: dict) -> tuple[list[tuple[int, bytes]], int] | str:
+    """(code ranges of the function's module, guest address of `f`), or the reason it cannot be located."""
+    if f.module == "dol":
+        return dol.ranges, addr
+    if f.module in rels:
+        code = [(a, blob) for (_, a, _, ex, blob) in rels[f.module]["sections"] if ex]
+        if not code:
+            return f"{f.name}: module {f.module} has no code section"
+        return code, code[0][0] + addr  # offset in the first code section, as in the dtk symbols
+    return f"{f.name}: unknown module {f.module!r} (dol, or one of {', '.join(sorted(rels))})"
+
+
+def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tuple[list[int], list[int]]:
+    """Basic blocks of the function [address, address + size) of `ranges`, from its own code: (start addresses of
+    the blocks reachable from the entry, start addresses of the blocks no path from the entry reaches). A block
+    starts at the entry, at every branch target inside the function and after every branch. Edges: a conditional
+    branch goes to its target and to the next instruction; `b` (without link) to its target; blr, bctr, rfi and the
+    always-taken forms of bclr/bcctr end the path; a call (link bit) goes on to the next instruction; a branch out of
+    the function ends the path. BO & 0x14 == 0x14 is "branch always" (PowerPC UISA, bc: neither CTR nor condition
+    tested)."""
+    blob = base = None
+    for b, data in ranges:
+        if b <= address < b + len(data):
+            base, blob = b, data
+            break
+    if blob is None:
+        return [address], []
+    n = size // 4
+    words = [_word(blob, address - base + 4 * i) for i in range(n)]
+    leaders = {0}
+    succ: list[list[int]] = []
+    for i, w in enumerate(words):
+        op, lk = w >> 26, w & 1
+        nxt = [i + 1] if i + 1 < n else []
+        if op in (16, 18):
+            if op == 18:
+                off = w & 0x03FFFFFC
+                off -= 0x04000000 if off & 0x02000000 else 0
+            else:
+                off = w & 0xFFFC
+                off -= 0x10000 if off & 0x8000 else 0
+            t = off if (w & 2) else address + 4 * i + off
+            target = (t - address) // 4 if address <= t < address + size and (t - address) % 4 == 0 else None
+            always = op == 18 or ((w >> 21) & 0x14) == 0x14
+            edges = [target] if target is not None else []
+            if lk:
+                edges = nxt  # a call comes back to the next instruction
+            elif not always:
+                edges = edges + nxt
+            succ.append(edges)
+            if target is not None:
+                leaders.add(target)
+            if i + 1 < n:
+                leaders.add(i + 1)
+        elif op == 19 and ((w >> 1) & 0x3FF) in (16, 50, 528):  # bclr, rfi, bcctr
+            always = ((w >> 1) & 0x3FF) == 50 or ((w >> 21) & 0x14) == 0x14
+            succ.append(nxt if (lk or not always) else [])
+            if i + 1 < n:
+                leaders.add(i + 1)
+        else:
+            succ.append(nxt)
+    seen = {0}
+    todo = [0]
+    while todo:
+        for j in succ[todo.pop()]:
+            if j not in seen:
+                seen.add(j)
+                todo.append(j)
+    reachable = sorted(address + 4 * i for i in leaders if i in seen)
+    dead = sorted(address + 4 * i for i in leaders if i not in seen)
+    return reachable, dead
+
+
+def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
+    """SHA-1 of what an oracle verdict is about: the decompiled sources (games/<game>/decomp/src, every file), the
+    oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, and the name, module,
+    addresses and size of every row of the functions table (not its status columns, which the promotion writes).
+    Line ends are normalized (a checkout with CRLF gives the same hash). tools/build.py --oracle compiles it into the
+    oracle executable (header of its jsonl files); tools/decomp_oracle.py report --promote refuses results whose hash
+    is not the current one."""
+    import hashlib
+    h = hashlib.sha1()
+    roots = [game_cfg["_dir"] / "decomp" / "src", tc.ROOT / "runtime" / "core" / "decomp"]
+    if negative:
+        roots.append(Path(negative))
+    for root in roots:
+        for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+            h.update(path.relative_to(root).as_posix().encode() + b"\0")
+            h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    _, columns = config(game_cfg)
+    for f in read_table(game_cfg):
+        h.update("\t".join([f.name, f.module, *(f"{f.addresses.get(v) or 0:08X}" for v in sorted(columns)),
+                             f"{f.size:X}"]).encode() + b"\n")
+    return h.hexdigest()
+
+
+def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
+            blocks: dict[int, tuple[list[int], list[int]]] | None = None) -> list[tuple[int, Function]]:
     """Enabled functions of `version` with their guest address, after the code checks. `layout`: tools/build.py
-    rel_layout (virtual addresses of the RELs)."""
+    rel_layout (virtual addresses of the RELs). `blocks`: if given, filled with {guest address: code_blocks()}."""
     import symbols as sy  # noqa: E402  (generic tool of the repository)
     functions = read_table(game_cfg)
     if not functions:
@@ -404,20 +501,16 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -
             continue
         addr = f.addresses[version]
         assert addr is not None  # read_table refuses an enabled function with an absent address
-        if f.module == "dol":
-            ranges, guest = dol.ranges, addr
-        elif f.module in rels:
-            code = [(a, blob) for (_, a, _, ex, blob) in rels[f.module]["sections"] if ex]
-            if not code:
-                errors.append(f"{f.name}: module {f.module} has no code section")
-                continue
-            ranges, guest = code, code[0][0] + addr  # offset in the first code section, as in the dtk symbols
-        else:
-            errors.append(f"{f.name}: unknown module {f.module!r} (dol, or one of {', '.join(sorted(rels))})")
+        located = _locate(f, addr, dol, rels)
+        if isinstance(located, str):
+            errors.append(located)
             continue
+        ranges, guest = located
         reason = check_sources(game_cfg, version, f, addr, known) or check_code(ranges, guest, f.size)
         if reason:
             errors.append(f"{f.name} ({version} {f.module} {addr:08X}, size 0x{f.size:X}): {reason}")
+        if blocks is not None:
+            blocks[guest] = code_blocks(ranges, guest, f.size)
         out.append((guest, f))
     addresses = [a for a, _ in out]
     for a in sorted({a for a in addresses if addresses.count(a) > 1}):
@@ -428,19 +521,24 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict]) -
 
 
 def registry_source(version: str, entries: list[tuple[int, Function]], oracle: bool = False,
-                    records: dict[str, str] | None = None) -> str:
+                    records: dict[str, str] | None = None,
+                    blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "") -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
-    (tools/build.py --oracle), the table also gives the oracle each function's size; `records`: export record to use
-    instead of a function's own (negative test of the oracle: name -> record name)."""
+    (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
+    code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
+    (`sources_hash`, oracle_sources_hash()); `records`: export record to use instead of a function's own (negative
+    test of the oracle: name -> record name)."""
     records = records or {}
+    blocks = blocks or {}
     lines = [f"// Registration table of the decompiled functions for {version}: generated by tools/decomp_functions.py",
              "// (tools/build.py) from the game's functions table. Build folder only, never in Git.",
              '#include "decomp/gc_abi.h"', '#include "decomp/gc_abi_c.h"', ""]
     for _, f in entries:
         lines.append(f"extern const ::gc::abi::export_record gc_decomp_export_{records.get(f.name, f.name)};")
     if oracle:
-        lines += ["", 'extern "C" void gcrt_decomp_oracle_configure(const char* version, const unsigned* addresses, '
-                      "const unsigned* sizes, const char* const* names, unsigned count);"]
+        lines += ["", 'extern "C" void gcrt_decomp_oracle_configure(struct GcrtCpu* g, const char* version, '
+                      "const unsigned* addresses, const unsigned* sizes, const char* const* names, unsigned count, "
+                      "const unsigned* block_first, const unsigned* blocks, const char* sources_hash);"]
     lines += ["", "namespace {"]
     if entries:
         lines.append("const ::gc::abi::registration k_table[] = {")
@@ -451,12 +549,24 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
             lines.append("const unsigned k_addresses[] = {" + ", ".join(f"0x{a:08X}u" for a, _ in entries) + "};")
             lines.append("const unsigned k_sizes[] = {" + ", ".join(f"0x{f.size:X}u" for _, f in entries) + "};")
             lines.append("const char* const k_names[] = {" + ", ".join(f'"{f.name}"' for _, f in entries) + "};")
+            # Basic blocks of each function (code_blocks): k_blocks[k_block_first[i] .. k_block_first[i + 1]), the
+            # starts of the reachable blocks, then the unreachable ones with bit 0 set.
+            flat: list[int] = []
+            first = []
+            for a, _ in entries:
+                first.append(len(flat))
+                reach, dead = blocks.get(a, ([a], []))
+                flat += reach + [d | 1 for d in dead]
+            first.append(len(flat))
+            lines.append("const unsigned k_block_first[] = {" + ", ".join(str(x) for x in first) + "};")
+            lines.append("const unsigned k_blocks[] = {" + ", ".join(f"0x{x:08X}u" for x in flat) + "};")
     else:
         lines += ["const ::gc::abi::registration* const k_table = nullptr;", "constexpr unsigned k_count = 0;"]
     lines += ["} // namespace", "",
               'extern "C" void gcrt_decomp_install_generated(struct GcrtCpu* g) {']
     if oracle and entries:
-        lines.append(f'    gcrt_decomp_oracle_configure("{version}", k_addresses, k_sizes, k_names, k_count);')
+        lines.append(f'    gcrt_decomp_oracle_configure(g, "{version}", k_addresses, k_sizes, k_names, k_count, '
+                     f'k_block_first, k_blocks, "{sources_hash}");')
     lines += ["    gcrt_decomp_install_table(g, k_table, k_count);", "}", ""]
     return "\n".join(lines)
 

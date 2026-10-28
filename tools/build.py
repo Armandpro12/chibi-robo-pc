@@ -324,10 +324,23 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
     if game_cfg.get("decomp"):
         import decomp_functions  # noqa: E402
         clash = []
-        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout):
+        blocks: dict[int, tuple[list[int], list[int]]] = {}
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout, blocks):
             if a in hooks:
                 clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
+        # Oracle builds only (--oracle): a hook at the start of every other basic block of each decompiled function
+        # (reachable or not), so that the oracle sees which blocks of the recompiled original ran (block coverage,
+        # runtime/core/decomp/gc_oracle.cpp). Inside a function, branches are compiled as goto: without these hooks
+        # the chassis only sees the entry. The hook declines (the original goes on); production builds have none.
+        if game_cfg.get("_oracle_build"):
+            for entry, (reach, dead) in blocks.items():
+                for b in reach + dead:
+                    if b == entry:
+                        continue
+                    if b in hooks:
+                        clash.append(f"block {b:08X} of the function at {entry:08X}: already hooked as {hooks[b]}")
+                    hooks[b] = "oracle-block"
         if clash:
             raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
                              f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
@@ -501,7 +514,9 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     game_cfg = oracle_options(tc.load_game(game), oracle)
     if not game_cfg.get("decomp"):
         return ""
-    entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root))
+    blocks: dict[int, tuple[list[int], list[int]]] = {}
+    entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
+                                       blocks)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):
@@ -509,10 +524,33 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
         if missing:
             raise SystemExit(f"--oracle-negative: no wrong variant (GC_DECOMP_EXPORT(<name>__wrong, ...)) for "
                              f"{', '.join(missing)} in {oracle['negative']}")
+    sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
-                                                                             records=records))
+                                                                             records=records, blocks=blocks,
+                                                                             sources_hash=sources_hash))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name})")
     return path.as_posix()
+
+
+DECOMP_EXPORT = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+)\s*,")
+
+
+def decomp_excluded_sources(game: str, oracle: dict | None = None) -> list[Path]:
+    """Decompiled sources that this build leaves out: every .cpp of games/<game>/decomp/src whose exported functions
+    (GC_DECOMP_EXPORT) are all rows of the functions table that are not enabled in this build (status disabled, and
+    not --decomp-enable of an oracle build). "disabled = listed, not built": such a file is neither compiled nor
+    linked. A file without an export (helpers) or exporting at least one enabled row is built."""
+    import decomp_functions  # noqa: E402
+    game_cfg = oracle_options(tc.load_game(game), oracle)
+    if not game_cfg.get("decomp"):
+        return []
+    rows = {f.name: f for f in decomp_functions.read_table(game_cfg)}
+    out = []
+    for src in sorted((game_cfg["_dir"] / "decomp" / "src").rglob("*.cpp")):
+        names = DECOMP_EXPORT.findall(src.read_text(encoding="utf-8"))
+        if names and all(n in rows and not rows[n].enabled for n in names):
+            out.append(src.resolve())
+    return out
 
 
 def configure_and_build(game: str, version: str, config: str, disc_root: Path, recomp_dir: Path,
@@ -566,6 +604,11 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
     # Decompilation oracle (--oracle): always set, so that a build folder goes back to a normal build without it.
     defs["GCRT_DECOMP_ORACLE"] = "ON" if oracle else "OFF"
     defs["GCRT_DECOMP_NEGATIVE_DIR"] = oracle["negative"].as_posix() if oracle and oracle.get("negative") else ""
+    # Always set (empty list included): sources of rows not enabled in this build are not compiled.
+    excluded = decomp_excluded_sources(game, oracle)
+    defs["GCRT_DECOMP_EXCLUDE"] = ";".join(x.as_posix() for x in excluded)
+    if excluded:
+        print(f"== Decompiled sources left out (rows not enabled): {', '.join(x.name for x in excluded)}")
     cmd = [cmake, "-S", tc.ROOT, "-B", build_dir, "-G", "Ninja"] + [f"-D{k}={v}" for k, v in defs.items()]
     ensure_aurora_patches()
     print("== CMake configuration")

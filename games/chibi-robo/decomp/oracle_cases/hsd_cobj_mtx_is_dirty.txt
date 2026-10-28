@@ -1,0 +1,79 @@
+# Synthetic cases of the decompilation oracle for hsd_cobj_mtx_is_dirty (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data): they drive the branches the reference
+# scenarios do not reach. The oracle executable injects each one into a scratch area S of the dead stack, runs the
+# recompiled original and the decompiled version from it, compares them and puts everything back
+# (tools/decomp_oracle.py run passes this folder in GCRT_DECOMP_ORACLE_SYNTHETIC).
+# Camera at S: flags at +8 (bit 30: matrix out of date), eye position object pointer at +0x24, interest
+# object pointer at +0x28 (0: none). World objects at S+0x40 and S+0x80, flags at +8 (bit 1: moved).
+
+case hsd_cobj_mtx_is_dirty own_flag
+r3 = S
+mem S+8 4 40000000
+mem S+24 4 S+40
+mem S+28 4 S+80
+mem S+48 4 00000000
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty nothing_set
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 S+40
+mem S+28 4 S+80
+mem S+48 4 00000000
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty no_objects
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 00000000
+mem S+28 4 00000000
+mem S+48 4 00000000
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty eye_moved
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 S+40
+mem S+28 4 S+80
+mem S+48 4 00000002
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty interest_moved
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 S+40
+mem S+28 4 S+80
+mem S+48 4 00000000
+mem S+88 4 00000002
+end
+
+case hsd_cobj_mtx_is_dirty no_eye_interest_moved
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 00000000
+mem S+28 4 S+80
+mem S+48 4 00000000
+mem S+88 4 00000002
+end
+
+case hsd_cobj_mtx_is_dirty eye_moved_no_interest
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 S+40
+mem S+28 4 00000000
+mem S+48 4 00000002
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty other_bits_only
+r3 = S
+mem S+8 4 BFFFFFFF
+mem S+24 4 S+40
+mem S+28 4 S+80
+mem S+48 4 FFFFFFFD
+mem S+88 4 FFFFFFFD
+end

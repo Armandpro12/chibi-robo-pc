@@ -295,6 +295,9 @@ struct oracle_signature {
 // the original's results (registers and memory). False: not handled (nested call during another comparison), the
 // caller runs the decompiled version as usual.
 bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), const oracle_signature& signature);
+// Nested guest runs started through run_guest (gc_abi.cpp), counted so that the oracle sees a decompiled version that
+// calls guest code (not comparable as a leaf).
+extern u64 guest_calls;
 #endif
 
 } // namespace detail

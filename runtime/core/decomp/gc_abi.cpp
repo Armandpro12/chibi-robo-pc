@@ -138,7 +138,14 @@ GcrtCpu* current_cpu() noexcept {
     return s_cpu;
 }
 
+#if defined(GC_DECOMP_ORACLE)
+u64 guest_calls = 0;
+#endif
+
 bool run_guest(GcrtCpu* g, u32 address) noexcept {
+#if defined(GC_DECOMP_ORACLE)
+    guest_calls++; // the oracle tells its own runs of the original from guest calls made by decompiled code
+#endif
     const bool returned = gcrt_guest_call_prepared(g, address);
     if (!returned)
         std::fprintf(stderr, "gc_abi: the guest function %08X called by decompiled code did not return\n",
