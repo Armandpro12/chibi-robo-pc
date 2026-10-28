@@ -1,0 +1,12 @@
+# Synthetic cases of the decompilation oracle for flag_set_test (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data). Owner at S: flags at S+228
+# (high word) and S+22C (low word); mask in r5:r6 (high word in r5).
+
+case flag_set_test high_and_low
+area 240
+r3 = S
+r5 = F0F0F0F0
+r6 = 0F0F0F0F
+mem S+228 4 FFFF0000
+mem S+22C 4 0000FFFF
+end

@@ -189,6 +189,9 @@ inline void describe(const difference& d, char* text, std::size_t size) {
         std::snprintf(c, sizeof(c), d.decompiled == not_written ? "--" : "%02X", static_cast<unsigned>(d.decompiled));
         std::snprintf(text, size, "byte %08X: original %s, decompiled %s (-- = not written)",
                       static_cast<unsigned>(d.address), o, c);
+    } else if (d.what[0] == 'u') {
+        std::snprintf(text, size, "byte %08X: stored by the decompiled version without the write journal",
+                      static_cast<unsigned>(d.address));
     } else if (d.what[0] == 'f') {
         std::snprintf(text, size, "%s bits: original %016llX, decompiled %016llX", d.what,
                       static_cast<unsigned long long>(d.original), static_cast<unsigned long long>(d.decompiled));

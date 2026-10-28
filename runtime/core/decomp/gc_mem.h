@@ -27,6 +27,7 @@
 //   gc::ptr_cast<U>(p), gc::static_ptr_cast<U>(p)   pointer conversions (reinterpret / base-to-derived)
 // Guest-mode only (gateway, oracle and table code; they do not exist in native mode on purpose):
 //   gc::guest_address(p), gc::ptr_from_guest_address<T>(address), gc::init_guest_memory, gc::set_global_table,
+//   gc::set_guest_store_hook (the runtime sees each store, see "Store hook"),
 //   gc::host_reuses_tail_padding (host ABI property, see "Layout")
 // Everything in gc::detail is internal: decompiled code never uses it.
 //
@@ -343,6 +344,40 @@ inline void reset_guest_memory() noexcept {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Store hook (guest mode)
+// ---------------------------------------------------------------------------------------------------------------
+
+// While decompiled and recompiled functions share guest RAM, the runtime may need to see every store into it, the
+// decompiled ones included, exactly as it sees the stores of recompiled code: a CPU layer clears a lwarx reservation
+// on a store to the reserved block and calls its write journal before each store (idle detection, oracle). The
+// layer itself knows nothing of a CPU: the runtime installs one hook, called before every store into guest RAM made
+// through be<T> (hence ptr, array, bitword, global), with the cached-mirror guest address of the stored object and
+// its size in bytes (1, 2, 4 or 8). Stores to be<T> objects outside guest RAM (host locals) do not call it. One hook
+// per process, not per thread: guest RAM belongs to the one emulated CPU. Without a hook a store costs one load and
+// one test more than a plain memcpy.
+using guest_store_hook = void (*)(std::uint32_t address, std::uint32_t size) noexcept;
+
+namespace detail {
+inline guest_store_hook g_store_hook = nullptr;
+
+inline void before_guest_store(const void* object, std::uint32_t size) noexcept {
+    if (const guest_store_hook hook = g_store_hook) {
+        std::uint32_t address = 0;
+        if (guest_of(object, size, &address)) {
+            hook(address, size);
+        }
+    }
+}
+} // namespace detail
+
+// Installs the store hook (nullptr: none); returns the previous one.
+inline guest_store_hook set_guest_store_hook(guest_store_hook hook) noexcept {
+    const guest_store_hook previous = detail::g_store_hook;
+    detail::g_store_hook = hook;
+    return previous;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Observer (oracle only)
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -570,6 +605,9 @@ private:
             stored_ = stored;
             return;
         }
+        // The runtime's hook first (reservation, write journal: before the store, as the CPU layer does for
+        // recompiled code), then the observer, which reads the old value; both before the bytes change.
+        detail::before_guest_store(this, sizeof(T));
 #if defined(GC_MEM_OBSERVER)
         detail::observe_write(this, sizeof(T), detail::to_big_endian(stored));
 #endif

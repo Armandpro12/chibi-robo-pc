@@ -1,0 +1,11 @@
+# Synthetic cases of the decompilation oracle for hsd_jobj_get_flags (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data). Joint at S: flags at +0x14.
+
+case hsd_jobj_get_flags no_joint
+r3 = 0
+end
+
+case hsd_jobj_get_flags flags
+r3 = S
+mem S+14 4 80000001
+end

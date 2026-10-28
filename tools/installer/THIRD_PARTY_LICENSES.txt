@@ -728,7 +728,7 @@ DolRecomp (CPU runtime)
 ====================================================================================================
 Version: commit c876e2b9e022 of github.com/ExpansionPak/DolRecomp: src/cpu/cpu.c, src/cpu/cpu.h and src/common/types.h, unmodified
 Shipped in: the game executable
-Licence: GNU General Public License v3.0 or later (SPDX header of src/cpu/cpu.c: GPL-3.0-or-later, Copyright (C) 2026 ExpansionPak)
+Licence: GNU General Public License v3.0 or later (SPDX header of src/cpu/cpu.c: GPL-3.0-or-later, Copyright (C) 2026 ExpansionPak); runtime/core/decomp/gc_float.h of this project's repository adapts floating-point helpers of src/cpu/cpu.c (force_25_bit, correct_single_fma_tie, force_single)
 Origin: https://github.com/ExpansionPak/DolRecomp
 
 ----- LICENSE -----
@@ -739,7 +739,7 @@ Dolphin (adapted code)
 ====================================================================================================
 Version: commit e6f3ae17627e of github.com/dolphin-emu/dolphin
 Shipped in: the game executable
-Licence: GNU General Public License v2.0 or later, used here under the GNU GPL v3.0 (text: first entry). Copyright 2008 Dolphin Emulator Project (DSP sample accelerator, AX microcode HLE, microcode base and hashes, AX structures, and the free DSP coefficient table of Dolphin's Data/Sys/GC/dsp_coef.bin: files of runtime/core/audio/ of this project's repository); Copyright 2010 and 2017 Dolphin Emulator Project (display copy filter coefficients and computation: runtime/core/gx/xfb_filter.cpp). Each adapted file names the Dolphin files it comes from.
+Licence: GNU General Public License v2.0 or later, used here under the GNU GPL v3.0 (text: first entry). Copyright 2008 Dolphin Emulator Project (DSP sample accelerator, AX microcode HLE, microcode base and hashes, AX structures, and the free DSP coefficient table of Dolphin's Data/Sys/GC/dsp_coef.bin: files of runtime/core/audio/ of this project's repository); Copyright 2010 and 2017 Dolphin Emulator Project (display copy filter coefficients and computation: runtime/core/gx/xfb_filter.cpp); Copyright 2009 Dolphin Emulator Project (floating-point rounding of the Gekko, Force25Bit, ForceSingle and NI_madd_msub of Interpreter_FPUtils.h, through DolRecomp: runtime/core/decomp/gc_float.h). Each adapted file names the Dolphin files it comes from.
 Origin: https://github.com/dolphin-emu/dolphin
 
 ====================================================================================================
