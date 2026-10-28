@@ -15,23 +15,27 @@ per function, and an "end" line at a normal exit. These files hold game memory: 
 Commands (run from any checkout; scenarios through tools/ab.py of the main checkout, which holds the references):
   py -3 tools/decomp_oracle.py run --exe "build/.../chibi-robo-{version}-Release-oracle/bin/chibi-robo.exe"
         --label L [--versions GGTE01,GGTP01] [--scenarios title-boot,new-game,...] [--no-synthetic]
-  py -3 tools/decomp_oracle.py report --label L[,L2...] [--min-cases 10] [--promote [--dry-run]]
+  py -3 tools/decomp_oracle.py report --label L[,L2...] [--min-cases 10] [--saturation 1000] [--max-not-compared 0]
+        [--promote [--dry-run]]
   py -3 tools/decomp_oracle.py replay --label L [--versions ...] [--negative DIR] [--extra-source FILE]
   py -3 tools/decomp_oracle.py replay --cases FILE.jsonl [...]      (replay of any case file)
   py -3 tools/decomp_oracle.py hash                                 (hashes the results are tied to)
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
 next to the results: executable and its SHA-1, hash of the sources and of the synthetic cases, scenarios, bench
-verdict.
+verdict. Without --scenarios it replays the list `oracle_scenarios` of the [decomp] section of games/<game>/game.toml.
 
 Promotion rule (report). A row of the game's functions table is proposed `verified` only if, in EVERY version:
   * the results are whole and current: every oracle file has a header, an end line and a summary per function, no
     unreadable line, the header's source hash is the current one (tools/decomp_functions.py oracle_sources_hash: the
-    decompiled sources, runtime/core/decomp, the address columns of the table), run-<ID>.json exists, its bench
-    verdict is 0 and its synthetic-case hash is the current one; none comes from a negative-test executable. Any
-    problem refuses every promotion;
+    decompiled sources, runtime/core/decomp, the tools and runtime files of the block analysis and the hooks, the
+    address columns of the table), run-<ID>.json exists, its bench verdict is 0 and its synthetic-case hash is the
+    current one; none comes from a negative-test executable or a test mode of the oracle, no self-check of the undo
+    and redo failed. A label given twice is refused. Any problem refuses every promotion;
   * the oracle compared the function at least once, never saw a difference (real calls and synthetic cases), found
-    it to be a leaf in every run that called it, and could compare every synthetic case;
+    it to be a leaf in every run that called it, could compare every synthetic case, and left at most
+    --max-not-compared real calls uncompared (default 0: a call whose original did not return, for instance, is not
+    compared, and is not evidence);
   * block coverage: every basic block of the original reachable from its entry (tools/decomp_functions.py
     code_blocks) ran during at least one compared call or synthetic case; a block the analysis calls unreachable must
     never run (it would prove the analysis wrong);
@@ -39,7 +43,11 @@ Promotion rule (report). A row of the game's functions table is proposed `verifi
     decompiled version read), or fewer when they are saturated: at least --saturation comparisons (default 1000),
     all on those few states [hypothesis: heuristic thresholds, notes/decomp.md D1.3].
 "verified" therefore means: no difference on every compared call and synthetic case, with every reachable block of
-the original exercised. It does not prove equivalence on states that were never compared (values, not paths).
+the original exercised. This is basic-block coverage (not edge or path coverage), and it does not prove equivalence
+on states that were never compared.
+--promote refuses thresholds weaker than the defaults (--min-cases below 10, --saturation between 1 and 999,
+--max-not-compared above 0): the table is only ever promoted under the stated rule; the thresholds used are printed
+on the first line of the report and on the --promote line.
 A function never reached stays `unverified`, whatever its other versions show. --promote writes `verified` (and
 "yes" in the oracle column of each version that has one, [decomp.oracle_columns] of game.toml: the PAL activation
 lock of the levels position and sized) only for rows that pass in all versions; it never touches a disabled row.
@@ -60,9 +68,9 @@ import decomp_common as dc  # noqa: E402
 import decomp_functions as df  # noqa: E402
 import toolchain as tc  # noqa: E402
 
-DEFAULT_SCENARIOS = "title-boot,new-game,load-game,overwrite-save,intro-no-card"
 DEFAULT_MIN_CASES = 10
 DEFAULT_SATURATION = 1000
+DEFAULT_MAX_NOT_COMPARED = 0
 
 
 def main_checkout() -> Path:
@@ -123,11 +131,21 @@ def sha1_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def default_scenarios(game_cfg: dict) -> str:
+    """Comma-separated scenarios of `oracle_scenarios` in the [decomp] section of game.toml."""
+    names = game_cfg.get("decomp", {}).get("oracle_scenarios")
+    if not names or not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+        raise SystemExit(f"{game_cfg['_dir'] / 'game.toml'}: [decomp] oracle_scenarios missing or not a list of "
+                         f"scenario names; add it (the reference scenarios the oracle replays) or give --scenarios")
+    return ",".join(names)
+
+
 def cmd_run(args) -> int:
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
     bench = Path(args.bench_root).resolve() if args.bench_root else main_checkout()
     versions = versions_of(game_cfg, args.versions)
+    scenarios = args.scenarios or default_scenarios(game_cfg)
     exes = {}
     for version in versions:
         exe = Path(args.exe.replace("{version}", version)).resolve()
@@ -145,7 +163,7 @@ def cmd_run(args) -> int:
         out = oracle_dir(bench, game, args.label, version)
         out.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, str(bench / "tools" / "ab.py"), "--game", game, "--versions", version, "check",
-               "--exe", str(exe), "--scenarios", args.scenarios, "--label", args.label,
+               "--exe", str(exe), "--scenarios", scenarios, "--label", args.label,
                "--env", f"GCRT_DECOMP_ORACLE_OUT={out}"]
         if not args.no_synthetic and synth.is_dir():
             cmd += ["--env", f"GCRT_DECOMP_ORACLE_SYNTHETIC={synth}"]
@@ -154,7 +172,7 @@ def cmd_run(args) -> int:
         print("+", " ".join(cmd), flush=True)
         rc = subprocess.run(cmd, cwd=bench).returncode
         print(f"== {version}: tools/ab.py check returned {rc} (bench verdict of the oracle executable)")
-        info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": args.scenarios,
+        info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
                 "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg)}
         (out / f"run-{version}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
@@ -178,7 +196,8 @@ def new_aggregate(rec: dict) -> dict:
             "leaf": set(), "reasons": set(), "runs": 0, "address": rec.get("address"), "examples": [],
             "paths": set(), "synthetic_cases": 0, "synthetic_compared": 0, "synthetic_mismatches": 0,
             "synthetic_not_compared": 0, "blocks": None, "block_hits": {}, "dead_blocks": None,
-            "dead_block_hits": {}, "results": set(), "results_count": 0, "path_count": 0, "synthetic_labels": set()}
+            "dead_block_hits": {}, "results": set(), "results_count": 0, "path_count": 0, "synthetic_labels": set(),
+            "journal_reattached": 0, "restore_errors": 0}
 
 
 def read_results(bench: Path, game: str, labels: list[str], version: str,
@@ -228,8 +247,14 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                     summaries += 1
                     a["runs"] += 1
                     for k in ("calls", "compared", "mismatches", "not_compared", "synthetic_compared",
-                              "synthetic_mismatches", "synthetic_not_compared"):
+                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached"):
                         a[k] += int(rec.get(k, 0))
+                    if "restore_errors" not in rec:
+                        problems.append(f"{path.name}: {name}: summary without restore_errors (old oracle executable)")
+                    elif int(rec["restore_errors"]):
+                        a["restore_errors"] += int(rec["restore_errors"])
+                        problems.append(f"{path.name}: {name}: {rec['restore_errors']} failed self-checks of the undo "
+                                        f"or redo of the original's writes (oracle fault: nothing promotes)")
                     a["synthetic_cases"] = max(a["synthetic_cases"], int(rec.get("synthetic_cases", 0)))
                     a["fingerprints"].update(rec.get("fingerprints", []))
                     if int(rec["calls"]):  # a run that never called it says nothing about it
@@ -267,6 +292,9 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
             else:
                 if header.get("negative"):
                     problems.append(f"{path.name}: negative-test executable (results never promote)")
+                if int(header.get("test_detaching_journal", 0)):
+                    problems.append(f"{path.name}: test mode GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL="
+                                    f"{header['test_detaching_journal']} (results never promote)")
                 if current is not None and header.get("sources") != current["sources"]:
                     problems.append(f"{path.name}: built from sources {header.get('sources') or '(no hash)'}, not the "
                                     f"current ones {current['sources']} (rebuild the oracle executable and rerun)")
@@ -297,7 +325,8 @@ def coverage(a: dict) -> tuple[list[str], list[str], list[str]]:
     return blocks, missed, dead_run
 
 
-def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[str] | None = None) -> tuple[bool, str]:
+def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[str] | None = None,
+            max_not_compared: int = DEFAULT_MAX_NOT_COMPARED) -> tuple[bool, str]:
     if problems:
         return False, f"{len(problems)} problems with the results (WARNING lines): nothing promotes"
     if not a or a["calls"] == 0:
@@ -306,6 +335,9 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
         return False, f"not comparable as a leaf ({', '.join(sorted(a['reasons'])) or ', '.join(sorted(a['leaf']))})"
     if a["compared"] == 0:
         return False, "called but never compared"
+    if a["not_compared"] > max_not_compared:
+        return False, (f"{a['not_compared']} calls not compared (original did not return, or not comparable) > "
+                       f"{max_not_compared} allowed (--max-not-compared)")
     if a["mismatches"]:
         return False, f"{a['mismatches']} compared calls with differences ({len(a['bad'])} distinct cases)"
     if a["synthetic_mismatches"]:
@@ -339,6 +371,14 @@ def cmd_report(args) -> int:
     game_cfg = tc.load_game(game)
     bench = Path(args.bench_root).resolve() if args.bench_root else main_checkout()
     labels = [x for x in args.label.split(",") if x]
+    duplicates = sorted({x for x in labels if labels.count(x) > 1})
+    if duplicates:
+        raise SystemExit(f"--label {args.label}: {', '.join(duplicates)} given more than once (its results would be "
+                         f"counted twice)")
+    weaker = weaker_thresholds(args)
+    if args.promote and weaker:
+        raise SystemExit(f"--promote refused: thresholds weaker than the promotion rule ({'; '.join(weaker)}); the "
+                         f"table is only promoted under the defaults (or stricter ones)")
     versions = versions_of(game_cfg, args.versions)
     functions = df.read_table(game_cfg)
     current = {"sources": df.oracle_sources_hash(game_cfg), "synthetic": synthetic_hash(game_cfg)}
@@ -347,24 +387,26 @@ def cmd_report(args) -> int:
     for v in versions:
         results[v], p = read_results(bench, game, labels, v, current)
         problems += p
-    print(f"Oracle report, labels {', '.join(labels)}, minimum {args.min_cases} distinct cases per version "
-          f"(or fewer, saturated, after {args.saturation} comparisons), every reachable block of the original compared")
-    print(f"{'function':34} {'version':8} {'calls':>9} {'compared':>9} {'diff':>6} {'cases':>6} {'blocks':>7} "
-          f"{'synth':>6} {'results':>7}  verdict")
+    print(f"Oracle report, labels {', '.join(labels)}; thresholds: --min-cases {args.min_cases} distinct cases per "
+          f"version (or fewer, saturated, after --saturation {args.saturation} comparisons), --max-not-compared "
+          f"{args.max_not_compared}; every reachable block of the original compared (basic-block coverage, not edge "
+          f"or path coverage)")
+    print(f"{'function':34} {'version':8} {'calls':>9} {'compared':>9} {'notcmp':>6} {'diff':>6} {'cases':>6} "
+          f"{'blocks':>7} {'synth':>6} {'results':>7}  verdict")
     proposed: dict[str, tuple[bool, list[str]]] = {}
     for f in functions:
         reasons = []
         ok_all = True
         for v in versions:
             a = results[v].get(f.name)
-            ok, why = verdict(a, args.min_cases, args.saturation, problems)
+            ok, why = verdict(a, args.min_cases, args.saturation, problems, args.max_not_compared)
             ok_all &= ok
             if not ok:
                 reasons.append(f"{v}: {why}")
             if a:
                 blocks, missed, _ = coverage(a)
-                print(f"{f.name:34} {v:8} {a['calls']:>9} {a['compared']:>9} {a['mismatches']:>6} "
-                      f"{len(a['fingerprints']):>6} {len(blocks) - len(missed):>3}/{len(blocks):<3} "
+                print(f"{f.name:34} {v:8} {a['calls']:>9} {a['compared']:>9} {a['not_compared']:>6} "
+                      f"{a['mismatches']:>6} {len(a['fingerprints']):>6} {len(blocks) - len(missed):>3}/{len(blocks):<3} "
                       f"{a['synthetic_compared']:>6} {a['results_count']:>7}  {'pass' if ok else 'refused'}: {why}")
                 hits = ", ".join(f"{b}:{a['block_hits'].get(b, 0)}" for b in blocks)
                 print(f"{'':44}blocks (compared calls + synthetic cases that ran each): {hits or '-'}")
@@ -374,12 +416,13 @@ def cmd_report(args) -> int:
                       f"{', '.join(sorted(a['results'])[:12]) or '-'}{' ...' if len(a['results']) > 12 else ''}; "
                       f"distinct block sets per run: up to {a['path_count']}")
                 print(f"{'':44}synthetic cases: {a['synthetic_compared']} compared of {a['synthetic_cases']} per run, "
-                      f"{a['synthetic_mismatches']} with differences")
+                      f"{a['synthetic_mismatches']} with differences; runs of the original where another write "
+                      f"journal detached itself (oracle journal kept): {a['journal_reattached']}")
                 print(f"{'':44}paths of the stored cases: {', '.join(sorted(a['paths'])) or '-'}")
                 for e in a["examples"]:
                     print(f"{'':44}e.g. {e}")
             else:
-                print(f"{f.name:34} {v:8} {'-':>9} {'-':>9} {'-':>6} {'-':>6} {'-':>7} {'-':>6} {'-':>7}  "
+                print(f"{f.name:34} {v:8} {'-':>9} {'-':>9} {'-':>6} {'-':>6} {'-':>6} {'-':>7} {'-':>6} {'-':>7}  "
                       f"refused: {why}")
         if set(versions) != {v["game_id"] for v in game_cfg.get("versions", [])}:
             ok_all = False
@@ -406,12 +449,28 @@ def cmd_report(args) -> int:
     if not promote:
         print("--promote: nothing to promote")
         return 1
+    rule = (f"--min-cases {args.min_cases}, --saturation {args.saturation}, --max-not-compared "
+            f"{args.max_not_compared}, labels {', '.join(labels)}")
     if args.dry_run:
-        print(f"--promote --dry-run: would set {', '.join(promote)} to verified (nothing written)")
+        print(f"--promote --dry-run: would set {', '.join(promote)} to verified (nothing written; {rule})")
         return 0
     write_status(game_cfg, promote, versions)
-    print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name}")
+    print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
     return 0
+
+
+def weaker_thresholds(args) -> list[str]:
+    """Thresholds of `args` weaker than the promotion rule's defaults (empty: the defaults or stricter ones)."""
+    out = []
+    if args.min_cases < DEFAULT_MIN_CASES:
+        out.append(f"--min-cases {args.min_cases} < {DEFAULT_MIN_CASES}")
+    if 0 < args.saturation < DEFAULT_SATURATION:  # 0 = never saturated: stricter
+        out.append(f"--saturation {args.saturation} < {DEFAULT_SATURATION}")
+    if args.saturation < 0:
+        out.append(f"--saturation {args.saturation} < 0")
+    if args.max_not_compared > DEFAULT_MAX_NOT_COMPARED:
+        out.append(f"--max-not-compared {args.max_not_compared} > {DEFAULT_MAX_NOT_COMPARED}")
+    return out
 
 
 def write_status(game_cfg: dict, names: list[str], versions: list[str]) -> None:
@@ -546,7 +605,7 @@ def main() -> int:
     r.add_argument("--exe", required=True, help='oracle executable; "{version}" replaced by the ID')
     r.add_argument("--label", required=True)
     r.add_argument("--versions")
-    r.add_argument("--scenarios", default=DEFAULT_SCENARIOS)
+    r.add_argument("--scenarios", help="comma-separated (default: [decomp] oracle_scenarios of game.toml)")
     r.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
     r.add_argument("--no-synthetic", action="store_true",
                    help="do not run the synthetic cases (the report then refuses the promotion)")
@@ -557,7 +616,10 @@ def main() -> int:
     k.add_argument("--saturation", type=int, default=DEFAULT_SATURATION,
                    help="comparisons from which fewer than --min-cases distinct cases count as all the reachable ones "
                         "(default %(default)s; 0: never)")
-    k.add_argument("--promote", action="store_true")
+    k.add_argument("--max-not-compared", type=int, default=DEFAULT_MAX_NOT_COMPARED,
+                   help="real calls a function may leave uncompared (default %(default)s)")
+    k.add_argument("--promote", action="store_true",
+                   help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
     y = sub.add_parser("replay", help="offline replay of captured cases on the decompiled code")

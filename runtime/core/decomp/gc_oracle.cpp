@@ -23,17 +23,29 @@
 //      in the game's behavior (it only runs both versions);
 //   6. the starting state (argument registers and the bytes the decompiled version read) is fingerprinted; distinct
 //      ones are counted and the first ones stored as replayable cases (oracle_replay.cpp, tools/decomp_oracle.py);
-//      the distinct results of the original (r3, r3:r4 or the bits of f1) and the distinct sets of blocks run
-//      ("paths") are counted too.
+//      the distinct results of the original (r3, r3:r4 or the bits of f1) and the distinct sets of blocks run are
+//      counted too. This is basic-block coverage (not edge or path coverage): which blocks ran, not which edges
+//      between them nor which sequences of blocks.
 // Functions that are not leaves (a call or a tail branch in their code, read once at the first call, or seen during
 // a run), or whose code holds a store the journal does not see (dcbz, dcbz_l), are not compared: they run as their
 // original (D2: calls recorded and replayed, notes/decomp.md D1.3).
 //
+// Write journal: another part of the runtime may have attached its own journal (hle/native_os.c, idle detection of a
+// looping OSYieldThread). The oracle's journal goes on calling it, so that it sees the original's stores as in a
+// normal build; when that journal detaches or replaces itself during a run (the idle detection does so on its first
+// store outside the thread's stack), the oracle stays attached and only remembers the change, applied when the run
+// ends: W1 is always complete. GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL=1 (test only, refused by the promotion)
+// attaches, when no other journal is there, a journal that detaches itself on its first store as the idle detection
+// does, to exercise that case on every call; =2 also turns the oracle's re-attachment off, to show what it prevents.
+//
 // Synthetic cases (GCRT_DECOMP_ORACLE_SYNTHETIC=<folder of .txt files>, format below): starting states written by
 // hand to reach branches the scenarios do not reach. At the first comparable call of F, each case of F is injected
-// into a scratch area of the dead stack (under the caller's r1, so no live data and nothing another thread reads),
-// both versions run from it as above, and everything is put back afterwards (registers, scratch area, W1, W2): the
-// game does not see them. They count apart from the real calls (synthetic_* in the summary) and are written as
+// into a scratch area of the dead stack (under the caller's r1; [hypothesis] no live data there and nothing another
+// thread reads during the call, notes/decomp.md D1.3), both versions run from it as above, and everything is put
+// back afterwards (registers, scratch area, W1, W2): the game does not see them. For a synthetic case the dead stack
+// that is not compared is only the saved part of the scratch area under the case's r1 (synthetic_dead_stack bytes,
+// not the 64 KiB of a real call): a store anywhere else, even through a pointer argument that points a few KiB
+// under S, is compared. They count apart from the real calls (synthetic_* in the summary) and are written as
 // replayable cases with their label.
 //   case <function> <label>     starts a case (one function, any label without spaces)
 //   area <bytes>                size of the scratch area (default 0x100, at most 0x400), zero-filled first
@@ -130,12 +142,15 @@ struct function_state {
     std::vector<u32> blocks, dead_blocks;
     std::vector<u64> block_hits, dead_block_hits; // compared calls (real and synthetic) that ran each block
     std::vector<u8> call_blocks, call_dead;       // blocks run by the current call of the original
-    std::unordered_set<u64> paths;                 // distinct sets of blocks run
+    std::unordered_set<u64> paths;                 // distinct sets of blocks run (not edges, not paths)
     std::set<std::pair<u64, u64>> results;         // distinct results of the original
     // Synthetic cases.
     std::vector<synthetic_case> synthetic;
     bool synthetic_done = false;
     u64 synthetic_compared = 0, synthetic_mismatches = 0, synthetic_not_compared = 0;
+    // Runs of the original during which another journal detached or replaced itself (the oracle stayed attached),
+    // and self-checks of the undo and redo of W1 that failed (must stay 0).
+    u64 journal_reattached = 0, restore_errors = 0;
 };
 
 const char* s_version = "?";
@@ -154,6 +169,10 @@ unsigned s_synthetic_loaded = 0;
 std::vector<std::string> s_synthetic_errors;
 u64 s_case_limit = 64;
 u32 s_dead_stack = oracle::default_dead_stack;
+// Synthetic cases: the case's r1 is 0x100 under S and the saved scratch area starts 0x400 under S, so the frame of
+// the function may use 0x300 bytes under its r1; below that, every store is compared.
+constexpr u32 synthetic_dead_stack = 0x300u;
+unsigned s_test_detaching_journal = 0; // GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL (test only)
 unsigned s_depth = 0;                // > 0 while a comparison runs
 function_state* s_running = nullptr; // function being compared
 bool s_in_original = false;          // the original of s_running is running (block hooks record)
@@ -217,28 +236,51 @@ void write_byte(u32 address, u8 value) {
 }
 
 // DolRecomp's write journal (cpu.c: called with the RAM offset and size before the store), into *s_journal_target.
-// The journal another part of the runtime may have attached (hle/native_os.c, idle detection) keeps being called.
+// The journal another part of the runtime may have attached (hle/native_os.c, idle detection) keeps being called; if
+// it detaches or replaces itself meanwhile (ppc_set_mem_write_journal from inside it), the oracle's journal is put
+// back at once and the change is kept for detach_journal (see "Write journal" at the top).
 oracle::write_set s_original_writes;
 oracle::write_set* s_journal_target = &s_original_writes;
 PPCMemWriteJournal s_previous_journal = nullptr;
 void* s_previous_user = nullptr;
+u64 s_reattached = 0; // re-attachments during the current run
+
+// Test journal (GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL): detaches itself on its first store, as the idle detection
+// of hle/native_os.c (spin_journal) does on its first store outside the thread's stack.
+void test_detaching_journal(u32 /*offset*/, u32 /*size*/, void* /*user*/) {
+    ppc_set_mem_write_journal(nullptr, nullptr);
+}
 
 void journal(u32 offset, u32 size, void* /*user*/) {
-    if (s_previous_journal)
+    if (s_previous_journal) {
         s_previous_journal(offset, size, s_previous_user);
+        if (g_mem_write_journal != &journal && s_test_detaching_journal != 2) {
+            s_previous_journal = g_mem_write_journal;
+            s_previous_user = g_mem_write_journal_user;
+            ppc_set_mem_write_journal(&journal, nullptr);
+            s_reattached++;
+        }
+    }
     u64 old_value = 0;
     for (u32 i = 0; i < size && i < 8; i++)
         old_value = (old_value << 8) | (offset + i < s_state->ram_size ? s_state->ram[offset + i] : 0u);
     s_journal_target->add(0x80000000u + offset, size < 8 ? size : 8, old_value);
 }
 
-void attach_journal(oracle::write_set* target) {
+// `test_previous`: the original's run, where the test journal (if asked for) stands in for an absent one.
+void attach_journal(oracle::write_set* target, bool test_previous = false) {
     s_journal_target = target;
     s_previous_journal = g_mem_write_journal;
     s_previous_user = g_mem_write_journal_user;
+    if (test_previous && s_test_detaching_journal && !s_previous_journal)
+        s_previous_journal = &test_detaching_journal;
+    s_reattached = 0;
     ppc_set_mem_write_journal(&journal, nullptr);
 }
 void detach_journal() {
+    // The test journal stands in only during the original's run: never left attached to the game.
+    if (s_previous_journal == &test_detaching_journal)
+        s_previous_journal = nullptr;
     ppc_set_mem_write_journal(s_previous_journal, s_previous_user);
 }
 
@@ -404,14 +446,14 @@ void print_block_list(std::FILE* out, const char* key, const std::vector<u32>& b
 void print_case(const char* kind, const function_state& f, u64 fingerprint, u8 result_kind, const reg_state& r0,
                 const std::vector<read_record>& reads, const reg_state& r1, const std::vector<byte_write>& w1,
                 const reg_state* r2, const std::vector<byte_write>* w2, const std::vector<difference>* diffs,
-                const char* synthetic) {
+                const char* synthetic, u32 dead_stack) {
     if (!s_out)
         return;
     std::fprintf(s_out, "{\"kind\":\"%s\",\"function\":\"%s\",\"version\":\"%s\",\"address\":\"%08X\",\"size\":%u,"
                         "\"result_kind\":%u,\"fingerprint\":\"%016llX\",\"dead_stack\":\"%08X\",",
                  kind, f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                  static_cast<unsigned>(result_kind), static_cast<unsigned long long>(fingerprint),
-                 static_cast<unsigned>(s_dead_stack));
+                 static_cast<unsigned>(dead_stack));
     if (synthetic)
         std::fprintf(s_out, "\"synthetic\":\"%s\",", synthetic);
     print_block_list(s_out, "blocks", f.blocks, &f.call_blocks);
@@ -460,14 +502,16 @@ void report_at_exit() {
         std::fprintf(stdout,
                      "ORACLE %-32s %s %08X calls=%llu compared=%llu mismatches=%llu cases=%zu bad_cases=%zu "
                      "stored=%llu not_compared=%llu leaf=%s blocks=%llu/%zu results=%zu synthetic=%llu/%zu "
-                     "synthetic_mismatches=%llu%s%s\n",
+                     "synthetic_mismatches=%llu journal_reattached=%llu restore_errors=%llu%s%s\n",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.calls),
                      static_cast<unsigned long long>(f.compared), static_cast<unsigned long long>(f.mismatches),
                      f.fingerprints.size(), f.bad_fingerprints.size(), static_cast<unsigned long long>(f.stored),
                      static_cast<unsigned long long>(f.not_compared), leaf, static_cast<unsigned long long>(covered),
                      f.blocks.size(), f.results.size(), static_cast<unsigned long long>(f.synthetic_compared),
                      f.synthetic.size(), static_cast<unsigned long long>(f.synthetic_mismatches),
-                     f.leaf_reason[0] ? " reason=" : "", f.leaf_reason);
+                     static_cast<unsigned long long>(f.journal_reattached),
+                     static_cast<unsigned long long>(f.restore_errors), f.leaf_reason[0] ? " reason=" : "",
+                     f.leaf_reason);
         if (!s_out)
             continue;
         std::fprintf(s_out,
@@ -475,14 +519,17 @@ void report_at_exit() {
                      "\"size\":%u,\"calls\":%llu,\"compared\":%llu,\"mismatches\":%llu,\"cases\":%zu,"
                      "\"bad_cases\":%zu,\"stored\":%llu,\"not_compared\":%llu,\"leaf\":\"%s\",\"reason\":\"%s\","
                      "\"synthetic_cases\":%zu,\"synthetic_compared\":%llu,\"synthetic_mismatches\":%llu,"
-                     "\"synthetic_not_compared\":%llu,\"paths\":%zu,",
+                     "\"synthetic_not_compared\":%llu,\"journal_reattached\":%llu,\"restore_errors\":%llu,"
+                     "\"paths\":%zu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
                      static_cast<unsigned long long>(f.stored), static_cast<unsigned long long>(f.not_compared), leaf,
                      f.leaf_reason, f.synthetic.size(), static_cast<unsigned long long>(f.synthetic_compared),
                      static_cast<unsigned long long>(f.synthetic_mismatches),
-                     static_cast<unsigned long long>(f.synthetic_not_compared), f.paths.size());
+                     static_cast<unsigned long long>(f.synthetic_not_compared),
+                     static_cast<unsigned long long>(f.journal_reattached),
+                     static_cast<unsigned long long>(f.restore_errors), f.paths.size());
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         std::fputc(',', s_out);
@@ -671,7 +718,7 @@ void mark_not_comparable(function_state& f, leaf_state state, const char* reason
 // synthetic case (everything is undone afterwards; the caller restores R0) or nullptr for a real call (the game keeps
 // the original's results). True if compared.
 bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&), const oracle_signature& signature,
-                  const char* synthetic) {
+                  const char* synthetic, u32 dead_stack) {
     CPUState* c = &g->state;
     auto not_compared = [&]() {
         if (synthetic)
@@ -686,7 +733,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_original_writes.clear();
     std::fill(f.call_blocks.begin(), f.call_blocks.end(), u8{0});
     std::fill(f.call_dead.begin(), f.call_dead.end(), u8{0});
-    attach_journal(&s_original_writes);
+    attach_journal(&s_original_writes, true);
     s_external_writes = 0;
     s_external_write = c->external_write;
     s_external_write32 = c->external_write32;
@@ -704,6 +751,8 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_depth--;
     c->external_write = s_external_write;
     c->external_write32 = s_external_write32;
+    if (s_reattached)
+        f.journal_reattached++;
     detach_journal();
     s_original_writes.finish(&read_byte);
     const std::vector<byte_write> w1 = s_original_writes.bytes();
@@ -770,6 +819,21 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     const cpu_snapshot r2 = take(c);
     observer.writes.finish(&read_byte);
     const std::vector<byte_write>& w2 = observer.writes.bytes();
+    // Self-check of the undo: a byte both versions wrote had, before the decompiled version, the value it had before
+    // the original (both sorted by address).
+    for (std::size_t i = 0, j = 0; i < w1.size() && j < w2.size();) {
+        if (w1[i].address < w2[j].address)
+            i++;
+        else if (w2[j].address < w1[i].address)
+            j++;
+        else {
+            if (w1[i].before != w2[j].before) {
+                f.restore_errors++;
+                break;
+            }
+            i++, j++;
+        }
+    }
     auto finish = [&]() {
         // 5. Undo the decompiled version; a real call goes on with the original's results.
         for (const byte_write& b : w2)
@@ -781,6 +845,12 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
         for (const byte_write& b : w1)
             write_byte(b.address, b.after);
         put(c, r1);
+        // Self-check of the redo: the game goes on with exactly the bytes the original wrote.
+        for (const byte_write& b : w1)
+            if (read_byte(b.address) != b.after) {
+                f.restore_errors++;
+                break;
+            }
     };
     if (guest_calls != guest_calls_before || f.leaf != leaf_yes) {
         if (f.leaf == leaf_yes)
@@ -791,7 +861,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
 
     // 4. Comparison.
     std::vector<difference> diffs;
-    oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, s_dead_stack);
+    oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, dead_stack);
 
     // Coverage and results (compared calls only).
     for (std::size_t i = 0; i < f.call_blocks.size(); i++)
@@ -847,12 +917,12 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
         }
         if (new_bad && (synthetic || f.bad_fingerprints.size() <= 16))
             print_case("mismatch", f, h, signature.result_kind, r0.regs, observer.reads, r1.regs, w1, &r2.regs, &w2,
-                       &diffs, synthetic);
+                       &diffs, synthetic, dead_stack);
     } else if (synthetic || (is_new && f.stored < s_case_limit)) {
         if (!synthetic)
             f.stored++;
         print_case("case", f, h, signature.result_kind, r0.regs, observer.reads, r1.regs, w1, nullptr, nullptr,
-                   nullptr, synthetic);
+                   nullptr, synthetic, dead_stack);
     }
     finish();
     return true;
@@ -892,7 +962,7 @@ void run_synthetic(GcrtCpu* g, function_state& f, void (*invoke)(const registers
             else
                 std::memcpy(&c->ps1[r.index], &v, sizeof(v));
         }
-        compare_call(g, f, invoke, signature, sc.label.c_str());
+        compare_call(g, f, invoke, signature, sc.label.c_str(), synthetic_dead_stack);
         for (u32 i = 0; i < save_size; i++)
             write_byte(save_from + i, saved_bytes[i]);
         put(c, saved);
@@ -907,6 +977,8 @@ void initialize() {
         s_case_limit = std::strtoull(n, nullptr, 0);
     if (const char* n = std::getenv("GCRT_DECOMP_ORACLE_DEAD_STACK"); n && n[0])
         s_dead_stack = static_cast<u32>(std::strtoul(n, nullptr, 0));
+    if (const char* n = std::getenv("GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL"); n && n[0])
+        s_test_detaching_journal = static_cast<unsigned>(std::strtoul(n, nullptr, 0));
     if (const char* dir = std::getenv("GCRT_DECOMP_ORACLE_SYNTHETIC"); dir && dir[0])
         load_synthetic(dir);
     for (const std::string& e : s_synthetic_errors)
@@ -922,9 +994,11 @@ void initialize() {
         else {
             std::fprintf(s_out,
                          "{\"kind\":\"header\",\"version\":\"%s\",\"functions\":%zu,\"negative\":%s,\"sources\":\"%s\","
-                         "\"dead_stack\":\"%08X\",\"synthetic_cases\":%u,\"synthetic_errors\":%zu}\n",
+                         "\"dead_stack\":\"%08X\",\"synthetic_dead_stack\":\"%08X\",\"synthetic_cases\":%u,"
+                         "\"synthetic_errors\":%zu,\"test_detaching_journal\":%u}\n",
                          s_version, s_functions.size(), negative_build ? "true" : "false", s_sources_hash,
-                         static_cast<unsigned>(s_dead_stack), s_synthetic_loaded, s_synthetic_errors.size());
+                         static_cast<unsigned>(s_dead_stack), static_cast<unsigned>(synthetic_dead_stack),
+                         s_synthetic_loaded, s_synthetic_errors.size(), s_test_detaching_journal);
             std::fflush(s_out);
         }
     }
@@ -967,7 +1041,7 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
         bypass_address = 0;
         return true;
     }
-    compare_call(g, *f, invoke, signature, nullptr);
+    compare_call(g, *f, invoke, signature, nullptr, s_dead_stack);
     return true; // registers and memory are the original's
 }
 

@@ -4,7 +4,10 @@
 //
 //   state_cell_is_state_active   wrong result (r3 inverted)
 //   hsd_archive_get_public       right result, callee-saved register r31 not preserved
-//   mode_owner_is_mode_in_effect right result, condition field cr3 not preserved
+//   mode_owner_is_mode_in_effect right result, condition field cr3 not preserved, and one word written at r3 (the
+//                                object's first word): in its synthetic cases r3 = S-0x95D0 lies in the 64 KiB
+//                                dead stack of a real call, so this store is seen only through the narrower
+//                                window of synthetic cases (gc_oracle.cpp)
 //   hsd_cobj_mtx_is_dirty        right result, two bytes written that the original does not write
 //   vec3_copy                    one bit of a copied float different (least significant bit of y)
 //
@@ -59,12 +62,17 @@ ptr<char> archive_wrong_preserved_register(ptr<Archive> archive, s32 index) {
 }
 
 struct ModeOwner {
-    gc::array<be<u8>, 0x95D0> not_described_here;
+    be<u32> first_word;
+    gc::array<be<u8>, 0x95CC> not_described_here;
     be<s32> current_mode;
     be<s32> pending_mode;
 };
+#if !defined(GC_NATIVE_MEMORY)
+static_assert(offsetof(ModeOwner, current_mode) == 0x95D0);
+#endif
 
-u8 mode_owner_wrong_condition_field(ptr<const ModeOwner> owner, s32 mode) {
+u8 mode_owner_wrong_condition_field(ptr<ModeOwner> owner, s32 mode) {
+    owner->first_word = gc::load(owner->first_word) ^ 0x80u; // wrong on purpose: the original writes nothing
     s32 in_effect = gc::load(owner->pending_mode);
     if (in_effect < 0)
         in_effect = gc::load(owner->current_mode);
@@ -122,6 +130,6 @@ GC_DECOMP_EXPORT(state_cell_is_state_active__wrong, oracle_negative::state_cell_
 GC_DECOMP_EXPORT(hsd_archive_get_public__wrong, oracle_negative::archive_wrong_preserved_register,
                  gc::abi::flag_reads_only);
 GC_DECOMP_EXPORT(mode_owner_is_mode_in_effect__wrong, oracle_negative::mode_owner_wrong_condition_field,
-                 gc::abi::flag_reads_only);
+                 gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_cobj_mtx_is_dirty__wrong, oracle_negative::cobj_wrong_extra_write, gc::abi::flag_none);
 GC_DECOMP_EXPORT(vec3_copy__wrong, oracle_negative::vec3_wrong_float_bit, gc::abi::flag_none);

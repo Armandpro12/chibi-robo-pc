@@ -460,22 +460,47 @@ def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tup
     return reachable, dead
 
 
+# Files outside the decompiled sources that decide what an oracle run measures, relative to the repository root
+# (folders: every file below them): the basic-block analysis and the table checks (this file, decomp_common.py, the
+# code reader symbols.py), the generation of the block hooks and of the registration table (build.py), the
+# DolRecomp patch that compiles those hooks, and the chassis that runs the original (runtime/core/cpu).
+ORACLE_HASHED_TOOLS = ["tools/decomp_functions.py", "tools/decomp_common.py", "tools/symbols.py", "tools/build.py",
+                       "tools/patches/dolrecomp", "runtime/core/cpu"]
+
+
+def oracle_hash_inputs(game_cfg: dict, negative: Path | None = None) -> list[tuple[str, Path]]:
+    """(name, file) of every file oracle_sources_hash reads, in hash order."""
+    roots = [game_cfg["_dir"] / "decomp" / "src", tc.ROOT / "runtime" / "core" / "decomp"]
+    if negative:
+        roots.append(Path(negative))
+    out: list[tuple[str, Path]] = []
+    for root in roots:
+        out += [(p.relative_to(root).as_posix(), p) for p in sorted(Path(root).rglob("*")) if p.is_file()]
+    for rel in ORACLE_HASHED_TOOLS:
+        path = tc.ROOT / rel
+        if path.is_dir():
+            out += [(p.relative_to(tc.ROOT).as_posix(), p) for p in sorted(path.rglob("*")) if p.is_file()]
+        elif path.is_file():
+            out.append((rel, path))
+        else:
+            raise SystemExit(f"oracle_sources_hash: {rel} not found (ORACLE_HASHED_TOOLS, tools/decomp_functions.py)")
+    return out
+
+
 def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     """SHA-1 of what an oracle verdict is about: the decompiled sources (games/<game>/decomp/src, every file), the
-    oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, and the name, module,
-    addresses and size of every row of the functions table (not its status columns, which the promotion writes).
+    oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, the tools and runtime
+    files that decide the block analysis, the block hooks and how the original runs (ORACLE_HASHED_TOOLS), and the
+    name, module, addresses and size of every row of the functions table (not its status columns, which the promotion
+    writes).
     Line ends are normalized (a checkout with CRLF gives the same hash). tools/build.py --oracle compiles it into the
     oracle executable (header of its jsonl files); tools/decomp_oracle.py report --promote refuses results whose hash
     is not the current one."""
     import hashlib
     h = hashlib.sha1()
-    roots = [game_cfg["_dir"] / "decomp" / "src", tc.ROOT / "runtime" / "core" / "decomp"]
-    if negative:
-        roots.append(Path(negative))
-    for root in roots:
-        for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
-            h.update(path.relative_to(root).as_posix().encode() + b"\0")
-            h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    for name, path in oracle_hash_inputs(game_cfg, negative):
+        h.update(name.encode() + b"\0")
+        h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     _, columns = config(game_cfg)
     for f in read_table(game_cfg):
         h.update("\t".join([f.name, f.module, *(f"{f.addresses.get(v) or 0:08X}" for v in sorted(columns)),

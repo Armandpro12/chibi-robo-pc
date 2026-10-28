@@ -143,8 +143,8 @@ Progress: 4 functions decompiled and verified by the oracle, on both US and PAL 
   original ran, and runs hand-written synthetic cases (`games/chibi-robo/decomp/oracle_cases/`, invented values) to
   reach branches the scenarios do not. A function is **verified** when, in every version, it showed no difference on
   every compared call and synthetic case, every basic block of the original reachable from its entry was exercised,
-  and enough distinct real starting states were seen; this is coverage of every path, not a proof on states that were
-  never compared. Results from a run that did not finish, from a failing bench run, or from other sources than the
+  and enough distinct real starting states were seen (and every call was compared). This is basic-block coverage (not
+  edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish, from a failing bench run, or from other sources than the
   current ones are refused.
 - **Results**: over the five reference scenarios, the four functions were compared about 181,000 times in US and
   216,000 in PAL, plus 30 synthetic cases per run, without a difference; all their blocks were covered (for three of
