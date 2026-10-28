@@ -52,7 +52,7 @@ Date: 2026-10-28.
 **Provenance**:
 - Names from `cbr_decomp/decomp_dtk_main/config/GGTE01/symbols.txt` (CC0) are cited as such. The appendices list only functions that this file leaves as `fn_XXXXXXXX`.
 - The unlicensed parts of `cbr_decomp` (repository root, `ChibiRobo_Dol_Inject/` and its Ghidra map) are not a source of this document; every name here was confirmed independently.
-- No name comes from the Melee decompilation (unlicensed). HAL library functions are described by role, unless the game binary itself names them.
+- Nothing in this document comes from the Melee decompilation (`doldecomp/melee`, no license file). Its maintainers allow reusing its function names (not its code or comments, https://github.com/doldecomp/melee/issues/3681#issuecomment-6375433261); such names appear only in the symbol maps (`games/chibi-robo/symbols/`, credited there). Here, HAL library functions are described by role, unless the game binary itself names them.
 - No game data is reproduced: no code bytes, no tables, no text and no file contents from the game. Only names (including source file names and save file names), addresses, sizes and hashes, with layouts and behaviour described in our own words.
 
 ---
