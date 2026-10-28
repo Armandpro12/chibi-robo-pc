@@ -1468,9 +1468,16 @@ void initialize() {
 
 bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), const oracle_signature& signature) {
     if (s_depth) {
-        // Inside a recorded callee (its nested run): it runs as its original, the game's behavior.
-        if (s_call_active)
-            return false;
+        // Inside a recorded callee (its nested run): it runs as its ORIGINAL, as everything the oracle runs for the
+        // game (returning false here would run the decompiled version for real: its errors would reach the game and
+        // the record of the caller's original, e.g. a wrong variant of the negative test).
+        if (s_call_active) {
+            const u32 outer_bypass = bypass_address;
+            bypass_address = address;
+            run_guest(g, address);
+            bypass_address = outer_bypass;
+            return true;
+        }
         // Another decompiled function reached during a comparison otherwise (no recorded call): the function being
         // compared cannot be compared.
         if (s_running && comparable(s_running->leaf)) {
