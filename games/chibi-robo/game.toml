@@ -44,8 +44,8 @@ symbol_map = "symbols/{id}.map"
 [symbols]
 # Reference symbols (read by tools/symbols.py, applied by tools/ghidra/analyze.py):
 # decomp-toolkit (dtk) configuration of cbr_decomp, US version only; transposed to the other versions.
-# dtk_dir is relative to the repository root (external/ is cloned locally and ignored by Git).
-dtk_dir = "external/cbr_decomp/decomp_dtk_main/config/GGTE01"
+# dtk_dir is relative to the repository root (external/ is local and ignored by Git; cbr-local is a snapshot of the cbr_decomp dtk configuration).
+dtk_dir = "external/cbr-local/decomp_dtk_main/config/GGTE01"
 reference = "GGTE01"
 map_dir = "symbols"
 attribution = """
