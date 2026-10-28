@@ -175,10 +175,10 @@ once the gateway handled a call made while the unit is off; see "Follow-ups from
 - **Floating-point unit off** (start of D2): the game's OS gives the floating-point unit to a thread lazily (its first
   floating-point instruction raises "FPU unavailable", and the OS then loads that thread's floating-point registers).
   The build scans each original for floating-point instructions (the same set of instructions the recompiled code
-  guards; checked against every guard of the generated code of both versions, about 97,000 per version) and flags it
+  guards; checked against every guard of the generated code of both versions, about 97,000 in US and 98,000 in PAL) and flags it
   in the generated table; while the unit is off, the gateway lets such an original run, exception included, and the
   next call reaches the decompiled version again. The oracle counts these calls apart: 13 (US) and 7 (PAL) over the
-  reference scenarios, against 3.8 million compared calls of the same two functions. Checked by local tests, including
+  reference scenarios, against 3.8 million (US) and 4.0 million (PAL) compared calls of the same two functions. Checked by local tests, including
   a gateway without this decline, which they reject.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
