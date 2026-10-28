@@ -47,7 +47,8 @@ least 60; `0` turns it off); a start-up report is a `.txt` only, never a `.dmp`.
 
 Open an issue at <https://github.com/Armandpro12/chibi-robo-pc/issues> with your Windows and graphics driver version
 and what you did. If the game crashed or froze, attach only the `crash-*.txt` or `hang-*.txt` report, after reading
-it. Never attach game files, your disc image, a `.dmp` or a `-guest-ram.bin` file.
+it. A screenshot of a visual problem is welcome (crop it to the problem), and a save only if asked. Never attach
+game files, your disc image, a `.dmp` or a `-guest-ram.bin` file.
 
 ## Telling an unstable machine from a bug
 
