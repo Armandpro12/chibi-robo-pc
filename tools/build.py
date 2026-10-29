@@ -535,13 +535,44 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
             raise SystemExit(f"--oracle-negative: no wrong variant (GC_DECOMP_EXPORT(<name>__wrong, ...)) for "
                              f"{', '.join(missing)} in {oracle['negative']}")
     sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
+    globals_lines = decomp_globals_table(game, game_cfg, version, disc_root, path.parent, entries, oracle)
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
                                                                              sources_hash=sources_hash, fpu=fpu,
-                                                                             calls=calls, asserts=asserts))
+                                                                             calls=calls, asserts=asserts,
+                                                                             globals=globals_lines))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     return path.as_posix()
+
+
+def decomp_globals_table(game: str, game_cfg: dict, version: str, disc_root: Path, out_dir: Path, entries: list,
+                         oracle: dict | None) -> list[str] | None:
+    """Globals table of the game ([decomp] globals, tools/decomp_globals.py): checks it for `version` (the build is
+    refused otherwise), writes the identifier header decomp_globals.h into `out_dir` (next to the registration
+    table, an include folder of the decompiled sources: runtime/core/cmake/GcrtDecomp.cmake) and returns the lines of
+    the version's address array for the registration table. Without a table: an empty header, None."""
+    import decomp_globals  # noqa: E402
+    rows = decomp_globals.read_table(game_cfg)
+    header = out_dir / "decomp_globals.h"
+    import decomp_functions  # noqa: E402
+    if decomp_globals.table_path(game_cfg) is None:
+        decomp_functions.write_if_changed(header, decomp_globals.header_source([]))
+        return None
+    # The sources this build compiles (decomp_excluded_sources), headers included: an identifier they name must
+    # have an address in this version.
+    src_dir = game_cfg["_dir"] / "decomp" / "src"
+    excluded = set(decomp_excluded_sources(game, oracle))
+    sources = [p for p in sorted(src_dir.rglob("*")) if p.suffix in (".cpp", ".h") and p.resolve() not in excluded]
+    if oracle:
+        for folder in (game_cfg["_dir"] / "decomp" / "oracle_tests", oracle.get("negative")):
+            if folder and Path(folder).is_dir():
+                sources += [p for p in sorted(Path(folder).rglob("*")) if p.suffix in (".cpp", ".h")]
+    res = decomp_globals.check_build(game_cfg, version, disc_root, [f for _, f in entries], sources)
+    decomp_functions.write_if_changed(header, decomp_globals.header_source(rows))
+    print(f"== Game globals: {len(res.addresses)} placed for {version}, {len(res.absent)} absent "
+          f"({decomp_globals.table_path(game_cfg).name}, checked in the DOL)")
+    return decomp_globals.table_source(version, rows, res)
 
 
 DECOMP_EXPORT = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+)\s*,")

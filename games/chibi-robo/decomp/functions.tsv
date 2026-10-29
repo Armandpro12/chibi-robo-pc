@@ -61,3 +61,6 @@ oracle_test_clear_record	dol	801A4318	801A6B90	0x9C	disabled	-
 oracle_test_clear_record_and_tail	dol	8008A4FC	8008C498	0x34	disabled	-
 oracle_test_free_chain	dol	801C1E28	801C4724	0x124	disabled	-
 oracle_test_run_handler_if_ready	dol	80092D34	80094DE0	0x5C	disabled	-
+hsd_pobj_clear_mtx_mark	dol	801ACB64	801AF460	0x18	verified	yes
+hsd_state_init_tev	dol	801B8748	801BB044	0xC	verified	yes
+hsd_mobj_set_current	dol	801B8E54	801BB750	0x8	verified	yes
