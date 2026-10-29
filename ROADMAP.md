@@ -228,11 +228,17 @@ from D1" below).
   reference scenarios differed from the references by that one frame (same images one frame apart, audio shifted),
   although every function gave the original's results. Shown by an oracle executable that keeps the originals'
   results but leaves their cycles uncharged (test switch): same difference, to the figure. The oracle now measures
-  the cycles of each original over its game calls; `tools/decomp_oracle.py cost` writes their mean per version into
-  `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call (exact for 28 of the 40 functions,
-  whose original always costs the same; a mean for the other 12). With it, the production executables of the
-  integrated work match the references exactly in all five scenarios, in US and PAL. Production play uses the PC
-  clock and is not affected.
+  the EXCLUSIVE cycles of each original over its game calls (its own cycles, without those of the calls it makes,
+  which are charged where they run); `tools/decomp_oracle.py cost` writes their mean per version into
+  `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call, in 1/256 cycle with the
+  remainder carried from call to call (no rounding bias), and only on that bench clock. The cost is exact for 34 of
+  the 40 functions, whose original always costs the same, and a mean for the other 6. A production build refuses an
+  enabled function without a measured cost. With it, the production executables of the integrated work match the
+  references exactly in all five scenarios, in US and PAL. Production play uses the PC clock and is not affected.
+  Any uncharged guest time is a risk on this bench: on the PAL scenario that shifted, the functions already
+  decompiled before ran about 12 million cycles uncharged without a visible shift, while the integrated work ran
+  about 65 million (two new batches: 19.5 and 34 million) and shifted a load by a frame; which amount tips a
+  scenario is not known, so there is no safe threshold. The coupling goes away with the cycle clock at D3.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
