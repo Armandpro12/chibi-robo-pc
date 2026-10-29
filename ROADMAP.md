@@ -181,8 +181,9 @@ from D1" below).
   The build scans each original for floating-point instructions (the same set of instructions the recompiled code
   guards; checked against every guard of the generated code of both versions, about 97,000 in US and 98,000 in PAL) and flags it
   in the generated table; while the unit is off, the gateway lets such an original run, exception included, and the
-  next call reaches the decompiled version again. The oracle counts these calls apart: 13 (US) and 7 (PAL) over the
-  reference scenarios, against 3.8 million (US) and 4.0 million (PAL) compared calls of the same two functions. Checked by local tests, including
+  next call reaches the decompiled version again. The oracle counts these calls apart: 3 (US) and 9 (PAL) over the
+  reference scenarios of the integrated run, against 6.6 million (US) and 6.2 million (PAL) compared calls of the
+  same two functions. Checked by local tests, including
   a gateway without this decline, which they reject.
 - **Functions that call others** (start of D2, oracle builds only): every call instruction of the original is hooked;
   while the original runs under comparison, each call it makes is recorded (target, arguments, memory written so far)
@@ -219,8 +220,8 @@ from D1" below).
   version comes from `games/chibi-robo/symbols/globals.tsv`, which the build checks in both DOLs (right section, same
   contents where initialized, and the original code of each listed user references it at the same instruction
   offsets) before writing the identifiers and the version's address table; a wrong PAL address refuses the PAL build.
-  First use: three HSD functions that write globals, verified by the oracle in US and PAL (3.6 to 11.4 million
-  comparisons each, no difference).
+  First use: three HSD functions that write globals, verified by the oracle in US and PAL (8.5 to 27.6 million
+  comparisons each in the integrated run, no difference).
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the

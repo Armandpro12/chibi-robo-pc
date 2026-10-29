@@ -64,7 +64,7 @@ applies the Aurora patches of `tools/patches/aurora/` ([technical.md](technical.
 
 The decompiled functions enabled in `games/chibi-robo/decomp/functions.tsv` replace their recompiled versions. The
 build first checks each address against the symbol files of `games/chibi-robo/symbols/`, all in Git (maps, gap file
-and the transposition report `GGTE01-to-GGTP01.tsv`), so it needs no extra step: a missing file stops the build with
+and the transposition report `GGTE01-to-GGTP01.tsv`), so it needs no extra step for the symbols: a missing file stops the build with
 the command that restores it. After a change of the reference symbols, `py -3 tools/symbols.py chibi-robo transpose
 --to GGTP01` rewrites the report (it needs the cbr_decomp symbols in `external/` and the Ghidra analysis of GGTP01).
 The PAL build also needs the US version extracted (`tools/extract.py chibi-robo --version GGTE01`): it compares the
