@@ -959,6 +959,88 @@ def cmd_replay(args) -> int:
     return r.returncode
 
 
+# --- cost ------------------------------------------------------------------------------------------------------------
+
+GUEST_COST_HEADER = """\
+# Guest cost of the decompiled functions of {game} (stage 2): for each function and version, the guest cycles the
+# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, registration::guest_cost), so that the
+# deterministic cycle clock of the bench runs as with the recompiled original. Without it a decompiled function costs no
+# guest time: timed events (end of a load, audio) come earlier and the A/B bench sees a frame shift that is not a
+# change of behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the originals (the mean
+# cycles of each original over its game calls, rounded); numbers about the game's code only, like the size column of
+# functions.tsv. Path-dependent originals (least and most of one call differ) are listed below the table: their charge
+# is a mean, exact only on average. Measured on: {labels}.
+"""
+
+
+def cmd_cost(args) -> int:
+    """Guest cost table (decomp/guest_cost.tsv, [decomp] guest_cost of game.toml) from the cost fields of the oracle's
+    summaries: the mean guest cycles of each original over its game calls, per version."""
+    game = game_name(args.game)
+    game_cfg = tc.load_game(game)
+    bench = Path(args.bench_root) if args.bench_root else main_checkout()
+    versions = versions_of(game_cfg, args.versions)
+    labels = [x for x in args.label.split(",") if x]
+    path = df.guest_cost_path(game_cfg)
+    if not path:
+        raise SystemExit("game.toml: [decomp] guest_cost is required")
+    rows = [f for f in df.read_table(game_cfg) if f.enabled]
+    measured: dict[tuple[str, str], list[int]] = {}  # (name, version) -> [calls, cycles, min, max]
+    problems: list[str] = []
+    for version in versions:
+        for label in labels:
+            files = sorted(oracle_dir(bench, game, label, version).rglob("oracle-*.jsonl"))
+            if not files:
+                problems.append(f"{label}/{version}: no oracle file")
+            for file in files:
+                for line in file.read_text(encoding="utf-8").splitlines():
+                    if '"kind":"summary"' not in line:
+                        continue
+                    rec = json.loads(line)
+                    if "cost_calls" not in rec:
+                        problems.append(f"{file.name}: {rec.get('function')}: summary without cost (old oracle executable)")
+                        continue
+                    if not rec["cost_calls"]:
+                        continue
+                    m = measured.setdefault((rec["function"], version), [0, 0, 1 << 64, 0])
+                    m[0] += rec["cost_calls"]
+                    m[1] += rec["cost_cycles"]
+                    m[2] = min(m[2], rec["cost_min"])
+                    m[3] = max(m[3], rec["cost_max"])
+    for p in problems:
+        print(f"PROBLEM {p}")
+    if problems:
+        return 1
+    out = [GUEST_COST_HEADER.format(game=game_cfg.get("name", game), labels=", ".join(labels)).rstrip("\n"),
+           "\t".join(["name"] + versions)]
+    notes: list[str] = []
+    missing: list[str] = []
+    for f in rows:
+        cells = [f.name]
+        for version in versions:
+            m = measured.get((f.name, version))
+            if not m:
+                cells.append("-")
+                missing.append(f"{f.name} ({version})")
+                continue
+            cells.append(str((2 * m[1] + m[0]) // (2 * m[0])))  # mean, rounded half up
+            if m[2] != m[3]:
+                notes.append(f"#   {f.name} {version}: {m[2]}..{m[3]} cycles per call, mean {m[1] / m[0]:.2f} over "
+                             f"{m[0]} calls")
+        out.append("\t".join(cells))
+    if notes:
+        out += ["# Path-dependent originals (charge exact only on average):"] + notes
+    text = "\n".join(out) + "\n"
+    if args.dry_run:
+        print(text, end="")
+    else:
+        path.write_bytes(text.encode("utf-8"))
+        print(f"written {path} ({len(rows)} functions, {len(notes)} path-dependent)")
+    for name in missing:
+        print(f"WARNING no measured call: {name} (nothing charged)")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--game")
@@ -991,6 +1073,10 @@ def main() -> int:
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
+    c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
+    c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
+    c.add_argument("--versions")
+    c.add_argument("--dry-run", action="store_true", help="print the table, write nothing")
     y = sub.add_parser("replay", help="offline replay of captured cases on the decompiled code")
     y.add_argument("--label")
     y.add_argument("--versions")
@@ -1001,7 +1087,8 @@ def main() -> int:
     y.add_argument("--out", help="build folder of the replay executable (default build/oracle-replay)")
     y.add_argument("--verbose", action="store_true")
     args = p.parse_args()
-    return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash}[args.cmd](args)
+    return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash,
+            "cost": cmd_cost}[args.cmd](args)
 
 
 if __name__ == "__main__":

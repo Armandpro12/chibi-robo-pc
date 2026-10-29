@@ -212,6 +212,10 @@ struct function_state {
     // Runs of the original during which another journal detached or replaced itself (the oracle stayed attached),
     // and self-checks of the undo and redo of W1 that failed (must stay 0).
     u64 journal_reattached = 0, restore_errors = 0;
+    // Guest cycles the original was charged for in the game calls of this function (its runs by the oracle, synthetic
+    // cases excluded): total, calls measured, least and most of one call. The guest cost of the decompiled version
+    // (registration::guest_cost, decomp/guest_cost.tsv of the game) is their mean (tools/decomp_oracle.py cost).
+    u64 cost_cycles = 0, cost_calls = 0, cost_min = UINT64_MAX, cost_max = 0;
 };
 
 const char* s_version = "?";
@@ -243,7 +247,11 @@ u32 s_dead_stack = oracle::default_dead_stack;
 constexpr u32 synthetic_dead_stack = 0x300u;
 unsigned s_test_detaching_journal = 0; // GCRT_DECOMP_ORACLE_TEST_DETACHING_JOURNAL (test only)
 unsigned s_test_no_store_hook = 0;     // GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK (test only)
-unsigned s_depth = 0;                // > 0 while a comparison runs
+// GCRT_DECOMP_ORACLE_TEST_FREE_ORIGINAL (test only): the guest clock (cycles, ticks, time base) is put back after
+// everything the oracle runs for a game call, so the original's results are kept but its cycles are not charged, as in
+// a production executable where the decompiled function replaces it at no guest cost.
+unsigned s_test_free_original = 0;
+unsigned s_depth = 0;               // > 0 while a comparison runs
 function_state* s_running = nullptr; // function being compared
 bool s_in_original = false;          // the original of s_running is running (block hooks record)
 bool s_initialized = false;
@@ -785,6 +793,11 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.fpu_declined),
                      static_cast<unsigned long long>(f.fmadds_dolphin_divergent), f.leaf_reason[0] ? " reason=" : "",
                      f.leaf_reason);
+        if (f.cost_calls)
+            std::fprintf(stdout, "ORACLE-COST %-32s %s %08X calls=%llu cycles=%llu min=%llu max=%llu%s\n", f.name,
+                         s_version, static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.cost_calls),
+                         static_cast<unsigned long long>(f.cost_cycles), static_cast<unsigned long long>(f.cost_min),
+                         static_cast<unsigned long long>(f.cost_max), s_test_free_original ? " (not charged: test)" : "");
         if (!s_out)
             continue;
         std::fprintf(s_out,
@@ -794,7 +807,8 @@ void report_at_exit() {
                      "\"synthetic_cases\":%zu,\"synthetic_compared\":%llu,\"synthetic_mismatches\":%llu,"
                      "\"synthetic_not_compared\":%llu,\"journal_reattached\":%llu,\"restore_errors\":%llu,"
                      "\"fpu_declined\":%llu,\"fmadds_dolphin_divergent\":%llu,\"paths\":%zu,"
-                     "\"recorded_calls\":%llu,\"max_calls\":%llu,\"refused_switches\":%llu,",
+                     "\"recorded_calls\":%llu,\"max_calls\":%llu,\"refused_switches\":%llu,"
+                     "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
@@ -807,7 +821,10 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.fpu_declined),
                      static_cast<unsigned long long>(f.fmadds_dolphin_divergent), f.paths.size(),
                      static_cast<unsigned long long>(f.recorded_calls), static_cast<unsigned long long>(f.max_calls),
-                     static_cast<unsigned long long>(f.refused_switches));
+                     static_cast<unsigned long long>(f.refused_switches),
+                     static_cast<unsigned long long>(f.cost_calls), static_cast<unsigned long long>(f.cost_cycles),
+                     static_cast<unsigned long long>(f.cost_calls ? f.cost_min : 0),
+                     static_cast<unsigned long long>(f.cost_max));
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         print_u64_list(s_out, "synthetic_block_hits", f.synthetic_block_hits);
@@ -1390,6 +1407,10 @@ void initialize() {
         s_test_no_store_hook = static_cast<unsigned>(std::strtoul(n, nullptr, 0));
     if (s_test_no_store_hook)
         gc::set_guest_store_hook(nullptr); // the stores of decompiled code bypass the CPU layer, as before mission 8
+    if (const char* n = std::getenv("GCRT_DECOMP_ORACLE_TEST_FREE_ORIGINAL"); n && n[0])
+        s_test_free_original = static_cast<unsigned>(std::strtoul(n, nullptr, 0));
+    if (s_test_free_original)
+        std::fprintf(stderr, "gc_oracle: TEST: the cycles of the oracle's runs of the originals are not charged\n");
     if (const char* dir = std::getenv("GCRT_DECOMP_ORACLE_SYNTHETIC"); dir && dir[0])
         load_synthetic(dir);
     for (const std::string& e : s_synthetic_errors)
@@ -1470,21 +1491,45 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
     if (!f)
         return false;
     CPUState* c = &g->state;
+    if (s_test_free_original) {
+        const u64 cycles = g->cycles, ticks = g->ticks, tb_synced = g->tb_synced;
+        const auto timebase = c->timebase;
+        s_test_free_original = 0; // the nested call below takes the normal path
+        const bool handled = oracle_entry(g, address, invoke, signature);
+        s_test_free_original = 1;
+        g->cycles = cycles;
+        g->ticks = ticks;
+        g->tb_synced = tb_synced;
+        c->timebase = timebase;
+        return handled;
+    }
     s_state = c;
     f->calls++;
     if (f->leaf == leaf_unknown)
         check_code(*f);
     if (comparable(f->leaf) && !f->synthetic_done)
         run_synthetic(g, *f, invoke, signature);
+    // Guest cycles of this game call of the original (the decompiled version runs natively and the calls it makes are
+    // replayed, not run: the difference is the original's).
+    const u64 cycles_before = g->cycles;
+    auto note_cost = [&]() {
+        const u64 spent = g->cycles - cycles_before;
+        f->cost_cycles += spent;
+        f->cost_calls++;
+        f->cost_min = std::min(f->cost_min, spent);
+        f->cost_max = std::max(f->cost_max, spent);
+    };
     if (!comparable(f->leaf)) {
         // Not comparable: the original runs alone (the game keeps its results).
         f->not_compared++;
         bypass_address = address;
         run_guest(g, address);
         bypass_address = 0;
+        note_cost();
         return true;
     }
     compare_call(g, *f, invoke, signature, nullptr, s_dead_stack);
+    note_cost();
     return true; // registers and memory are the original's
 }
 

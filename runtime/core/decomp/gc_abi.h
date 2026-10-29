@@ -98,6 +98,11 @@ struct registration {
     u32 address;
     const export_record* record;
     u32 flags; // registration_*
+    // Guest cycles the gateway adds to the cycle clock for each call (decomp/guest_cost.tsv of the game, measured by the
+    // oracle: the cycles the recompiled original is charged for, on average). With the deterministic cycle clock the
+    // guest time is the cycles run, so a replacement that costs nothing makes guest time run slower than with the
+    // original, and timed events (end of a load, audio) come earlier. 0: nothing charged.
+    u32 guest_cost;
 };
 
 // Registers every function of `table` (gcrt_hle_register) and prepares the gateway (guest memory of gc_mem.h, report
@@ -300,6 +305,9 @@ inline constexpr u32 msr_fp = 0x00002000u;
 // MSR[FP] = 0 at the entry of `address`: true if its registration has registration_uses_fpu (the entry then declines,
 // counted as fpu_declined in the report and, in an oracle build, apart from the compared calls), false otherwise.
 bool decline_without_fpu(u32 address) noexcept;
+// Some registration has a guest cost (gc_abi.cpp); charge_guest_cost adds the one of `address` to the cycle clock.
+extern bool guest_cost_enabled;
+void charge_guest_cost(GcrtCpu* g, u32 address) noexcept;
 // True if the function registered at `address` has registration_uses_fpu (not counted).
 bool registered_uses_fpu(u32 address) noexcept;
 // True if the gateway is installed and MSR[FP] = 0.
@@ -398,6 +406,8 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     } else {
         detail::function_traits<Fn>::invoke(r);
     }
+    if (detail::guest_cost_enabled)
+        detail::charge_guest_cost(g, address);
     *r.pc = return_address;
     return true;
 }

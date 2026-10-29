@@ -24,6 +24,7 @@ struct entry_state {
     unsigned checks = 0;     // cross-checks done
     unsigned mismatches = 0; // cross-checks whose result differed
     u64 fpu_declined = 0;    // entries declined because MSR[FP] = 0 (registration_uses_fpu)
+    u32 guest_cost = 0;      // cycles charged per call (registration::guest_cost; 0 under GCRT_DECOMP_GUEST_COST=0)
 };
 
 GcrtCpu* s_cpu = nullptr;
@@ -111,6 +112,17 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         s_slots[k] = i + 1;
         gcrt_hle_register(g, r.address, r.record->name, r.record->entry);
     }
+    // Guest cost of each function (registration::guest_cost). Test only: GCRT_DECOMP_GUEST_COST=0 charges nothing, the
+    // timing of a gateway without guest costs.
+    const char* cost_env = std::getenv("GCRT_DECOMP_GUEST_COST");
+    const bool costs_off = cost_env && cost_env[0] == '0' && cost_env[1] == 0;
+    unsigned costed = 0;
+    for (entry_state& e : s_entries)
+        if (e.reg && !costs_off) {
+            e.guest_cost = e.reg->guest_cost;
+            costed += e.guest_cost != 0;
+        }
+    detail::guest_cost_enabled = costed != 0;
     const char* cc = std::getenv("GCRT_DECOMP_CROSSCHECK");
     s_crosscheck_limit = cc && cc[0] ? static_cast<unsigned>(std::strtoul(cc, nullptr, 0)) : 0u;
     detail::crosscheck_enabled = s_crosscheck_limit != 0;
@@ -120,6 +132,8 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     std::fprintf(stderr, "gc_abi: %u decompiled functions registered (%u whose original uses the FPU: declined while "
                          "MSR[FP] = 0)%s\n",
                  count, with_fpu, detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
+    std::fprintf(stderr, "gc_abi: guest cost charged to the cycle clock for %u of them%s\n", costed,
+                 costs_off ? " (GCRT_DECOMP_GUEST_COST=0: costs off)" : "");
     if (!s_report_registered) {
         s_report_registered = true;
         std::atexit(&report_at_exit);
@@ -162,6 +176,12 @@ namespace detail {
 
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
+bool guest_cost_enabled = false;
+
+void charge_guest_cost(GcrtCpu* g, u32 address) noexcept {
+    if (const entry_state* e = lookup(address))
+        g->cycles += e->guest_cost;
+}
 const u32* guest_msr = nullptr;
 
 bool decline_without_fpu(u32 address) noexcept {

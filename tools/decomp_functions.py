@@ -89,6 +89,44 @@ def config(game_cfg: dict) -> tuple[Path, dict[str, str]]:
     return game_cfg["_dir"] / d["functions"], columns
 
 
+def guest_cost_path(game_cfg: dict) -> Path | None:
+    """Guest cost table of [decomp] guest_cost (relative to games/<game>/), None if the key is missing."""
+    rel = game_cfg.get("decomp", {}).get("guest_cost")
+    return game_cfg["_dir"] / rel if rel else None
+
+
+def read_guest_costs(game_cfg: dict) -> dict[str, dict[str, int]]:
+    """{function name: {version ID: guest cycles per call}} of the guest cost table (tools/decomp_oracle.py cost writes
+    it): what the gateway charges to the cycle clock for each call of the decompiled function, the mean cost of its
+    recompiled original measured by the oracle. Missing table or row: nothing charged (0)."""
+    path = guest_cost_path(game_cfg)
+    if not path or not path.exists():
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    header: list[str] | None = None
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        cells = line.split("\t")
+        if header is None:
+            header = cells
+            if header[0] != "name":
+                raise SystemExit(f"{path}:{n}: header 'name<TAB><version>...' expected")
+            continue
+        if len(cells) != len(header):
+            raise SystemExit(f"{path}:{n}: {len(header)} columns expected")
+        row: dict[str, int] = {}
+        for version, cell in zip(header[1:], cells[1:]):
+            if cell not in ("", "-"):
+                if not cell.isdigit():
+                    raise SystemExit(f"{path}:{n}: {cell!r}: whole number of cycles expected")
+                row[version] = int(cell)
+        if cells[0] in out:
+            raise SystemExit(f"{path}:{n}: {cells[0]} listed twice")
+        out[cells[0]] = row
+    return out
+
+
 def read_table(game_cfg: dict) -> list[Function]:
     path, columns = config(game_cfg)
     if not path.exists():
@@ -735,7 +773,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                     records: dict[str, str] | None = None,
                     blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "",
                     fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
-                    asserts: dict[int, list[int]] | None = None, globals: list[str] | None = None) -> str:
+                    asserts: dict[int, list[int]] | None = None, globals: list[str] | None = None,
+                    costs: dict[str, int] | None = None) -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
     (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
     code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
@@ -745,7 +784,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     lets the original run when MSR[FP] = 0 (runtime/core/decomp/gc_abi.h). Without `fpu`, every function is flagged
     (the safe side: declining only lets the original run). `globals`: lines of tools/decomp_globals.py table_source
     (the address array of the game globals in `version`, k_globals / k_global_count), installed by
-    gc::set_global_table before the functions; None: no globals table."""
+    gc::set_global_table before the functions; None: no globals table. `costs`: {function name: guest cycles per
+    call in `version`} (read_guest_costs), registration::guest_cost; a missing name is 0 (nothing charged)."""
     records = records or {}
     blocks = blocks or {}
     # Oracle builds: call_sites() (the oracle records the calls made at these instructions) and assertion_blocks()
@@ -775,7 +815,9 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
             flags = "::gc::abi::registration_uses_fpu" if uses_fpu else "::gc::abi::registration_none"
             first = f"first floating-point instruction {fpu[a][0]:08X}" if fpu and fpu.get(a) else (
                 "no floating-point instruction" if fpu is not None else "not scanned")
-            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}}}, // {first}")
+            cost = (costs or {}).get(f.name, 0)
+            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}, {cost}u}}, "
+                         f"// {first}")
         lines += ["};", "constexpr unsigned k_count = sizeof(k_table) / sizeof(k_table[0]);"]
         if oracle:
             lines.append("const unsigned k_addresses[] = {" + ", ".join(f"0x{a:08X}u" for a, _ in entries) + "};")

@@ -536,11 +536,20 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
                              f"{', '.join(missing)} in {oracle['negative']}")
     sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
     globals_lines = decomp_globals_table(game, game_cfg, version, disc_root, path.parent, entries, oracle)
+    # Guest cost of each function in this version (decomp/guest_cost.tsv, tools/decomp_oracle.py cost): the cycles the
+    # gateway charges to the cycle clock per call, as the original would have been (gc_abi.h registration::guest_cost).
+    all_costs = decomp_functions.read_guest_costs(game_cfg)
+    costs = {name: row[version] for name, row in all_costs.items() if version in row}
+    no_cost = [f.name for _, f in entries if f.name not in costs and not oracle]
+    if no_cost:
+        print(f"== WARNING: no guest cost for {version} ({', '.join(no_cost)}): these functions cost no guest "
+              f"time, so the deterministic cycle clock runs differently from the recompiled game "
+              f"(tools/decomp_oracle.py cost)")
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
                                                                              sources_hash=sources_hash, fpu=fpu,
                                                                              calls=calls, asserts=asserts,
-                                                                             globals=globals_lines))
+                                                                             globals=globals_lines, costs=costs))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     return path.as_posix()
