@@ -26,3 +26,27 @@ mem S+84 4 80000000
 mem S+88 4 00000001
 mem S+8C 4 FF800000
 end
+
+# A8 (D2-4c3): source viewport overlapping the camera's own viewport (never seen in the game: every call site reached
+# passes a copy on the caller's stack). The original loads 8 bytes, stores them, then the next 8.
+case hsd_cobj_set_viewportf overlap_before
+r3 = S
+r4 = S+8
+mem S+8 4 3F800000
+mem S+C 4 40000000
+mem S+10 4 40400000
+mem S+14 4 40800000
+mem S+18 4 40A00000
+mem S+1C 4 40C00000
+end
+
+case hsd_cobj_set_viewportf overlap_after
+r3 = S
+r4 = S+10
+mem S+8 4 3F800000
+mem S+C 4 40000000
+mem S+10 4 40400000
+mem S+14 4 40800000
+mem S+18 4 40A00000
+mem S+1C 4 40C00000
+end
