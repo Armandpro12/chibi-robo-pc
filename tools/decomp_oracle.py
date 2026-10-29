@@ -877,15 +877,30 @@ def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, ex
               f"extern const unsigned gc_replay_record_count = {len(names)};", ""]
     out.mkdir(parents=True, exist_ok=True)
     table.write_text("\n".join(lines), encoding="utf-8")
+    # Identifiers of the game globals (decomp_globals.h, as tools/build.py writes it next to its registration table):
+    # the decompiled sources include it. No address table is installed here: the cases of functions that use a
+    # global are skipped by cmd_replay (globals_users).
+    import decomp_globals  # noqa: E402
+    (out / "decomp_globals.h").write_text(decomp_globals.header_source(decomp_globals.read_table(game_cfg)),
+                                          encoding="utf-8")
     exe = out / f"oracle_replay{tc.EXE}"
     cmd = [str(clang), "/nologo", "/std:c++20", "/EHsc", "/O2", "/W4", "/clang:-ffp-contract=off",
-           "/DGC_MEM_OBSERVER", *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}",
+           "/DGC_MEM_OBSERVER", *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}", f"/I{out}",
            str(core / "decomp" / "oracle_replay.cpp"), str(table),
            *[str(s) for s in src], f"/Fo{out}\\", f"/Fe{exe}"]
     r = subprocess.run(cmd, capture_output=True, text=True, env=tc.msvc_env())
     if r.returncode != 0:
         raise SystemExit(f"replay build failed:\n{r.stdout}\n{r.stderr}")
     return exe
+
+
+def globals_users(game_cfg: dict) -> set[str]:
+    """Functions of the functions table whose original uses a game global (used_by of the globals table): the offline
+    replay installs no version address table (gc::set_global_table), so their cases are skipped, counted."""
+    import decomp_globals  # noqa: E402
+    if decomp_globals.table_path(game_cfg) is None:
+        return set()
+    return {u for row in decomp_globals.read_table(game_cfg) for u in row.used_by}
 
 
 def build_negative_records(negative: Path | None) -> dict[str, str]:
@@ -907,8 +922,9 @@ def cmd_replay(args) -> int:
     out = Path(args.out).resolve() if args.out else tc.ROOT / "build" / "oracle-replay"
     exe = build_replay(game, game_cfg, out, negative, [Path(p).resolve() for p in args.extra_source])
     records = build_negative_records(negative)
+    users = globals_users(game_cfg)
     text: list[str] = []
-    count = skipped_calls = 0
+    count = skipped_calls = skipped_globals = 0
     for path in files:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
@@ -922,6 +938,10 @@ def cmd_replay(args) -> int:
                 # calls yet (the in-game oracle does). Skipped, counted.
                 skipped_calls += 1
                 continue
+            if rec.get("function") in users:
+                # Its global has no address offline (no version address table installed): skipped, counted.
+                skipped_globals += 1
+                continue
             if negative and rec["function"] in records:
                 rec = dict(rec, function=records[rec["function"]])
             text += case_lines(rec)
@@ -929,7 +949,8 @@ def cmd_replay(args) -> int:
     cases = out / "cases.txt"
     cases.write_text("\n".join(text) + "\n", encoding="utf-8")
     print(f"== Replay of {count} cases from {len(files)} files ({exe.name}); {skipped_calls} cases with calls "
-          f"skipped (not replayable offline yet)")
+          f"skipped (not replayable offline yet), {skipped_globals} cases of functions that use a game global "
+          f"skipped (no version address table offline)")
     r = subprocess.run([str(exe), str(cases)], capture_output=True, text=True)
     lines = r.stdout.splitlines()
     for line in lines:
