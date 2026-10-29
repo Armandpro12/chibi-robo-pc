@@ -14,15 +14,21 @@
 namespace hsd {
 
 // Moves the world object to `*pos` and marks its position as changed. Nothing if either pointer is null. The floats
-// are copied as they are (the original moves their bits with integer loads and stores). The flags are written twice,
-// as in the original (set, then clear). (Path marks: runtime/core/decomp/gc_path.h; the original returns by a
-// conditional return on a null object, then branches over its return when the position is not null.)
+// are copied as they are (the original moves their bits with integer loads and stores), in the original's order: x
+// and y are both loaded, then stored, then z; so the result is the original's even when the source overlaps the
+// object's own position (anomaly A19). The flags are written twice, as in the original (set, then clear). (Path
+// marks: runtime/core/decomp/gc_path.h; the original returns by a conditional return on a null object, then branches
+// over its return when the position is not null.)
 void HSD_WObjSetPosition(ptr<HSD_WObj> wobj, ptr<const Vec3> pos) {
     if (gc::path::taken(wobj == nullptr))
         return;
     if (gc::path::falls_through(pos == nullptr))
         return;
-    wobj->pos = *pos;
+    const be<f32> x = pos->x;
+    const be<f32> y = pos->y;
+    wobj->pos.x = x;
+    wobj->pos.y = y;
+    wobj->pos.z = pos->z;
     wobj->flags |= wobj_position_changed;
     wobj->flags &= ~wobj_position_from_reference;
 }
