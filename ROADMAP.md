@@ -15,7 +15,7 @@ one has been validated.
 |---|---|---|---|
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first release of the C++ version | 🟡 in progress |
-| 3 | Multiplayer | Several players: over Tailscale, over the Internet without it, on a local network, or on the same screen | ⬜ |
+| 3 | Multiplayer | Several players: over a virtual private network (Tailscale first, other clients as widely as possible), over the Internet without one, on a local network, or on the same screen | ⬜ |
 | 4 | Technical remaster | Unlimited frame rate, widescreen (16:9 and beyond), resolution, PC-style controls and saves, separate audio volumes. Comes right after multiplayer | ⬜ |
 | 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes after the technical remaster so that the next two stages benefit from it | ⬜ |
 | 6 | PS Vita port | Planned, after the modding platform, before the models and textures remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
