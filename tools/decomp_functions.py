@@ -751,6 +751,29 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     return h.hexdigest()
 
 
+FORCED_SECTIONS = (("run", "force"), ("stage", "start"))
+
+
+def forced_entries(game_cfg: dict, version: str) -> dict[int, list[str]]:
+    """{function entry: [where]} of the GCRT_FORCE_ARG items that tools/run.py passes for `version` (game.toml
+    [run.force]: fixed random seed of every scenario; [stage.start]: --stage). Item syntax (runtime/core/hle/os_report.c):
+    "ADDRESS[@RETURN]:TARGET...", ADDRESS hexadecimal. The runtime installs these items before the game's replacements
+    (runtime/core/boot/boot.c: gcrt_hle_install_defaults, then game->install) and gcrt_hle_register refuses a second
+    function at one address: a decompiled function at a forced entry would be refused at startup, and the gateway
+    stops the executable (runtime/core/decomp/gc_abi.cpp, install)."""
+    out: dict[int, list[str]] = {}
+    for section, key in FORCED_SECTIONS:
+        for item in (game_cfg.get(section, {}).get(key, {}) or {}).get(version, []) or []:
+            head = str(item).split(":", 1)[0].split("@", 1)[0].strip()
+            try:
+                address = int(head, 16)
+            except ValueError:
+                raise SystemExit(f"game.toml [{section}.{key}] {version}: item {item!r} does not start with a "
+                                 "hexadecimal function address (GCRT_FORCE_ARG syntax ADDRESS[@RETURN]:TARGET=VALUE)")
+            out.setdefault(address, []).append(f'[{section}.{key}] "{item}"')
+    return out
+
+
 def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
             blocks: dict[int, tuple[list[int], list[int]]] | None = None,
             fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
@@ -769,12 +792,22 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
     out: list[tuple[int, Function]] = []
     errors: list[str] = []
     known = known_entries(game_cfg, version) if any(f.enabled for f in functions) else None
+    forced = forced_entries(game_cfg, version)
     for f in functions:
         if not f.enabled:
             continue
         addr = f.addresses[version]
         assert addr is not None  # read_table refuses an enabled function with an absent address
         located = _locate(f, addr, dol, rels)
+        # Guest address of the entry (a REL row gives an offset in its module); a DOL row whose code check fails is
+        # still checked here, the clash depends only on the address.
+        entry = located[1] if not isinstance(located, str) else (addr if f.module == "dol" else None)
+        if entry in forced:
+            errors.append(f"{f.name} ({version} {f.module} {entry:08X}): this entry is forced by game.toml "
+                          f"{', '.join(forced[entry])}; the runtime installs GCRT_FORCE_ARG items first, so the "
+                          "decompiled function would be refused at startup and the executable would stop. Move the "
+                          "forced point (another function the game calls at the same moment, e.g. the caller) or "
+                          "disable the row")
         if isinstance(located, str):
             errors.append(located)
             continue
