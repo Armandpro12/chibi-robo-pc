@@ -71,8 +71,12 @@ bool gcrt_hle_calls_at(u32 address, u64* calls, u64* hook_calls);
 bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn);
 /* Replaces every recognized copy of a catalog function; returns their number. */
 unsigned gcrt_hle_replace(GcrtCpu* g, const char* sdk_name, GcrtHleFn fn);
-/* All the addresses recognized for `name` (returns their number, at most `max` written). */
+/* All the addresses recognized for `name`: returns their TOTAL number, even when it is above `max`, and writes at most
+ * `max` of them. A caller that picks one copy must not rely on the `max` written only (a return above `max` means
+ * copies were left out): gcrt_hle_is_copy examines every copy. */
 unsigned gcrt_hle_find_all(const char* name, u32* out, unsigned max);
+/* Is one of the recognized copies of `name` at `address`? Every copy is examined (no limit on their number). */
+bool gcrt_hle_is_copy(const char* name, u32 address);
 /* SDK function recognized by signature that contains `address` (its catalog name), NULL if none; `start` receives
  * its first address. Diagnostics (crash report). */
 const char* gcrt_hle_name_at(u32 address, u32* start);
