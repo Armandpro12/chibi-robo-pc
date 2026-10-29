@@ -285,6 +285,16 @@ from D1" below).
   hand-written synthetic cases, which force those paths: every feasible path of the 18 loop-free originals, and every
   branch outcome of the two with a loop, is covered by a case, with 0 different in US and PAL (a test switch that
   skews the cost by one cycle makes every check fail by exactly one). Removed with the cycle clock at D3.
+- **Overlapping structure copies** (D2, issue 67, branch `decomp-a8-coverage`, not merged yet): a structure copy in
+  the decompiled code copied field by field (load, store, load, store), while four originals load a whole block
+  before storing it (camera scissor box, camera viewport, light colour, world object position). When the source
+  starts before the destination and overlaps it, the results differed; no call of the game does that (the sources
+  are copies on the caller's stack), but hand-written oracle cases did. The four functions now follow the
+  original's load/store order: 0 difference on their real calls and on every synthetic case, overlapping ones
+  included, with the cost by path unchanged, in US and PAL on the title-boot scenario; the full oracle run on the
+  final commit is still to do. The review of the 40 decompiled functions found no other copy with a different
+  order: the matrix translation getter alternates loads and stores like its original (checked with overlapping
+  cases). Every copy by pointer now gets an overlapping synthetic case.
 - **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
   same instruction pattern in each DOL (the register offsets differ), and the runtime replaces only the copy it anchors (after `ARInit`). The build now treats the
   copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight
