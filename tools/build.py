@@ -275,6 +275,86 @@ def read_catalog() -> list[tuple]:
     return out
 
 
+def library_prefix(name: str) -> str:
+    """Library prefix of an SDK name, as the `library` argument of the runtime's replacements: leading underscores
+    dropped, then the leading capitals without the one that starts the next word (ARGetSize -> AR, GXGetCPUFifo -> GX,
+    __AXGetNumVoices -> AX, DSPCheckInit -> DSP, CARDRead -> CARD)."""
+    base = name.lstrip("_")
+    n = 0
+    while n < len(base) and base[n].isupper():
+        n += 1
+    if 1 < n < len(base) and base[n].islower():
+        n -= 1
+    return base[:n]
+
+
+def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooked: set[str],
+                       every_copy: set[str], max_chain: int = 8) -> dict[str, set[int]]:
+    """For each hooked catalog name, the copies the runtime MAY replace natively; the other copies of a shared signature
+    are hook points without replacement, where a decompiled function can go.
+
+    The runtime's choice (runtime/core/hle: gcrt_hle_replace replaces every copy, used for the names flagged "hook" of
+    the catalog; gcrt_native_replace keeps a unique copy, otherwise the copy anchored right after a chain of catalog
+    functions that starts at a uniquely recognized one (`following`) or right before a unique one (`preceding`),
+    otherwise the only copy inside the range of the unique functions of its library) is made at run time with
+    arguments written in C. This is a superset of it, computed from the image alone: every copy for a "hook" name or a
+    unique copy; otherwise every copy that ends a chain of at most `max_chain` contiguous catalog functions starting
+    at a unique one, that starts such a chain ending at a unique one, or that lies within the range of the unique
+    functions of its library prefix (library_prefix). gcrt_hle_register refuses a second registration at an address
+    in any case (startup error), so a wrong guess here cannot go unnoticed."""
+    unique = {n for n, a in found.items() if len(a) == 1}
+    by_end: dict[int, list[tuple[int, str]]] = {}
+    by_start: dict[int, list[str]] = {}
+    for n, addrs in found.items():
+        for a in addrs:
+            by_end.setdefault(a + sizes.get(n, 0), []).append((a, n))
+            by_start.setdefault(a, []).append(n)
+    spans: dict[str, tuple[int, int]] = {}
+    for n in unique:
+        p = library_prefix(n)
+        a = found[n][0]
+        lo, hi = spans.get(p, (a, a + sizes.get(n, 0)))
+        spans[p] = (min(lo, a), max(hi, a + sizes.get(n, 0)))
+
+    def after_unique(start: int) -> bool:
+        frontier = {start}
+        for _ in range(max_chain):
+            nxt = set()
+            for f in frontier:
+                for a, n in by_end.get(f, ()):
+                    if n in unique:
+                        return True
+                    nxt.add(a)
+            if not nxt:
+                return False
+            frontier = nxt
+        return False
+
+    def before_unique(start: int, size: int) -> bool:
+        frontier = {start + size}
+        for _ in range(max_chain):
+            nxt = set()
+            for f in frontier:
+                for n in by_start.get(f, ()):
+                    if n in unique:
+                        return True
+                    nxt.add(f + sizes.get(n, 0))
+            if not nxt:
+                return False
+            frontier = nxt
+        return False
+
+    out: dict[str, set[int]] = {}
+    for n in hooked:
+        addrs = found.get(n, [])
+        if n in every_copy or len(addrs) <= 1:
+            out[n] = set(addrs)
+            continue
+        lo, hi = spans.get(library_prefix(n), (0, 0))
+        out[n] = {a for a in addrs if after_unique(a) or before_unique(a, sizes.get(n, 0)) or lo <= a < hi}
+    return out
+
+
 def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
     """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
     DOL and the RELs (same algorithm as the runtime scan), plus the game-specific addresses declared in
@@ -289,29 +369,41 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
             line = line.split("#", 1)[0].strip()
             if line:
                 native.add(line)
-    catalog = [c for c in read_catalog() if "hook" in c[4].split(",") or c[0] in native]
-    sigs = [c[:4] for c in catalog]
+    full_catalog = read_catalog()
+    catalog = [c for c in full_catalog if "hook" in c[4].split(",") or c[0] in native]
+    every_copy = {c[0] for c in catalog if "hook" in c[4].split(",")}
     hooks: dict[int, str] = {}
     images = [sy.Image.from_dol(dol)]
     for m in layout:
         code = [(addr, blob) for (_, addr, _, ex, blob) in m["sections"] if ex]
         if code:
             images.append(sy.Image(code))
+    sigs = [c[:4] for c in catalog]
     for img in images:
         for name, addrs in sdksig.find_in_image(img, sigs).items():
             for a in addrs:
                 hooks.setdefault(a, name)
+    # The whole catalog is scanned too (as the runtime does): the anchors of a shared signature are other catalog
+    # functions (replaceable_copies).
+    found: dict[str, list[int]] = {}
+    for img in images:
+        for name, addrs in sdksig.find_in_image(img, [c[:4] for c in full_catalog]).items():
+            found.setdefault(name, []).extend(addrs)
+    hooked = {c[0] for c in catalog}
+    replaceable = replaceable_copies(found, {c[0]: c[1] for c in full_catalog}, hooked, every_copy)
     for a in game_cfg.get("hle", {}).get("hooks", {}).get(version, []):
         hooks.setdefault(parse_int(a), "game")
     # Decompiled functions enabled in the game's table (tools/decomp_functions.py, which refuses an address that is not
     # the start of a function of the listed size in this version's code). One name for all of them, so that renaming a
     # decompiled function does not change the fingerprint (no regeneration of the C).
     # A decompiled function at the address of an HLE catalog function (native replacement of the SDK) or of a
-    # game.toml hook is refused: the runtime registers both at the same address and the later one would silently
-    # replace the other (gcrt_hle_register).
+    # game.toml hook is refused: the runtime would register both at the same address (gcrt_hle_register refuses the
+    # second one at startup). Exception: a copy of a shared signature that the runtime cannot replace (see
+    # replaceable_copies): it is only a hook point, the decompiled function takes it.
     if game_cfg.get("decomp"):
         import decomp_functions  # noqa: E402
         clash = []
+        shared_ok = []
         # Basic blocks and call instructions are only scanned for an oracle build (its hooks, below): a production
         # build neither computes nor uses them.
         oracle_build = bool(game_cfg.get("_oracle_build"))
@@ -320,8 +412,16 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout,
                                              blocks if oracle_build else None, calls=calls if oracle_build else None):
             if a in hooks:
-                clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
+                names = [n for n in hooked if a in found.get(n, ())]
+                if names and not any(a in replaceable.get(n, ()) for n in names):
+                    shared_ok.append(f"{f.name} at {a:08X} (copy of {', '.join(sorted(names))}: "
+                                     f"{len(found[names[0]])} copies, not replaceable by the runtime)")
+                else:
+                    clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
+        if shared_ok:
+            print(f"   {version}: decompiled functions at a hook point of a shared SDK signature (accepted):\n     "
+                  + "\n     ".join(shared_ok))
         # Oracle builds only (--oracle): a hook at the start of every other basic block of each decompiled function
         # (reachable or not), so that the oracle sees which blocks of the recompiled original ran (block coverage,
         # runtime/core/decomp/gc_oracle.cpp). Inside a function, branches are compiled as goto: without these hooks
@@ -576,7 +676,46 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
                                                                              globals=globals_lines, costs=costs))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
+    for line in unregistered_abi_calls(game, game_cfg, {f.name for _, f in entries}, oracle):
+        print(f"== WARNING: {line}")
     return path.as_posix()
+
+
+DECOMP_EXPORT_FN = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+)\s*,\s*([\w:]+)\s*,")
+ABI_CALL = re.compile(r"\babi::call<\s*&\s*([\w:]+)\s*>")
+
+
+def unregistered_abi_calls(game: str, game_cfg: dict, enabled: set[str], oracle: dict | None) -> list[str]:
+    """gc::abi::call<&Fn> in the sources this build compiles where Fn is a decompiled function whose row is not enabled
+    in this build: the call is a plain C++ call that charges no guest cost (Fn's cost is set only when it is registered)
+    and, in an oracle build, a comparison would see a call to address 0. The executable warns at the first such call
+    too (gc_abi.h, detail::note_unregistered_call). Functions are matched by their last name component."""
+    excluded = set(decomp_excluded_sources(game, oracle))
+    folders = [game_cfg["_dir"] / "decomp" / "src"]
+    if oracle:
+        folders += [game_cfg["_dir"] / "decomp" / "oracle_tests"]
+        if oracle.get("negative"):
+            folders.append(Path(oracle["negative"]))
+    texts = {}
+    for folder in folders:
+        if folder.is_dir():
+            for p in sorted(folder.rglob("*")):
+                if p.suffix in (".cpp", ".h"):
+                    texts[p] = p.read_text(encoding="utf-8")
+    exports: dict[str, str] = {}
+    for text in texts.values():
+        for m in DECOMP_EXPORT_FN.finditer(text):
+            exports.setdefault(m.group(2).split("::")[-1], m.group(1))
+    out = []
+    for p, text in texts.items():
+        if p.resolve() in excluded:
+            continue
+        for m in ABI_CALL.finditer(text):
+            name = exports.get(m.group(1).split("::")[-1])
+            if name and name not in enabled and not name.endswith("__wrong"):
+                out.append(f"{p.name}: gc::abi::call<&{m.group(1)}> calls {name}, not enabled in this build (no guest "
+                           f"cost charged for these calls; enable its row)")
+    return sorted(set(out))
 
 
 def decomp_globals_table(game: str, game_cfg: dict, version: str, disc_root: Path, out_dir: Path, entries: list,

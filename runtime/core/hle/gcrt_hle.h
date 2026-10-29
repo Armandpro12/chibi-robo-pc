@@ -66,7 +66,8 @@ void gcrt_hle_dispatch_counts(u64* calls, u64* misses);
  * Misses per address: GCRT_HLE_MISS_COUNTS=<file> (written at exit). */
 bool gcrt_hle_calls_at(u32 address, u64* calls, u64* hook_calls);
 
-/* Replacement by address (game); `name` is used in the log. */
+/* Replacement by address (game); `name` is used in the log. Refused (false, error on stderr) if another function is
+ * already registered at `address`: the first registration stays. Registering the same function again is allowed. */
 bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn);
 /* Replaces every recognized copy of a catalog function; returns their number. */
 unsigned gcrt_hle_replace(GcrtCpu* g, const char* sdk_name, GcrtHleFn fn);

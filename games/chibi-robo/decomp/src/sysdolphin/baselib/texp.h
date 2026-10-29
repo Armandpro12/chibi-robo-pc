@@ -60,20 +60,13 @@ union HSD_TExp {
 // Which result of a TEV stage a reference is to (HSD_TE_RGB = 1 in cbr_decomp; any other value: alpha).
 inline constexpr u8 texp_select_colour = 1;
 
-// HSD_TEXP_TEX and HSD_TEXP_RAS are not nodes but the pointer values -1 and -2, which stand for the texture and the
-// rasterised colour. True if `texp` is the marker of that value (marker_bits: 0xFFFFFFFF or 0xFFFFFFFE).
-// [Proposal for the memory layer: a portable way to name such marker pointers; until then the two modes are written
-// here, the guest one comparing the pointer's 32-bit value.]
-inline bool is_texp_marker(ptr<const HSD_TExp> texp, u32 marker_bits) {
-#if defined(GC_NATIVE_MEMORY)
-    const auto marker = static_cast<std::intptr_t>(static_cast<s32>(marker_bits));
-    return reinterpret_cast<std::intptr_t>(texp) == marker;
-#else
-    return gc::guest_address(texp) == marker_bits;
-#endif
+// HSD_TEXP_TEX and HSD_TEXP_RAS are not nodes but the marker pointer values -1 and -2 (gc::marker_ptr), which stand
+// for the texture and the rasterised colour.
+inline constexpr s32 texp_marker_texture = -1; // (HSD_TExp*) -1
+inline constexpr s32 texp_marker_raster = -2;  // (HSD_TExp*) -2
+inline bool is_texp_marker(ptr<const HSD_TExp> texp, s32 marker) {
+    return gc::is_marker_ptr(texp, marker);
 }
-inline constexpr u32 texp_marker_texture = 0xFFFFFFFFu; // (HSD_TExp*) -1
-inline constexpr u32 texp_marker_raster = 0xFFFFFFFEu;  // (HSD_TExp*) -2
 
 #if !defined(GC_NATIVE_MEMORY)
 static_assert(offsetof(HSD_TETev, c_ref) == 8 && offsetof(HSD_TETev, a_ref) == 0x14);

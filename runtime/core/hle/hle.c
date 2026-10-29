@@ -31,6 +31,10 @@ static FILE* s_guest_log;
 static u32 s_declined_pc;
 static u64 s_declined_blocks = ~0ull;
 
+/* Copies of one shared signature examined when one of them is chosen (anchoring, library range). A small accessor
+ * signature can have many: `lwz r3,d(r13); blr` has 20 copies in a game's DOL, more than the 16 of an earlier limit. */
+#define MAX_COPIES 64u
+
 static Replacement* repl_slot(u32 address, bool insert) {
     u32 h = ((address >> 2) * 2654435761u) & (REPL_SLOTS - 1u);
     for (u32 i = 0; i < REPL_SLOTS; i++) {
@@ -285,6 +289,14 @@ bool gcrt_hle_register(GcrtCpu* g, u32 address, const char* name, GcrtHleFn fn) 
     Replacement* r = repl_slot(address, true);
     if (!r) {
         fprintf(stderr, "gcrt hle: replacement table full\n");
+        return false;
+    }
+    /* Two different replacements at one address: the second would silently take the place of the first (e.g. a
+     * decompiled function at the address of a native SDK replacement). Refused, loudly; the first one stays. The same
+     * function registered again (installation run again) is not a duplicate. */
+    if (r->address == address && r->fn != fn) {
+        fprintf(stderr, "gcrt hle: ERROR: %s (%08X) refused: the address is already replaced by %s\n", name, address,
+                r->name ? r->name : "?");
         return false;
     }
     if (r->address == 0)
@@ -542,8 +554,8 @@ bool gcrt_hle_library_range(const char* prefix, u32* lo, u32* hi) {
 }
 
 unsigned gcrt_hle_replace_in_library(GcrtCpu* g, const char* sdk_name, const char* prefix, GcrtHleFn fn) {
-    u32 addresses[16];
-    unsigned n = gcrt_hle_find_all(sdk_name, addresses, 16);
+    u32 addresses[MAX_COPIES];
+    unsigned n = gcrt_hle_find_all(sdk_name, addresses, MAX_COPIES);
     if (n == 1)
         return gcrt_hle_register(g, addresses[0], sdk_name, fn) ? 1u : 0u;
     if (n == 0)
@@ -558,7 +570,7 @@ unsigned gcrt_hle_replace_in_library(GcrtCpu* g, const char* sdk_name, const cha
         return 0;
     }
     int chosen = -1;
-    for (unsigned k = 0; k < n && k < 16; k++) {
+    for (unsigned k = 0; k < n && k < MAX_COPIES; k++) {
         if (addresses[k] >= lo && addresses[k] < hi) {
             if (chosen >= 0) {
                 fprintf(stderr, "gcrt hle: %s: several copies in library %s (%08X-%08X): no "
@@ -805,9 +817,9 @@ u32 gcrt_hle_resolve_following(const char* name, const char* const* chain, unsig
             return 0;
         expected += s;
     }
-    u32 candidates[16];
-    unsigned n = gcrt_hle_find_all(name, candidates, 16);
-    for (unsigned k = 0; k < n && k < 16; k++)
+    u32 candidates[MAX_COPIES];
+    unsigned n = gcrt_hle_find_all(name, candidates, MAX_COPIES);
+    for (unsigned k = 0; k < n && k < MAX_COPIES; k++)
         if (candidates[k] == expected)
             return expected;
     return 0;
@@ -818,9 +830,9 @@ u32 gcrt_hle_resolve_preceding(const char* name, const char* anchor) {
     if (!unique_function(anchor, &address, &size))
         return 0;
     u32 own = catalog_size(name);
-    u32 candidates[16];
-    unsigned n = gcrt_hle_find_all(name, candidates, 16);
-    for (unsigned k = 0; k < n && k < 16; k++)
+    u32 candidates[MAX_COPIES];
+    unsigned n = gcrt_hle_find_all(name, candidates, MAX_COPIES);
+    for (unsigned k = 0; k < n && k < MAX_COPIES; k++)
         if (candidates[k] + own == address)
             return candidates[k];
     return 0;

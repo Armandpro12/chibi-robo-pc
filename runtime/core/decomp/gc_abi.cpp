@@ -31,6 +31,8 @@ std::vector<entry_state> s_entries;  // one per registration
 std::vector<u32> s_slots;            // open addressing: index + 1 into s_entries, 0 = empty
 unsigned s_crosscheck_limit = 0;     // GCRT_DECOMP_CROSSCHECK: cross-checks per function (0: off)
 bool s_report_registered = false;
+u64 s_cost_charged_cycles = 0;  // guest cycles charged by charge_guest_cost (cycle clock)
+u64 s_cost_uncharged_calls = 0; // calls whose cost was not charged: real-time clock (GCRT_PACING=host)
 
 u32 slot_hash(u32 address, std::size_t mask) {
     return static_cast<u32>(((address >> 2) * 2654435761u) & mask);
@@ -109,7 +111,14 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         while (s_slots[k])
             k = (k + 1) & mask;
         s_slots[k] = i + 1;
-        gcrt_hle_register(g, r.address, r.record->name, r.record->entry);
+        // Refused when a native replacement already holds the address (tools/build.py refuses that statically; this
+        // is the run-time guard): the decompiled function would not run, so the executable must not start.
+        if (!gcrt_hle_register(g, r.address, r.record->name, r.record->entry)) {
+            std::fprintf(stderr, "gc_abi: decompiled function %s (%08X) could not be registered: stopping\n",
+                         r.record->name, static_cast<unsigned>(r.address));
+            std::fflush(stderr);
+            std::abort();
+        }
     }
     // Guest cost of each function (registration::guest_cost_256ths, gc_abi.h "Guest time"), kept in the function's own
     // state (export_record::cost) so that a call charges it without a lookup. GCRT_DECOMP_GUEST_COST=0, read in every
@@ -132,6 +141,7 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
                          table[i].record->name);
         cost->per_call_256ths = wanted;
         cost->remainder_256ths = 0;
+        cost->registered = true;
         costed += wanted != 0;
     }
     detail::guest_cost_enabled = costed != 0;
@@ -143,8 +153,14 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         with_fpu += (table[i].flags & registration_uses_fpu) != 0;
     std::fprintf(stderr, "gc_abi: %u decompiled functions registered (%u whose original uses the FPU: declined while "
                          "MSR[FP] = 0)%s\n",
-                 count, with_fpu, detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
-    std::fprintf(stderr, "gc_abi: guest cost charged to the cycle clock for %u of them (cycle clock only)%s\n", costed,
+                 count, with_fpu,
+                 detail::crosscheck_enabled ? " (cross-check with the recompiled originals on: diagnostic, the guest "
+                                              "cycles of the cross-checked calls are counted twice)"
+                                            : "");
+    // The clock is not known yet here (the platform's pacing may switch to the cycle clock later): the message says
+    // when the costs apply; the exit report (DECOMP guest_cost) says what was charged.
+    std::fprintf(stderr, "gc_abi: guest cost of %u of them charged to the cycle clock, only while the CPU runs on it "
+                         "(default pacing, bench; nothing with the real-time clock, GCRT_PACING=host)%s\n", costed,
                  costs_off ? " (GCRT_DECOMP_GUEST_COST=0: costs off)" : "");
     if (!s_report_registered) {
         s_report_registered = true;
@@ -182,6 +198,10 @@ void report(std::FILE* out) {
     std::fprintf(out, "DECOMP total functions=%u calls=%llu hle_dispatch=%llu hle_dispatch_misses=%llu\n",
                  static_cast<unsigned>(s_entries.size()), static_cast<unsigned long long>(total),
                  static_cast<unsigned long long>(dispatch_calls), static_cast<unsigned long long>(dispatch_misses));
+    // Guest cost actually charged (cycle clock) and calls left uncharged (real-time clock: the cost was inert).
+    std::fprintf(out, "DECOMP guest_cost charged_cycles=%llu uncharged_calls=%llu\n",
+                 static_cast<unsigned long long>(s_cost_charged_cycles),
+                 static_cast<unsigned long long>(s_cost_uncharged_calls));
 }
 
 namespace detail {
@@ -193,12 +213,18 @@ bool guest_cost_enabled = false;
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept {
     // Real-time clock (GCRT_PACING=host): the cycle counter is not time, nothing to keep in step and nothing written.
     // The default pacing of normal play and the bench both run on the cycle clock: the cost is charged there.
-    if (!g || g->clock != GCRT_CLOCK_CYCLES)
+    if (!g)
         return;
+    if (g->clock != GCRT_CLOCK_CYCLES) {
+        s_cost_uncharged_calls++;
+        return;
+    }
     const u64 total = static_cast<u64>(cost.remainder_256ths) + cost.per_call_256ths;
     cost.remainder_256ths = static_cast<u32>(total & 0xFFu);
-    if (total >> 8)
+    if (total >> 8) {
         gcrt_cpu_add_cycles(g, total >> 8);
+        s_cost_charged_cycles += total >> 8;
+    }
 }
 const u32* guest_msr = nullptr;
 

@@ -10,7 +10,8 @@
 #     empty table: the decompiled functions are linked but none replaces its recompiled version;
 #   - the folder of that table as an include folder of the decompiled sources: tools/build.py writes there the
 #     game's generated headers (decomp_globals.h: identifiers of the game globals, whose per-version addresses the
-#     table installs with gc::set_global_table). Without tools/build.py, an empty decomp_globals.h.
+#     table installs with gc::set_global_table). Without tools/build.py, an empty decomp_globals.h: the decompiled
+#     sources that use a game global then fail to compile (every source is built when CMake runs by hand).
 # The game's C entry point calls gcrt_decomp_install_generated() (decomp/gc_abi_c.h) from its install callback.
 function(gcrt_add_decompiled_code target)
   cmake_parse_arguments(ARG "" "SOURCE_DIR" "" ${ARGN})
@@ -33,13 +34,11 @@ function(gcrt_add_decompiled_code target)
     set(registry "${GCRT_DECOMP_REGISTRY}")
   else()
     set(registry "${CMAKE_CURRENT_BINARY_DIR}/${target}_decomp/decomp_registry_empty.cpp")
+    # CMake run by hand: an empty identifier header, so a decompiled source that names a game global
+    # (global_id::<name>) does not compile; such a build needs tools/build.py (it writes the real header).
     file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${target}_decomp/decomp_globals.h"
-      "// Empty identifier header (CMake run without tools/build.py): no game global.
-"
-      "#pragma once
-#include <cstdint>
-enum class global_id : std::uint32_t {};
-")
+      "// Empty identifier header (CMake run without tools/build.py): no game global.\n"
+      "#pragma once\n#include <cstdint>\nenum class global_id : std::uint32_t {};\n")
     file(WRITE "${registry}"
       "// Empty registration table (CMake run without tools/build.py): no decompiled function is registered.\n"
       "#include \"decomp/gc_abi_c.h\"\n"
