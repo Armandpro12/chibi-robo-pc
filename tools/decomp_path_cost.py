@@ -271,10 +271,20 @@ class GeneratedCode:
         raise ValueError(f"{address:08X}: not found in the generated code")
 
 
-def graphs_for(recomp_dir: Path, words: dict[int, list[int]]) -> dict[int, Graph]:
-    """{guest address: Graph} of the functions `words` ({address: instruction words}) of one build."""
+def graphs_for(recomp_dir: Path, words: dict[int, list[int]],
+               errors: dict[int, str] | None = None) -> dict[int, Graph]:
+    """{guest address: Graph} of the functions `words` ({address: instruction words}) of one build. A function this
+    tool cannot read (ValueError: module doc) has no graph; its reason goes into `errors` if given, else it raises."""
     code = GeneratedCode(recomp_dir)
-    return {a: build_graph(w, a, code.charges(a, 4 * len(w))) for a, w in words.items()}
+    out: dict[int, Graph] = {}
+    for a, w in words.items():
+        try:
+            out[a] = build_graph(w, a, code.charges(a, 4 * len(w)))
+        except ValueError as e:
+            if errors is None:
+                raise
+            errors[a] = str(e)
+    return out
 
 
 def registry_lines(graphs: dict[int, Graph], wanted: list[int]) -> tuple[list[str], dict[int, str]]:
@@ -333,11 +343,12 @@ def main() -> int:
     entries = decomp_functions.resolve(game_cfg, args.version, disc_root,
                                        decomp_functions._layout(game_cfg, disc_root), words=words)
     recomp = Path(args.recomp_dir) if args.recomp_dir else tc.GENERATED / args.game / args.version / "recomp"
-    graphs = graphs_for(recomp, words)
+    errors: dict[int, str] = {}
+    graphs = graphs_for(recomp, words, errors)
     for a, f in entries:
         if args.function and f.name not in args.function:
             continue
-        print(describe(f.name, graphs[a]))
+        print(describe(f.name, graphs[a]) if a in graphs else f"{f.name} {a:08X} no graph: {errors[a]}")
     return 0
 
 

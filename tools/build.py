@@ -644,12 +644,18 @@ def path_costs_for_build(version: str, entries: list, words: dict[int, list[int]
     import decomp_path_cost  # noqa: E402
     if recomp_dir is None or not entries:
         return [], {}
-    graphs = decomp_path_cost.graphs_for(recomp_dir, words)
-    dependent = [a for a, _ in entries if graphs[a].constant() is None]
+    errors: dict[int, str] = {}
+    graphs = decomp_path_cost.graphs_for(recomp_dir, words, errors)
+    for a, f in entries:
+        if a in errors:
+            # No graph (e.g. a loop DolRecomp outlined): the function keeps its table cost; a path-marked one is then
+            # charged its mean, which the gateway's install message counts.
+            print(f"== WARNING: no path graph for {f.name} ({version}): {errors[a]}")
+    dependent = [a for a, _ in entries if a in graphs and graphs[a].constant() is None]
     if not oracle:
         wrong = []
         for a, f in entries:
-            c = graphs[a].constant()
+            c = graphs[a].constant() if a in graphs else None
             if c is not None and f.name in costs and costs[f.name] != c * 256:
                 wrong.append(f"{f.name} (table {costs[f.name] / 256:.4f}, original {c})")
         if wrong:
