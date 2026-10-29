@@ -32,7 +32,7 @@
 - **You provide your own disc image.** No game data (disc image, textures, sounds, levels) is in this repository or
   in the installer.
 - Next steps: a fully decompiled C++ game (started: a first dozen functions are rewritten and checked against the
-  recompiled ones, in the source but not yet in release 0.1.1), then multiplayer, a technical remaster (unlimited frame rate, widescreen), mods, a PS Vita port and a remaster of models and textures ([ROADMAP.md](ROADMAP.md)).
+  recompiled ones, in the source but not yet in release 0.1.1), then multiplayer, a technical remaster (unlimited frame rate, widescreen), mods, a PS Vita port, an Android port and a remaster of models and textures ([ROADMAP.md](ROADMAP.md)).
 
 ## Current state
 

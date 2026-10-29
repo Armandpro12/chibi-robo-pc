@@ -19,7 +19,8 @@ one has been validated.
 | 4 | Technical remaster | Unlimited frame rate, widescreen (16:9 and beyond), resolution, PC-style controls and saves, separate audio volumes. Comes right after multiplayer | ⬜ |
 | 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes after the technical remaster so that the next two stages benefit from it | ⬜ |
 | 6 | PS Vita port | Planned, after the modding platform, before the models and textures remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
-| 7 | Models and textures remaster | Remastered 3D models and textures, optional HD pack, built on the modding platform | ⬜ |
+| 7 | Android port | Planned, right after the PS Vita port: a faithful port with touch controls and gamepad support | ⬜ |
+| 8 | Models and textures remaster | Remastered 3D models and textures, optional HD pack, built on the modding platform | ⬜ |
 
 The stages are numbered in the order they are done. Some GitHub issues and milestones still carry the older numbering (for example "Stage 5: modding platform" is still stage 5, but the PS Vita port used to be 3b and the remaster stage 4); the rows above are the reference.
 
@@ -363,7 +364,22 @@ package, and no protection is bypassed.
 6. Validation: reference scenarios, frame rate measured on the console, the two-instance multiplayer test, and a real test on a
    PS Vita.
 
-## Stage 7 — Models and textures remaster ⬜
+## Stage 7 — Android port ⬜
+
+A faithful port (same behavior as the PC version, no models and textures remaster), started once the game is decompiled and kept after
+the PS Vita port. Free and redistributable tools only, nothing from the game in the package, no protection bypassed, and the player
+picks their own disc image on the device. Anything published (package, store, download page) needs the project owner's approval.
+
+1. Feasibility note: target devices and versions, graphics API (Aurora on Dawn probably has a Vulkan backend, to be checked), CPU and
+   memory budget, storage, file access and distribution rules, estimated effort. Every figure is sourced or marked as a hypothesis.
+2. Core audit: platform, rendering, audio, input and saves stay separate (shared with the PS Vita audit).
+3. Prototype of rendering and audio on the title screen.
+4. Build chain: Android toolchain, packaging, signing (keys never in this repository), guided installation with the player's image.
+5. The game itself: touch controls and gamepads, audio, safe saves, pause and resume, rendering, loading, native memory.
+6. Validation: reference scenarios, frame rate and heat measured on real devices, the two-instance multiplayer test, and a real test
+   on a device.
+
+## Stage 8 — Models and textures remaster ⬜
 
 After the PS Vita port, built on the modding platform (project owner's decision, 2026-10-29).
 
