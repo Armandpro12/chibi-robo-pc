@@ -153,10 +153,14 @@ def version_columns(game_cfg: dict) -> dict[str, str]:
 
 
 def read_table(game_cfg: dict) -> list[Row]:
-    """Rows of the globals table ([] if the game has none). Refuses a malformed table (SystemExit)."""
+    """Rows of the globals table ([] if the game has none). Refuses a malformed table, or a table named by game.toml
+    ([decomp] globals) that does not exist (SystemExit): read as empty, it would let a build pass without the checks
+    and give every global the address 0."""
     path = table_path(game_cfg)
-    if path is None or not path.exists():
+    if path is None:
         return []
+    if not path.exists():
+        raise SystemExit(f"{path}: globals table named by game.toml ([decomp] globals) not found")
     columns = version_columns(game_cfg)
     header = None
     rows: list[Row] = []
@@ -456,14 +460,18 @@ def _check_contents(row: Row, version: str, lays: dict[str, Layout], rows: list[
 
 
 def check_version(game_cfg: dict, version: str, dol_path: Path, ref_dol_path: Path | None = None,
-                  rows: list[Row] | None = None, fns: Functions | None = None) -> Result:
+                  rows: list[Row] | None = None, fns: Functions | None = None,
+                  compare_reference: bool = True) -> Result:
     """Rules 1 to 4 of the header for `version`. `ref_dol_path`: the reference version's DOL (contents and
-    instruction positions are compared with it); None when `version` is the reference."""
+    instruction positions are compared with it); None when `version` is the reference. `compare_reference` False
+    (build without the reference disc, check_build): the comparisons with the reference (rule 3 and the instruction
+    positions of rule 4) are skipped, the other rules still apply."""
     rows = read_table(game_cfg) if rows is None else rows
     fns = fns or Functions(game_cfg)
     ref = fns.ref
     lays = {version: layout(game_cfg, dol_path)}
-    if version != ref:
+    compare = version != ref and compare_reference
+    if compare:
         if ref_dol_path is None:
             raise SystemExit(f"check_version({version}): the {ref} DOL is needed to compare with the reference")
         lays[ref] = layout(game_cfg, ref_dol_path)
@@ -502,7 +510,7 @@ def check_version(game_cfg: dict, version: str, dol_path: Path, ref_dol_path: Pa
             elif version != ref and paired[0] != row.addresses.get(ref):
                 reasons.append(f"{a:08X} is the {version} address of {ref} {paired[0]:08X}, not of "
                                f"{row.addresses.get(ref) or 0:08X}")
-        if not reasons:
+        if not reasons and (compare or version == ref):
             why = _check_contents(row, version, lays, rows, fns, addresses)
             if why:
                 reasons.append(why)
@@ -517,7 +525,7 @@ def check_version(game_cfg: dict, version: str, dol_path: Path, ref_dol_path: Pa
                     reasons.append(f"used_by {user}: its {version} code ({here[0]:08X}+0x{here[1]:X}) references no "
                                    f"address of {a:08X}+0x{row.size:X}")
                     continue
-                if version != ref:
+                if compare:
                     there = fns.range(user, ref)
                     ra = row.addresses.get(ref)
                     if isinstance(there, str) or ra is None:
@@ -554,9 +562,18 @@ def check_build(game_cfg: dict, version: str, disc_root: Path, enabled: list, so
     fns = Functions(game_cfg)
     dol = disc_root / game_cfg["code"]["dol"]
     ref_dol = None
+    compare = True
     if version != fns.ref:
-        ref_dol = _disc_root(game_cfg, fns.ref) / game_cfg["code"]["dol"]
-    res = check_version(game_cfg, version, dol, ref_dol, rows, fns)
+        ref_root = _disc_root(game_cfg, fns.ref, required=False)
+        ref_dol = ref_root / game_cfg["code"]["dol"] if ref_root else None
+        if ref_dol is None or not ref_dol.exists():
+            # Fallback (a contributor with only this version's disc): the version is checked on its own; the
+            # comparison with the reference (contents, instruction positions) is left to a build that has both discs.
+            compare = False
+            print(f"== WARNING: {fns.ref} disc not extracted: the globals of {version} are checked without the "
+                  f"comparison with {fns.ref} (contents and instruction positions); a build with both discs makes "
+                  f"it (tools/extract.py {game_cfg['_dir'].name} --version {fns.ref})")
+    res = check_version(game_cfg, version, dol, ref_dol, rows, fns, compare_reference=compare)
     names = {f.name for f in enabled}
     for row in rows:
         if row.addresses.get(version) is None:
@@ -589,10 +606,13 @@ def source_identifiers(sources: list[Path]) -> dict[str, list[str]]:
     return out
 
 
-def _disc_root(game_cfg: dict, version: str) -> Path:
+def _disc_root(game_cfg: dict, version: str, required: bool = True) -> Path | None:
+    """Folder of the extracted disc of `version` (its manifest). Missing: SystemExit, or None if not `required`."""
     import json
     manifest = tc.GENERATED / game_cfg["_dir"].name / version / "manifest.json"
     if not manifest.exists():
+        if not required:
+            return None
         raise SystemExit(f"{manifest} missing: extract the {version} disc first (tools/extract.py); the globals of "
                          f"every version are compared with the reference version")
     return Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])

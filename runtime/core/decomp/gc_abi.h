@@ -89,9 +89,14 @@ using entry_fn = bool (*)(GcrtCpu* g, u32 address);
 // cycle clock, in 1/256 cycle (set by install from registration::guest_cost_256ths; 0 under GCRT_DECOMP_GUEST_COST=0),
 // and the fraction of a cycle not charged yet (carried to the next call: N calls charge N x per_call_256ths / 256 to
 // within one cycle in all; per_call_256ths itself differs from a mean cost by at most 1/512 cycle).
+// `registered`: set by install when the function is in this build's registration table. gc::abi::call<Fn> to a function
+// that is not (its row disabled while its source file is built for another row) charges no guest cost, and an oracle
+// build would see a call to address 0: call<Fn> warns once per function (`unregistered_warned`).
 struct guest_cost_state {
     u32 per_call_256ths = 0;
     u32 remainder_256ths = 0;
+    bool registered = false;
+    bool unregistered_warned = false;
 };
 
 // One decompiled function, defined next to it by GC_DECOMP_EXPORT.
@@ -333,6 +338,17 @@ inline constexpr u32 msr_fp = 0x00002000u;
 bool decline_without_fpu(u32 address) noexcept;
 // Guest cost of the decompiled function Fn (one per C++ function, pointed to by its export record).
 template <auto Fn> inline guest_cost_state guest_cost{};
+// Name of the decompiled function Fn (GC_DECOMP_EXPORT, set by make_export at static initialization).
+template <auto Fn> inline const char* export_name = nullptr;
+// call<Fn> to a function not registered in this build: one warning per function (see guest_cost_state).
+inline void note_unregistered_call(guest_cost_state& cost, const char* name) noexcept {
+    if (cost.unregistered_warned)
+        return;
+    cost.unregistered_warned = true;
+    std::fprintf(stderr, "gc_abi: WARNING: gc::abi::call to %s, which is not registered in this build (row not enabled "
+                         "in the functions table): no guest cost charged for it\n",
+                 name ? name : "a decompiled function");
+}
 // Some registration has a guest cost and GCRT_DECOMP_GUEST_COST is not 0 (gc_abi.cpp install). charge_guest_cost adds
 // one call of `cost` to the cycle counter (gcrt_cpu_add_cycles) only while the CPU runs on the cycle clock
 // (GCRT_CLOCK_CYCLES: the default pacing of normal play and the bench, see "Guest time"); with the real-time clock
@@ -445,6 +461,7 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
 
 template <auto Fn> export_record make_export(const char* name, u32 flags) {
     using traits = detail::function_traits<Fn>;
+    detail::export_name<Fn> = name;
     return export_record{name,
                          &entry<Fn>,
                          reinterpret_cast<void (*)()>(Fn),
@@ -545,7 +562,9 @@ template <auto Fn, class... A> auto call(A... args) {
     }
 #endif
     // A plain C++ call: Fn's entry is not reached, so its guest cost is charged here (as the original caller ran the
-    // original callee). Fn must be registered in the build for that (its cost is set by install).
+    // original callee). Fn must be registered in the build for that (its cost is set by install): warned otherwise.
+    if (!detail::guest_cost<Fn>.registered)
+        detail::note_unregistered_call(detail::guest_cost<Fn>, detail::export_name<Fn>);
     if constexpr (std::is_void_v<decltype(Fn(args...))>) {
         Fn(args...);
         if (detail::guest_cost_enabled)

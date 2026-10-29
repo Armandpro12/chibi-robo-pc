@@ -25,6 +25,7 @@
 //   gc::address_of(obj)  pointer to an object that lives in guest memory (C++ `&obj`)
 //   gc::to_host(p)       host pointer for a guest pointer (for host code that needs a T*)
 //   gc::ptr_cast<U>(p), gc::static_ptr_cast<U>(p)   pointer conversions (reinterpret / base-to-derived)
+//   gc::marker_ptr<T>(v), gc::is_marker_ptr(p, v)   marker pointer values such as C `(T*)-1` (never dereferenced)
 // Guest-mode only (gateway, oracle and table code; they do not exist in native mode on purpose):
 //   gc::guest_address(p), gc::ptr_from_guest_address<T>(address), gc::init_guest_memory, gc::set_global_table,
 //   gc::set_guest_store_hook (the runtime sees each store, see "Store hook"),
@@ -941,6 +942,17 @@ ptr<Derived> static_ptr_cast(const ptr<Base>& p) noexcept {
     return ptr_from_guest_address<Derived>(address == 0 ? 0u : address - detail::base_offset<Base, Derived>());
 }
 
+// Marker pointer: a small integer that original code stores in a pointer as a special value pointing to nothing (C
+// `(T*)-1`). It is never dereferenced (in guest mode, -1 or -2 is outside guest RAM: a dereference faults), only
+// compared. The same calls compile in both modes: the guest mode holds the value's 32-bit pattern, the native mode
+// the sign-extended value, as a C cast of the integer to a pointer does.
+template <class T> ptr<T> marker_ptr(std::int32_t value) noexcept {
+    return ptr_from_guest_address<T>(static_cast<std::uint32_t>(value));
+}
+template <class T> bool is_marker_ptr(const ptr<T>& p, std::int32_t value) noexcept {
+    return guest_address(p) == static_cast<std::uint32_t>(value);
+}
+
 #else // GC_NATIVE_MEMORY
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -970,6 +982,13 @@ template <class Derived, class Base>
              (std::is_const_v<Derived> || !std::is_const_v<Base>)
 Derived* static_ptr_cast(Base* p) noexcept {
     return static_cast<Derived*>(p);
+}
+
+template <class T> T* marker_ptr(std::int32_t value) noexcept {
+    return reinterpret_cast<T*>(static_cast<std::intptr_t>(value));
+}
+template <class T> bool is_marker_ptr(const T* p, std::int32_t value) noexcept {
+    return reinterpret_cast<std::intptr_t>(p) == static_cast<std::intptr_t>(value);
 }
 
 #endif // GC_NATIVE_MEMORY
@@ -1176,8 +1195,13 @@ template <class T, auto Id> T& global<T, Id>::get() {
     const std::uint32_t address =
         index < detail::g_globals.count ? detail::g_globals.addresses[index] : 0u;
     if (address == 0u) {
-        detail::fault("gc::global has no address in this version", static_cast<std::uint32_t>(index),
-                      static_cast<std::uint32_t>(sizeof(T)));
+        // The identifier goes in the text: passed as the address, it would read as a guest address.
+        char reason[192];
+        std::snprintf(reason, sizeof(reason),
+                      "gc::global identifier %u has no address in this version (global table not installed, or no "
+                      "address for this version in the game's globals table)",
+                      static_cast<unsigned>(index));
+        detail::fault(reason, 0u, static_cast<std::uint32_t>(sizeof(T)));
     }
     return *reinterpret_cast<T*>(detail::host_of(address, static_cast<std::uint32_t>(sizeof(T))));
 }

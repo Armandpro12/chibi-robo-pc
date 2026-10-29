@@ -974,7 +974,12 @@ GUEST_COST_HEADER = """\
 # of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: {labels}.
 """
 
-DRIFT_ALERT = 1_000_000  # cycles: ~0.12 frame of guest time at 486 MHz / 60 Hz (8.1 M cycles a frame)
+# Alert threshold of the drift, in cycles per run. 50 000: about 3.6 times the largest drift measured on the oracle
+# runs of D2 (13 996 cycles, run d23-o1, 40 functions; 5 548 in the earlier runs f2-o1 and f3-o1), and still about 160
+# times less than one frame of guest time (486 MHz / 60 Hz = 8.1 M cycles; 9.7 M at 50 Hz), so an alert comes long
+# before a scenario can shift by a frame. The former 1 M was about 70 times the largest drift seen: it would only have
+# caught a mean already off by an eighth of a frame.
+DRIFT_ALERT = 50_000
 
 
 def read_cost_summaries(files: list[Path], problems: list[str]) -> dict[str, list[dict]]:
@@ -1024,7 +1029,7 @@ def cmd_cost(args) -> int:
     when an enabled function has no measured call in a version (unless --allow-missing), or when a summary has no
     exclusive cost. Warns about table rows of disabled functions, unmeasured calls, and the drift of path-dependent
     functions: for each run (one oracle file, i.e. one scenario), its cycles minus its calls x the charged mean; beyond
-    --drift-alert cycles (default 1 M) in one run, the table may not fit that scenario."""
+    --drift-alert cycles (default DRIFT_ALERT, 50 k) in one run, the table may not fit that scenario."""
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
     bench = Path(args.bench_root) if args.bench_root else main_checkout()

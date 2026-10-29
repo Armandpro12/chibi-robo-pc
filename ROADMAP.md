@@ -246,9 +246,13 @@ from D1" below).
   which are charged where they run); `tools/decomp_oracle.py cost` writes their mean per version into
   `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call, in 1/256 cycle with the
   remainder carried from call to call (no per-call rounding loss; a mean cost, quantized to 1/256 cycle, is off by at
-  most 1/512 cycle per call), and only on that cycle clock. The cost is exact for 34 of
+  most 1/512 cycle per call), and only on that cycle clock. The cost, measured on the five reference scenarios and a
+  progression scenario, is exact for 34 of
   the 40 functions, whose original always costs the same, and a mean for the other 6. A production build refuses an
-  enabled function without a measured cost. With it, the production executables of the integrated work match the
+  enabled function without a measured cost. `tools/cycle_parity.py` compares the final cycle counter of each bench
+  scenario with the reference: with the costs charged, the ten bench runs (five scenarios, US and PAL) end 1,750 to 6,310
+  cycles below it, well inside the 50,000-cycle tolerance but not at zero; the cause is not established (a hypothesis is
+  the six mean costs). On that bench the images, the sound and the saves of the production executables match the
   references exactly in all five scenarios, in US and PAL. Normal play uses that cycle clock by default, so the
   guest cost is charged there too (checked by one default-mode launch per version); it has no effect only with
   `GCRT_PACING=host`.
@@ -256,6 +260,11 @@ from D1" below).
   decompiled before ran about 12 million cycles uncharged without a visible shift, while the integrated work ran
   about 65.3 million (65,290,576 for the 40 functions; two new batches: 19.5 and 34 million) and shifted a load by
   a frame; which amount tips a scenario is not known, so there is no safe threshold. The coupling goes away with the cycle clock at D3.
+- **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
+  same instruction pattern in each DOL (the register offsets differ), and the runtime replaces only the copy it anchors (after `ARInit`). The build now treats the
+  copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight
+  HSD accessors planned for the next batch were refused before), and the runtime refuses a second, different replacement at
+  one address instead of silently overwriting the first. Checked in US and PAL against the runtime's own choice.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
