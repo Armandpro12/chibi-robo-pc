@@ -15,11 +15,14 @@ namespace hsd {
 
 // The first reference object of the list that starts at `robj` whose type is `type` (already shifted into bits
 // 28-30) and, unless `subtype` is 0, whose subtype is `subtype`; objects without a type are skipped. Null if none.
-// The loop's test is the original's first test, then the one at the bottom of its loop (same sense).
+// The original tests the pointer at its entry, then jumps to the test at the bottom of its loop, so the first object
+// is tested twice: the entry test below, then the loop's test (same sense) before each turn.
 // Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
 // outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
 // original's path; they return their condition unchanged.
 ptr<HSD_RObj> HSD_RObjGetByType(ptr<HSD_RObj> robj, u32 type, u32 subtype) {
+    if (gc::path::falls_through(robj == nullptr))
+        return nullptr;
     for (ptr<HSD_RObj> current = robj; gc::path::taken(current != nullptr); current = current->next) {
         const u32 flags = gc::load(current->flags);
         if (gc::path::taken(!(flags & robj_has_type)) || gc::path::taken((flags & robj_type_mask) != type))
