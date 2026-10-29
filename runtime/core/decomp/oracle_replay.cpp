@@ -74,6 +74,9 @@ GcrtCpu* current_cpu() noexcept {
 u32 address_of_function(void (*)()) noexcept {
     return 0;
 }
+// A call that does not return (gc_abi.h call_no_return) is a call too: a case that holds one is skipped by
+// tools/decomp_oracle.py replay, as the other calls are; run_guest above reports it if it is reached anyway.
+void stop_after_no_return(u32) noexcept {}
 } // namespace detail
 #if defined(GC_DECOMP_ORACLE_NEGATIVE)
 // Wrong variants of the oracle's negative test (tools/decomp_oracle.py replay --negative). The replay compares only

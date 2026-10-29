@@ -328,7 +328,7 @@ def new_aggregate(rec: dict) -> dict:
     return {"calls": 0, "compared": 0, "mismatches": 0, "not_compared": 0, "fingerprints": set(), "bad": set(),
             "leaf": set(), "reasons": set(), "runs": 0, "address": rec.get("address"), "examples": [],
             "paths": set(), "synthetic_cases": 0, "synthetic_compared": 0, "synthetic_mismatches": 0,
-            "synthetic_not_compared": 0, "blocks": None, "block_hits": {}, "dead_blocks": None,
+            "synthetic_not_compared": 0, "synthetic_no_return": 0, "blocks": None, "block_hits": {}, "dead_blocks": None,
             "dead_block_hits": {}, "results": set(), "results_count": 0, "path_count": 0, "synthetic_labels": set(),
             "journal_reattached": 0, "restore_errors": 0, "fpu_declined": 0, "fmadds_dolphin_divergent": 0}
 
@@ -439,7 +439,8 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                                         f"{expected:08X} in {version} (results of another version or table)")
                     a["runs"] += 1
                     for k in ("calls", "compared", "mismatches", "not_compared", "synthetic_compared",
-                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached", "fpu_declined",
+                              "synthetic_mismatches", "synthetic_not_compared", "synthetic_no_return",
+                              "journal_reattached", "fpu_declined",
                               "fmadds_dolphin_divergent"):
                         a[k] += int(rec.get(k, 0))
                     if "fpu_declined" not in rec:
@@ -739,7 +740,9 @@ def cmd_report(args) -> int:
                       f"{', '.join(sorted(a['results'])[:12]) or '-'}{' ...' if len(a['results']) > 12 else ''}; "
                       f"distinct block sets per run: up to {a['path_count']}")
                 print(f"{'':44}synthetic cases: {a['synthetic_compared']} compared of {a['synthetic_cases']} per run, "
-                      f"{a['synthetic_mismatches']} with differences; runs of the original where another write "
+                      f"{a['synthetic_mismatches']} with differences, {a['synthetic_no_return']} ended by both versions "
+                      f"at a call that does not return ([decomp] no_return: memory and calls compared, registers "
+                      f"not); runs of the original where another write "
                       f"journal detached itself (oracle journal kept): {a['journal_reattached']}")
                 print(f"{'':44}declined, FPU off (MSR[FP] = 0: the original ran, not counted as calls nor as not "
                       f"compared): {a['fpu_declined']}; compared calls with an fmadds that Dolphin would flush "

@@ -209,6 +209,9 @@ struct function_state {
     std::vector<synthetic_case> synthetic;
     bool synthetic_done = false;
     u64 synthetic_compared = 0, synthetic_mismatches = 0, synthetic_not_compared = 0;
+    // Compared synthetic cases that both versions ended at a call that does not return (see "Calls that do not
+    // return"): counted in synthetic_compared too, reported apart (their registers are not compared).
+    u64 synthetic_no_return = 0;
     // Runs of the original during which another journal detached or replaced itself (the oracle stayed attached),
     // and self-checks of the undo and redo of W1 that failed (must stay 0).
     u64 journal_reattached = 0, restore_errors = 0;
@@ -274,6 +277,16 @@ bool s_replaying = false;            // the decompiled version runs: its calls a
 std::size_t s_replay_index = 0;      // next recorded call to replay
 const synthetic_case* s_synthetic_case = nullptr; // synthetic case being run (its calls are simulated)
 bool s_synthetic_call_missing = false;            // the original made more calls than the case has `call` lines
+// Calls that do not return. Anomaly A4: a synthetic case entering an assertion block reaches a call to a function
+// of [decomp] no_return (tools/build.py: gcrt_decomp_oracle_no_return), which the oracle simulates like any call; but
+// that call never returns in the game, and the original goes on after it only because its compiler did not know
+// (typically reading through the null pointer just asserted), where the faithful decompiled code
+// (gc::abi::call_no_return) stops. So the case ENDS at that call on both sides: the original's nested run is ended
+// there (call_hook), the decompiled version is unwound by no_return_reached (compare_call). Memory and the calls
+// (that one included: target, arguments, memory at the call) are compared; registers are not (neither side has
+// left the function). One side only ending there is a difference ("no-return").
+std::unordered_set<u32> s_no_return;               // guest addresses of the functions that do not return
+bool s_original_no_return = false;                 // the original of the current synthetic case reached one
 oracle::write_set* s_callee_writes = nullptr;     // journal segment of the running callee
 std::vector<difference> s_call_diffs;             // differences found at the calls of the decompiled version
 u32 s_entry_r1 = 0, s_compare_dead_stack = 0;     // r1 at the entry of the compared run and its dead stack
@@ -603,7 +616,9 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
     rec.before = take(c).regs;
     if (s_synthetic_case) {
         // Simulated: the callee never runs (a panic, an allocation... could not be undone).
-        if (s_calls.size() < s_synthetic_case->calls.size())
+        if (s_no_return.count(rec.target))
+            s_original_no_return = true; // no results: the case ends at this call (below)
+        else if (s_calls.size() < s_synthetic_case->calls.size())
             set_regs(c, s_synthetic_case->calls[s_calls.size()], s_synthetic_base);
         else
             s_synthetic_call_missing = true;
@@ -635,6 +650,16 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
     rec.reserve_valid_after = c->reserve_valid;
     rec.reserve_addr_after = c->reserve_addr;
     s_calls.push_back(std::move(rec));
+    if (s_original_no_return) {
+        if (s_entry_lr) {
+            // End of the original's nested run: its return address (the nested run's own, oracle_bypassed_entry), as
+            // if F returned now. The frame F set up is left as it is: compare_call compares no register here, and
+            // the state is put back after the case.
+            c->pc = s_entry_lr;
+            return true;
+        }
+        mark_not_comparable(f, leaf_unsupported, "a call that does not return before the entry LR was seen");
+    }
     c->pc = return_to;
     return true;
 }
@@ -798,7 +823,8 @@ void report_at_exit() {
         std::fprintf(stdout,
                      "ORACLE %-32s %s %08X calls=%llu compared=%llu mismatches=%llu cases=%zu bad_cases=%zu "
                      "stored=%llu not_compared=%llu leaf=%s blocks=%llu/%zu results=%zu synthetic=%llu/%zu "
-                     "synthetic_mismatches=%llu journal_reattached=%llu restore_errors=%llu fpu_declined=%llu "
+                     "synthetic_mismatches=%llu synthetic_no_return=%llu journal_reattached=%llu restore_errors=%llu "
+                     "fpu_declined=%llu "
                      "fmadds_dolphin_divergent=%llu%s%s\n",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.calls),
                      static_cast<unsigned long long>(f.compared), static_cast<unsigned long long>(f.mismatches),
@@ -806,6 +832,7 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.not_compared), leaf, static_cast<unsigned long long>(covered),
                      f.blocks.size(), f.results.size(), static_cast<unsigned long long>(f.synthetic_compared),
                      f.synthetic.size(), static_cast<unsigned long long>(f.synthetic_mismatches),
+                     static_cast<unsigned long long>(f.synthetic_no_return),
                      static_cast<unsigned long long>(f.journal_reattached),
                      static_cast<unsigned long long>(f.restore_errors),
                      static_cast<unsigned long long>(f.fpu_declined),
@@ -831,7 +858,8 @@ void report_at_exit() {
                      "\"size\":%u,\"calls\":%llu,\"compared\":%llu,\"mismatches\":%llu,\"cases\":%zu,"
                      "\"bad_cases\":%zu,\"stored\":%llu,\"not_compared\":%llu,\"leaf\":\"%s\",\"reason\":\"%s\","
                      "\"synthetic_cases\":%zu,\"synthetic_compared\":%llu,\"synthetic_mismatches\":%llu,"
-                     "\"synthetic_not_compared\":%llu,\"journal_reattached\":%llu,\"restore_errors\":%llu,"
+                     "\"synthetic_not_compared\":%llu,\"synthetic_no_return\":%llu,\"journal_reattached\":%llu,"
+                     "\"restore_errors\":%llu,"
                      "\"fpu_declined\":%llu,\"fmadds_dolphin_divergent\":%llu,\"paths\":%zu,"
                      "\"recorded_calls\":%llu,\"max_calls\":%llu,\"refused_switches\":%llu,"
                      "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,"
@@ -844,6 +872,7 @@ void report_at_exit() {
                      f.leaf_reason, f.synthetic.size(), static_cast<unsigned long long>(f.synthetic_compared),
                      static_cast<unsigned long long>(f.synthetic_mismatches),
                      static_cast<unsigned long long>(f.synthetic_not_compared),
+                     static_cast<unsigned long long>(f.synthetic_no_return),
                      static_cast<unsigned long long>(f.journal_reattached),
                      static_cast<unsigned long long>(f.restore_errors),
                      static_cast<unsigned long long>(f.fpu_declined),
@@ -1123,6 +1152,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_original_writes.clear();
     s_calls.clear();
     s_synthetic_call_missing = false;
+    s_original_no_return = false;
     s_entry_r1 = r0.regs.gpr[1];
     s_entry_lr = 0;
     s_entry_lr_wanted = true;
@@ -1221,7 +1251,16 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_depth++;
     s_running = &f;
     s_replaying = true;
-    invoke(registers_of(g));
+    bool decompiled_no_return = false;
+    u32 no_return_target = 0;
+    try {
+        invoke(registers_of(g));
+    } catch (const no_return_reached& e) {
+        // The decompiled version called a function that does not return (gc::abi::call_no_return), after its call
+        // was compared and replayed: it stops there (see "Calls that do not return").
+        decompiled_no_return = true;
+        no_return_target = e.address;
+    }
     s_replaying = false;
     s_running = nullptr;
     s_depth--;
@@ -1280,9 +1319,16 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
 
     // 4. Comparison.
     std::vector<difference> diffs;
+    // Calls that do not return: both sides ended at one, registers not compared (the original's own registers stand
+    // for both); one side only, a difference.
+    const bool original_no_return = s_original_no_return;
+    const bool both_no_return = original_no_return && decompiled_no_return;
+    if (original_no_return != decompiled_no_return)
+        diffs.push_back(difference{"no-return", 0, original_no_return ? 1u : 0u, decompiled_no_return ? 1u : 0u});
     // The LR save word: the original's store of the LR it was entered with is left out for a function with call sites
     // only (gc_oracle_compare.h lr_save_rule; s_entry_lr = 0 if its entry was not seen: never left out then).
-    oracle::compare(r1.regs, r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs, dead_stack,
+    oracle::compare(r1.regs, both_no_return ? r1.regs : r2.regs, signature.result_kind, r0.regs.gpr[1], w1, w2, diffs,
+                    dead_stack,
                     oracle::lr_save_rule{!f.call_sites.empty() && s_entry_lr != 0, s_entry_lr});
     // The calls: target, arguments and memory at each call, extra or missing calls (replay_call).
     diffs.insert(diffs.end(), s_call_diffs.begin(), s_call_diffs.end());
@@ -1318,7 +1364,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
         f.dead_block_hits[i] += f.call_dead[i];
     if (f.paths.size() < (1u << 16))
         f.paths.insert(result_key_hash(f.call_blocks));
-    if (f.results.size() < 4096)
+    if (f.results.size() < 4096 && !both_no_return) // a case ended at a no-return call has no result
         f.results.insert(result_of(r1.regs, signature.result_kind));
 
     // 6. Fingerprint of the starting state: argument registers and the bytes the decompiled version read.
@@ -1341,9 +1387,17 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
         h = oracle::fnv1a(h, &r.value, 8);
     }
     bool is_new = false;
-    if (synthetic)
+    if (synthetic) {
         f.synthetic_compared++;
-    else {
+        if (both_no_return) {
+            f.synthetic_no_return++;
+            std::fprintf(stderr,
+                         "gc_oracle: %s (%s %08X) synthetic %s: both versions ended at the call to %08X, which does not "
+                         "return ([decomp] no_return): memory and calls compared, registers not; %zu differences\n",
+                         f.name, s_version, static_cast<unsigned>(f.address), synthetic,
+                         static_cast<unsigned>(no_return_target), diffs.size());
+        }
+    } else {
         f.compared++;
         is_new = f.fingerprints.size() < (1u << 20) && f.fingerprints.insert(h).second;
     }
@@ -1730,6 +1784,15 @@ void store_word_at_entry_sp(u32 offset, u32 value) noexcept {
 }
 } // namespace gc::abi::testing
 #endif
+
+// Called by the registration table of an oracle build after gcrt_decomp_oracle_configure: the guest addresses of the
+// functions that do not return ([decomp] no_return of the game, tools/build.py), see "Calls that do not return".
+extern "C" void gcrt_decomp_oracle_no_return(const unsigned* addresses, unsigned count) {
+    using namespace gc::abi::detail;
+    s_no_return.clear();
+    for (unsigned i = 0; i < count; i++)
+        s_no_return.insert(gc::oracle::canonical_address(addresses[i]));
+}
 
 // Called by the registration table that tools/build.py generates for an oracle build, before
 // gcrt_decomp_install_table: the version, the size and the basic blocks of each function (leaf check, block

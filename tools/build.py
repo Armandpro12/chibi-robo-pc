@@ -720,7 +720,11 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
                                                                              records=records, blocks=blocks,
                                                                              sources_hash=sources_hash, fpu=fpu,
                                                                              calls=calls, asserts=asserts,
-                                                                             globals=globals_lines, costs=costs))
+                                                                             globals=globals_lines, costs=costs,
+                                                                             no_return=sorted(
+                                                                                 decomp_functions.no_return_addresses(
+                                                                                     game_cfg, version))
+                                                                             if oracle else None))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     for line in unregistered_abi_calls(game, game_cfg, {f.name for _, f in entries}, oracle):
