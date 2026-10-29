@@ -266,7 +266,7 @@ from D1" below).
   again on resumption (a fault inside a group charged nothing more). A new DolRecomp patch tests the unit before
   charging such a group (12,435 groups in US, 12,486 in PAL; costs unchanged). With it, the 34 exact-cost functions
   leave the cycle counter equal to the build without decompiled functions at every host wait of the five scenarios,
-  in US and PAL (it differed by +12 to -132 cycles), and images, sound and saves are unchanged; checked by a local
+  in US and PAL (it differed by -132 to +60 cycles), and images, sound and saves are unchanged; checked by a local
   test that fails without the patch. The guest time of the recompiled code itself changes slightly (-528 to +684
   cycles at the end of a scenario), so the bench references are to be recorded again.
 - **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
