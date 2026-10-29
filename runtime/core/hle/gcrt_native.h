@@ -115,6 +115,13 @@ bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function);
 /* Depth of the nested calls in progress (0: normal execution of the game). No thread switch is allowed during a
  * nested call. */
 int gcrt_guest_call_depth(void);
+/* Opt-in limit on interrupts held by a nested call, in time base ticks (0, the default: no limit, a nested call runs
+ * as one run of the chassis with its block budget). A nested call runs with MSR[EE] = 0, so a callee that waits for
+ * an interrupt (busy loop on a flag set by its handler) never sees it and only stops at the block budget. With a
+ * limit, the call runs in slices; if the outermost nested call started with MSR[EE] = 1 and an unmasked interrupt has
+ * been due for more than `ticks`, the run stops with GCRT_STOP_HELD_INTERRUPT and a message naming the interrupt. For
+ * tools (decompilation oracle); production keeps 0. */
+void gcrt_guest_call_set_held_irq_limit(u64 ticks);
 /* Thread switches the native OS refused because a nested call was running (diagnostic, decompilation oracle). */
 u64 gcrt_native_os_refused_nested(void);
 /* Calls a callback "in exception context", as the SDK interrupt handlers do (e.g. __DVDInterruptHandler):

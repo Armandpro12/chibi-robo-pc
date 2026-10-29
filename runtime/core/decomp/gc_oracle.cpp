@@ -1159,6 +1159,12 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
             write_byte(b.address, b.before);
     };
     if (!returned) {
+        // Anomaly A3: the original (or one of its callees) waited for an interrupt or another thread inside the
+        // nested run, where neither can come; the held-interrupt limit set in gcrt_decomp_oracle_configure stopped it
+        // instead of the 200 M-block budget. The run then stops (the original cannot be resumed half-way).
+        if (g->stop == GCRT_STOP_HELD_INTERRUPT)
+            mark_not_comparable(f, leaf_unsupported,
+                                "the original's nested run held an interrupt for more than 1 guest second");
         if (synthetic)
             undo_original();
         return not_compared();
@@ -1737,6 +1743,10 @@ extern "C" void gcrt_decomp_oracle_configure(GcrtCpu* g, const char* version, co
     using namespace gc::abi::detail;
     s_version = version;
     s_sources_hash = sources_hash ? sources_hash : "";
+    // Anomaly A3: a nested run (original of F, or a callee) that holds a due interrupt for more than 1 guest second
+    // stops with GCRT_STOP_HELD_INTERRUPT (runtime/core/hle/native_irq.c) instead of exhausting its block budget;
+    // compare_call marks F not comparable. Oracle builds only: production keeps no limit.
+    gcrt_guest_call_set_held_irq_limit(GCRT_TB_HZ);
     s_functions.clear();
     s_functions.resize(count);
     s_probes.clear();

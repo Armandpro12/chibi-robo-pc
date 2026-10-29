@@ -89,6 +89,8 @@ typedef enum GcrtStopReason {
     GCRT_STOP_UNHANDLED_IO,  /* unhandled hardware access, with the "stop at the first access" option */
     GCRT_STOP_REQUESTED,
     GCRT_STOP_GUEST_HALT,    /* the game halted itself (OSPanic, PPCHalt): see the printed message */
+    GCRT_STOP_HELD_INTERRUPT, /* a nested call held a due interrupt longer than its opt-in limit (hle/native_irq.c,
+                               * gcrt_guest_call_set_held_irq_limit; never set by default) */
 } GcrtStopReason;
 
 typedef struct GcrtRunLimits {
