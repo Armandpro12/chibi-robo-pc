@@ -15,10 +15,12 @@ one has been validated.
 |---|---|---|---|
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first release of the C++ version | 🟡 in progress |
-| 3 | Multiplayer | Two players in the same house | ⬜ |
-| 3b | PS Vita port | Planned, after multiplayer, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
-| 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack | ⬜ |
-| 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts | ⬜ |
+| 3 | Multiplayer | Several players: over Tailscale, over the Internet without it, on a local network, or on the same screen | ⬜ |
+| 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes right after multiplayer so that the next two stages benefit from it | ⬜ |
+| 3b | PS Vita port | Planned, after the modding platform, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
+| 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack, built on the modding platform | ⬜ |
+
+The stage numbers are historical (they match the GitHub milestones); the order is the order of the rows above.
 
 From stage 3 onwards, every stage must keep multiplayer working (automated two-instance test).
 
@@ -303,11 +305,27 @@ D1 is validated; these items are carried over to the start of D2.
 5. Multiplayer balancing.
 6. Real test between two PCs.
 
+## Stage 5 — Modding platform ⬜
+
+Right after multiplayer (project owner's decision, 2026-10-29), so that the PS Vita port and the remaster build on it: the loader
+and file replacement stay portable, and the remaster's extractor, texture and model replacement and HD pack reuse M1 to M3.
+
+| # | Milestone |
+|---|---|
+| M1 | Mod loader and mod manifests |
+| M2 | Extractor: every game file to open formats |
+| M3 | Replace any game file (textures, models, sounds, music, fonts, UI) |
+| M4 | Text and translations, including new languages |
+| M5 | Levels and event scripts |
+| M6 | C++ plugins with a stable, versioned C API |
+| M7 | Lua scripts in a sandbox |
+| M8 | Documentation and example mods for modders |
+
 ## Stage 3b — PS Vita port ⬜
 
 A faithful port to the console (same behavior as the PC version, no remaster features), started once the game is decompiled
-(from milestone D3 at the earliest) and kept after the multiplayer stage so that the two-instance multiplayer test keeps
-passing. Tracking: [#43](https://github.com/Armandpro12/chibi-robo-pc/issues/43). Free tools only, nothing from the game in the
+(from milestone D3 at the earliest) and kept after the modding platform, so that it benefits from it (loader and file
+replacement; C++ plugins probably cannot run there, to be checked) and so that the two-instance multiplayer test keeps passing. Tracking: [#43](https://github.com/Armandpro12/chibi-robo-pc/issues/43). Free tools only, nothing from the game in the
 package, and no protection is bypassed.
 
 1. Feasibility note: CPU and memory budget, size of the extracted game, storage, which graphics API to use (GXM or vitaGL) and the
@@ -327,20 +345,8 @@ package, and no protection is bypassed.
 - **PC-style saves**: no more memory card wording or screens, several save slots, backup copies.
 - **Separate audio volumes**: master, music, effects (and voices if possible).
 - **Remastered 3D models**: format documented, glTF export and import, replacement models loaded by the runtime.
-- **Optional HD pack**: distributed separately (never in this repository), installed and verified by the installer.
-
-## Stage 5 — Modding platform ⬜
-
-| # | Milestone |
-|---|---|
-| M1 | Mod loader and mod manifests |
-| M2 | Extractor: every game file to open formats |
-| M3 | Replace any game file (textures, models, sounds, music, fonts, UI) |
-| M4 | Text and translations, including new languages |
-| M5 | Levels and event scripts |
-| M6 | C++ plugins with a stable, versioned C API |
-| M7 | Lua scripts in a sandbox |
-| M8 | Documentation and example mods for modders |
+- **Optional HD pack**: distributed separately (never in this repository), installed and verified by the installer; it is a mod of
+  the modding platform.
 
 ## Known differences with Dolphin
 
