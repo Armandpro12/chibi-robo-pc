@@ -73,6 +73,15 @@ inline constexpr std::uint64_t quiet_bit = 0x0008000000000000ull;
 inline constexpr std::uint64_t default_nan = 0x7FF8000000000000ull;
 inline constexpr std::uint64_t smallest_normal_single = 0x3810000000000000ull; // 2^-126 as a double
 
+#if defined(GC_DECOMP_ORACLE) && !defined(GC_FLOAT_COUNT_DIVERGENCES)
+#define GC_FLOAT_COUNT_DIVERGENCES 1
+#endif
+#if defined(GC_FLOAT_COUNT_DIVERGENCES)
+// Oracle executable (and tests that define GC_FLOAT_COUNT_DIVERGENCES) only: fmadds results under NI = 1 that Dolphin's
+// interpreter and DolRecomp's ppc_fma give differently (see fmadds). The oracle reads it around each decompiled run.
+inline std::uint64_t fmadds_dolphin_divergences = 0;
+#endif
+
 inline std::uint64_t bits_of(f64 x) noexcept {
     return std::bit_cast<std::uint64_t>(x);
 }
@@ -146,7 +155,11 @@ inline f32 fmuls(mode m, f64 a, f64 c) noexcept {
 }
 
 // fmadds frD, frA, frC, frB: a * c + b. The mode does not change the result (DolRecomp's ppc_fma has no NI flush; see
-// the header); it is taken so that every call says the mode it runs in.
+// the header); it is taken so that every call says the mode it runs in. Where the two references part (counted when
+// GC_FLOAT_COUNT_DIVERGENCES is defined): under NI = 1, Dolphin's fmaddsx passes the double result through
+// ForceSingle, which makes a value below 2^-126 in magnitude a zero of its sign; DolRecomp rounds it to single as
+// usual. They differ when that rounding does not give zero (Dolphin e6f3ae17 Interpreter_FloatingPoint.cpp fmaddsx and
+// Interpreter_FPUtils.h ForceSingle; DolRecomp c876e2b9 cpu.c ppc_fma).
 inline f32 fmadds([[maybe_unused]] mode m, f64 a, f64 c, f64 b) noexcept {
     const f64 c25 = round_multiplier_25(c);
     f64 r = std::fma(a, c25, b);
@@ -164,6 +177,10 @@ inline f32 fmadds([[maybe_unused]] mode m, f64 a, f64 c, f64 b) noexcept {
         }
     }
     const f64 single = static_cast<f64>(static_cast<f32>(r));
+#if defined(GC_FLOAT_COUNT_DIVERGENCES)
+    if (m == mode::non_ieee && (rb & ~detail::sign_bit) < detail::smallest_normal_single && single != 0.0)
+        detail::fmadds_dolphin_divergences++;
+#endif
     if (!std::isnan(single))
         return static_cast<f32>(single);
     if (std::isnan(a))

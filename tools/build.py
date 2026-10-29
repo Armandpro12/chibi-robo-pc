@@ -503,8 +503,11 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     if not game_cfg.get("decomp"):
         return ""
     blocks: dict[int, tuple[list[int], list[int]]] = {}
+    # Floating-point instructions of each original (scan of its code): flag of the registration, the gateway declines
+    # while MSR[FP] = 0 so that the original takes the "FPU unavailable" exception itself (gc_abi.h).
+    fpu: dict[int, list[int]] = {}
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
-                                       blocks)
+                                       blocks, fpu)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):
@@ -515,8 +518,9 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
-                                                                             sources_hash=sources_hash))
-    print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name})")
+                                                                             sources_hash=sources_hash, fpu=fpu))
+    print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
+          f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     return path.as_posix()
 
 

@@ -125,10 +125,9 @@ and assets are read from the player's files.
 | D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
 | D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
 
-Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below). Two
-more, `hsd_hermite_interpolate` and `hsd_mtx_get_translation`, are decompiled but disabled: they start with a
-floating-point instruction, and the gateway does not yet handle a call made while the floating-point unit is off (see
-"Follow-ups from D1" below).
+Progress: 14 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below),
+including two that use the floating-point unit (`hsd_hermite_interpolate` and `hsd_mtx_get_translation`, enabled again
+once the gateway handled a call made while the unit is off; see "Follow-ups from D1" below).
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
@@ -164,7 +163,7 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
   defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
-- **Results**: over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
+- **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
   the decompiled version reached the write journal and that the `lwarx` reservation ends in the same state; with the
@@ -173,9 +172,17 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   variant of each function is reported on every compared call in both versions (except a variant of the Hermite
   interpolation written with plain host float arithmetic, which differs on 12 % (US) and 14 % (PAL) of its calls:
   the share of calls where the console's single-precision rounding and fused multiply-add change the result).
+- **Floating-point unit off** (start of D2): the game's OS gives the floating-point unit to a thread lazily (its first
+  floating-point instruction raises "FPU unavailable", and the OS then loads that thread's floating-point registers).
+  The build scans each original for floating-point instructions (the same set of instructions the recompiled code
+  guards; checked against every guard of the generated code of both versions, about 97,000 in US and 98,000 in PAL) and flags it
+  in the generated table; while the unit is off, the gateway lets such an original run, exception included, and the
+  next call reaches the decompiled version again. The oracle counts these calls apart: 13 (US) and 7 (PAL) over the
+  reference scenarios, against 3.8 million (US) and 4.0 million (PAL) compared calls of the same two functions. Checked by local tests, including
+  a gateway without this decline, which they reject.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 12 verified (0.31 %; 468 bytes, 0.02 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 14 verified (0.37 %; 592 bytes, 0.03 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
@@ -210,14 +217,9 @@ floating-point instruction, and the gateway does not yet handle a call made whil
 
 D1 is validated; these items are carried over to the start of D2.
 
-1. **Floating-point unit off.** The game's OS turns the floating-point unit off when it switches threads and restores
-   a thread's floating-point registers on that thread's first floating-point instruction. The recompiled original
-   does this; the gateway does not, so a decompiled function that uses floating-point registers could read another
-   thread's values (deduced from the mechanism, not measured). Planned: for a function whose original contains a
-   floating-point instruction, the gateway lets the original run when the unit is off, and the oracle counts those
-   calls apart. Then `hsd_hermite_interpolate` and `hsd_mtx_get_translation` are enabled again and rechecked by the
-   oracle. `hsd_pobj_set_shape_blend`, verified, also moves a float with floating-point loads and stores; the
-   scenarios never called it with the unit off, and it is part of the same fix.
+1. **Floating-point unit off**: done (see "Floating-point unit off" above). Still open: a plain C++ call from one
+   decompiled function to another does not go through the gateway, so once callers are decompiled the unit must be
+   claimed the way the OS does it, before the first floating-point operation.
 2. Measure what the replacement and write hooks cost per call, before the batches multiply them.
 
 ## Stage 3 — Multiplayer ⬜
