@@ -1,0 +1,17 @@
+# Synthetic cases of the decompilation oracle for hsd_lobj_set_color (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Light at S: colour at +0x10. Colour copy at S+40.
+
+case hsd_lobj_set_color colour
+r3 = S
+r4 = S+40
+mem S+10 4 11223344
+mem S+40 4 FF8000C0
+end
+
+case hsd_lobj_set_color black
+r3 = S
+r4 = S+40
+mem S+10 4 FFFFFFFF
+mem S+40 4 0
+end

@@ -1,0 +1,33 @@
+# Synthetic cases of the decompilation oracle for ps_read_count (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Command stream at S, count (16 bits) written at S+40.
+
+case ps_read_count one_byte
+r3 = S
+r4 = S+40
+mem S 2 7F12
+end
+
+case ps_read_count two_bytes
+r3 = S
+r4 = S+40
+mem S 2 81FF
+end
+
+case ps_read_count two_bytes_max
+r3 = S
+r4 = S+40
+mem S 2 FFFF
+end
+
+case ps_read_count zero
+r3 = S+1
+r4 = S+40
+mem S 2 0080
+end
+
+case ps_read_count count_overlaps_stream
+r3 = S
+r4 = S+1
+mem S 4 80C05A00
+end

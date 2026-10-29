@@ -1,0 +1,25 @@
+# Synthetic cases of the decompilation oracle for hsd_jobj_get_dobj (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Joint at S: flags at +0x14, union at +0x18.
+
+case hsd_jobj_get_dobj no_joint
+r3 = 0
+end
+
+case hsd_jobj_get_dobj display
+r3 = S
+mem S+14 4 FFFFBFDF
+mem S+18 4 S+40
+end
+
+case hsd_jobj_get_dobj particles
+r3 = S
+mem S+14 4 00000020
+mem S+18 4 S+40
+end
+
+case hsd_jobj_get_dobj spline
+r3 = S
+mem S+14 4 00004000
+mem S+18 4 S+40
+end

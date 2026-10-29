@@ -78,6 +78,14 @@ Result, checked automatically for both versions:
   timers in time base ticks, and interrupts due at the same moment are delivered in the order of the SDK priority
   table, like the console. Images, audio and saves of the five bench scenarios stayed the same, byte for byte, in
   both versions.
+- what is left of the cycle clock: guest time still advances with the executed cycles in normal play (default
+  pacing `GCRT_PACING=throttle`, paced on real time) as on the bench (`--clock cycles`). It is not hardware (no
+  register, interrupt or dated event); it goes away with the virtual CPU at D3. Since stage 2 the decompiled functions
+  add their original's guest cost to that counter, which extends this coupling until D3 (see "Guest time of decompiled
+  functions" below). To remove at D3 with the cycle clock: the `guest_cost_256ths` field of a registration,
+  `games/chibi-robo/decomp/guest_cost.tsv`, `charge_guest_cost` and the guest cost state of the gateway, the `cost`
+  command of `tools/decomp_oracle.py` and the build check that refuses an enabled function without a cost, and the
+  save/restore of `downcount` around nested guest calls if nothing else needs it.
 
 Performance in the heaviest scene measured so far (the birthday party), as frame time:
 
@@ -120,15 +128,18 @@ and assets are read from the player's files.
 | # | Milestone | State | Notes |
 |---|---|---|---|
 | D1 | Tooling | ✅ | Validated 2026-10-28. Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking; 12 leaf functions replace their recompiled versions and are verified in US and PAL. Follow-ups below. |
-| D2 | Batches | ⬜ | Not started. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. |
-| D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
+| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions): 23 without game globals and 3 that write one (per-version globals table); floating-point unit off handled by the gateway; oracle for functions that call others. 40 functions verified in all (1.06 % of 3,772), on both US and PAL. |
+| D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock (until then, normal play runs on a guest cycle clock paced on real time, see "Guest time of decompiled functions" below). **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
 | D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
 | D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
 
-Progress: 12 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below). Two
-more, `hsd_hermite_interpolate` and `hsd_mtx_get_translation`, are decompiled but disabled: they start with a
-floating-point instruction, and the gateway does not yet handle a call made while the floating-point unit is off (see
-"Follow-ups from D1" below).
+Progress: 40 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below), 1,532
+bytes of code (1.06 % of the 3,772 functions). Among them: 23 leaf functions of the sysdolphin (HSD) library (flags and
+fields of materials, polygons, cameras, lights, joints and world objects, reference-object lookup, TEV expression nodes
+and particle helpers, with shared structure headers); three HSD functions that write game globals through the
+per-version globals table (below); and two that use the floating-point unit (`hsd_hermite_interpolate` and
+`hsd_mtx_get_translation`, enabled again once the gateway handled a call made while the unit is off; see "Follow-ups
+from D1" below).
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
@@ -164,7 +175,7 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
   defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
-- **Results**: over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
+- **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
   the decompiled version reached the write journal and that the `lwarx` reservation ends in the same state; with the
@@ -173,9 +184,77 @@ floating-point instruction, and the gateway does not yet handle a call made whil
   variant of each function is reported on every compared call in both versions (except a variant of the Hermite
   interpolation written with plain host float arithmetic, which differs on 12 % (US) and 14 % (PAL) of its calls:
   the share of calls where the console's single-precision rounding and fused multiply-add change the result).
+- **Floating-point unit off** (start of D2): the game's OS gives the floating-point unit to a thread lazily (its first
+  floating-point instruction raises "FPU unavailable", and the OS then loads that thread's floating-point registers).
+  The build scans each original for floating-point instructions (the same set of instructions the recompiled code
+  guards; checked against every guard of the generated code of both versions, about 97,000 in US and 98,000 in PAL) and flags it
+  in the generated table; while the unit is off, the gateway lets such an original run, exception included, and the
+  next call reaches the decompiled version again. The oracle counts these calls apart: 3 (US) and 9 (PAL) over the
+  reference scenarios of the integrated run, against 6.6 million (US) and 6.2 million (PAL) compared calls of the
+  same two functions. Checked by local tests, including
+  a gateway without this decline, which they reject.
+- **Functions that call others** (start of D2, oracle builds only): every call instruction of the original is hooked;
+  while the original runs under comparison, each call it makes is recorded (target, arguments, memory written so far)
+  and its callee runs once, as its original; the decompiled version's calls are not run but compared with the recorded
+  ones and replayed (callee stores and result registers). Register save/restore helpers run inline. Checked on three
+  real functions of the game used as tests only (not counted as progress), in US and PAL over two reference scenarios
+  and a progression scenario: a caller and its callee (2,238 and 2,232 comparisons per version, no difference) and a
+  function that calls itself and two others in a fixed order (9,100 in US, 9,210 in PAL, every block, up to 10 calls per
+  comparison, no difference). These figures come from the final run on the integrated D2 work, with the
+  return-address rule below; a run made before that rule had given the same counts. Deliberately wrong callers are reported on every compared call in both versions (missing
+  store, wrong argument, extra call, missing call, store before the call, wrong target), and calls in the wrong order on
+  every call where the order matters. The return-address save word of the caller's frame is left out of the comparison
+  only for a function that has call sites, and only when the original stored there the return address it was entered
+  with; any other store there is a difference (a deliberately wrong caller that stores another value there, and a
+  leaf that stores there, are both reported on every compared call in US and PAL).
+- **Known defect of the oracle executable** (production executables are not concerned: they never run a function
+  this way): a callee that waits for another thread or an interrupt never returns from the nested run the oracle
+  makes of it (budget of 200 million blocks), and the game stops there instead of the function being set aside as
+  not comparable. The same holds for the original of the compared function itself, which also runs nested. A thread
+  switch the oracle refuses is only seen once that nested run has returned, so the call in which it happened already
+  ran in altered conditions. Seen in US on a test function (left out of the builds); its PAL counterpart was not run.
+- **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
+  (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
+  yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show
+  as an argument difference, which no test exercises yet; a function whose first instruction is a call or a branch
+  (a thunk) makes the oracle build fail with a hook conflict. Never exercised on the game's code under comparison:
+  conditional calls (`bcl`), tail calls, indirect calls (`bctrl`), the refusal of a thread switch, and a tail branch
+  to a register restore helper (none of the last kind in the US or PAL main executable). How the oracle reads these
+  instructions is checked by local tests on hand-written instruction words, not in the game. A `bcctr` without link
+  is always taken as a tail branch to another function: the jump table of a `switch` would be recorded as a call,
+  which shows as a noisy "missing call" difference, never as a false pass; to be handled before a function with a
+  `switch` is enabled. The blocks that only lead to a failed assertion are not yet covered by synthetic cases.
+- **Game globals by version** (start of D2): decompiled code names a global by an identifier; its address in each
+  version comes from `games/chibi-robo/symbols/globals.tsv`, which the build checks in both DOLs (right section, same
+  contents where initialized, and the original code of each listed user references it at the same instruction
+  offsets) before writing the identifiers and the version's address table; a wrong PAL address refuses the PAL build.
+  First use: three HSD functions that write globals, verified by the oracle in US and PAL (8.5 to 27.6 million
+  comparisons each in the integrated run, no difference).
+- **Guest time of decompiled functions** (D2): the game runs on a clock where guest time is the cycles the
+  recompiled code is charged for: the bench runs it free (deterministic), and normal play runs the same clock paced
+  on real time (default pacing, `GCRT_PACING=throttle`; only `GCRT_PACING=host` keeps the real-time clock). A
+  decompiled function cost nothing on that clock, so the integrated work ran slightly faster in guest time; in PAL
+  the end of a load then came one frame earlier, and four of the five
+  reference scenarios differed from the references by that one frame (same images one frame apart, audio shifted),
+  although every function gave the original's results. Shown by an oracle executable that keeps the originals'
+  results but leaves their cycles uncharged (test switch): same difference, to the figure. The oracle now measures
+  the EXCLUSIVE cycles of each original over its game calls (its own cycles, without those of the calls it makes,
+  which are charged where they run); `tools/decomp_oracle.py cost` writes their mean per version into
+  `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call, in 1/256 cycle with the
+  remainder carried from call to call (no per-call rounding loss; a mean cost, quantized to 1/256 cycle, is off by at
+  most 1/512 cycle per call), and only on that cycle clock. The cost is exact for 34 of
+  the 40 functions, whose original always costs the same, and a mean for the other 6. A production build refuses an
+  enabled function without a measured cost. With it, the production executables of the integrated work match the
+  references exactly in all five scenarios, in US and PAL. Normal play uses that cycle clock by default, so the
+  guest cost is charged there too (checked by one default-mode launch per version); it has no effect only with
+  `GCRT_PACING=host`.
+  Any uncharged guest time is a risk on this bench: on the PAL scenario that shifted, the functions already
+  decompiled before ran about 12 million cycles uncharged without a visible shift, while the integrated work ran
+  about 65.3 million (65,290,576 for the 40 functions; two new batches: 19.5 and 34 million) and shifted a load by
+  a frame; which amount tips a scenario is not known, so there is no safe threshold. The coupling goes away with the cycle clock at D3.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 12 verified (0.31 %; 468 bytes, 0.02 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
@@ -210,14 +289,9 @@ floating-point instruction, and the gateway does not yet handle a call made whil
 
 D1 is validated; these items are carried over to the start of D2.
 
-1. **Floating-point unit off.** The game's OS turns the floating-point unit off when it switches threads and restores
-   a thread's floating-point registers on that thread's first floating-point instruction. The recompiled original
-   does this; the gateway does not, so a decompiled function that uses floating-point registers could read another
-   thread's values (deduced from the mechanism, not measured). Planned: for a function whose original contains a
-   floating-point instruction, the gateway lets the original run when the unit is off, and the oracle counts those
-   calls apart. Then `hsd_hermite_interpolate` and `hsd_mtx_get_translation` are enabled again and rechecked by the
-   oracle. `hsd_pobj_set_shape_blend`, verified, also moves a float with floating-point loads and stores; the
-   scenarios never called it with the unit off, and it is part of the same fix.
+1. **Floating-point unit off**: done (see "Floating-point unit off" above). Still open: a plain C++ call from one
+   decompiled function to another does not go through the gateway, so once callers are decompiled the unit must be
+   claimed the way the OS does it, before the first floating-point operation.
 2. Measure what the replacement and write hooks cost per call, before the batches multiply them.
 
 ## Stage 3 — Multiplayer ⬜

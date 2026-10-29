@@ -73,6 +73,9 @@ dir = "decomp"
 # tools/decomp_functions.py and tools/build.py (HLE hook and registration of each enabled function at its address
 # in the version being built).
 functions = "decomp/functions.tsv"
+# Guest cost table (relative to games/<game>/): guest cycles charged to the cycle clock per call of each decompiled
+# function, per version (written by tools/decomp_oracle.py cost from an oracle run, read by tools/build.py).
+guest_cost = "decomp/guest_cost.tsv"
 # Reference scenarios (games/<game>/scenarios/) that tools/decomp_oracle.py run replays on the oracle executable when
 # no --scenarios is given: every scenario of the A/B bench, so that the promotion sees every state they reach.
 oracle_scenarios = ["title-boot", "new-game", "load-game", "overwrite-save", "intro-no-card"]
@@ -96,6 +99,22 @@ excluded = ["init", "library"]
 # disassembly of two modules registers and walks the chain of global destructors, and the copies of the other
 # modules have the same code (relocations masked) in GGTE01 and GGTP01.
 rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
+# Table of the game globals read or written by decompiled code (relative to games/<game>/): one identifier per global,
+# its address in each version (address columns of [decomp.columns]), checked in both DOLs by tools/decomp_globals.py
+# (run by tools/build.py, which writes the identifier header and the address array of the version being built).
+globals = "symbols/globals.tsv"
+# BSS range of the DOL minus the data sections inside it, in address order (tools/decomp_globals.py).
+dol_bss_sections = [".bss", ".sbss", ".sbss2"]
+
+# Functions that never return (a failed assertion, a panic), by version: a basic block that only leads to one of them
+# is an "assertion block" (tools/decomp_functions.py assertion_blocks), listed apart in the oracle report; no scenario
+# reaches it without stopping the game, so synthetic cases, whose calls the oracle simulates, cover it. Verified: rows
+# of symbols/GGTE01-to-GGTP01.tsv (`unique`/`supplement`, identical code); __assert and HSD_Panic are named after
+# their behavior (__assert calls HSD_Panic, which calls OSPanic), names [hypothesis].
+[decomp.no_return]
+__assert = { GGTE01 = "801DD248", GGTP01 = "801DFB44" }
+HSD_Panic = { GGTE01 = "801DD2A4", GGTP01 = "801DFBA0" }
+OSPanic = { GGTE01 = "80163F80", GGTP01 = "80166830" }
 
 # Column of the table holding each version's address (other accepted spellings: see the header of
 # tools/decomp_progress.py). One [decomp] section only, and the columns always as this sub-table, never as an
@@ -103,6 +122,22 @@ rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
 [decomp.columns]
 GGTE01 = "us_addr"
 GGTP01 = "pal_addr"
+
+# Names of the DOL sections, for the globals table (tools/decomp_globals.py): the section names of the dtk splits of
+# the reference version (cbr_decomp, decomp_dtk_main/config/GGTE01/splits.txt, CC0), in the DOL slot order; the same
+# slots in both versions. Checked by tools/decomp_globals.py in each version: r13 - 0x8000 is the start of .sdata and
+# r2 - 0x8000 that of .sdata2 (values set by the boot code).
+[decomp.dol_sections]
+text0 = ".init"
+data0 = "extab"
+data1 = "extabindex"
+text1 = ".text"
+data2 = ".ctors"
+data3 = ".dtors"
+data4 = ".rodata"
+data5 = ".data"
+data6 = ".sdata"
+data7 = ".sdata2"
 
 # Optional column of the table, per version: "yes" once the decompilation oracle has passed on that version. An
 # address that symbols/<ID>-gaps.tsv places at the level position or sized is enabled (tools/decomp_functions.py)

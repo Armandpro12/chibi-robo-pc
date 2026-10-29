@@ -312,8 +312,13 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
     if game_cfg.get("decomp"):
         import decomp_functions  # noqa: E402
         clash = []
+        # Basic blocks and call instructions are only scanned for an oracle build (its hooks, below): a production
+        # build neither computes nor uses them.
+        oracle_build = bool(game_cfg.get("_oracle_build"))
         blocks: dict[int, tuple[list[int], list[int]]] = {}
-        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout, blocks):
+        calls: dict[int, list[int]] = {}
+        for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout,
+                                             blocks if oracle_build else None, calls=calls if oracle_build else None):
             if a in hooks:
                 clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
@@ -321,7 +326,7 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         # (reachable or not), so that the oracle sees which blocks of the recompiled original ran (block coverage,
         # runtime/core/decomp/gc_oracle.cpp). Inside a function, branches are compiled as goto: without these hooks
         # the chassis only sees the entry. The hook declines (the original goes on); production builds have none.
-        if game_cfg.get("_oracle_build"):
+        if oracle_build:
             for entry, (reach, dead) in blocks.items():
                 for b in reach + dead:
                     if b == entry:
@@ -329,6 +334,15 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
                     if b in hooks:
                         clash.append(f"block {b:08X} of the function at {entry:08X}: already hooked as {hooks[b]}")
                     hooks[b] = "oracle-block"
+            # And a hook at every instruction that calls another function or leaves for one (call_sites): the oracle
+            # records the call, runs the callee once and replays it to the decompiled version (non-leaf functions).
+            # A call instruction may also start a block: one hook serves both.
+            for entry, sites in calls.items():
+                for c in sites:
+                    if hooks.get(c, "oracle-block") not in ("oracle-block", "oracle-call"):
+                        clash.append(f"call at {c:08X} of the function at {entry:08X}: already hooked as {hooks[c]}")
+                    elif c not in hooks:
+                        hooks[c] = "oracle-call"
         if clash:
             raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
                              f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
@@ -494,17 +508,54 @@ def negative_records(folder: Path | None) -> dict[str, str]:
     return out
 
 
-def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, oracle: dict | None = None) -> str:
+def guest_costs_for_build(version: str, names: list[str], all_costs: dict[str, dict[str, int]], oracle: bool,
+                          allow_no_guest_cost: bool) -> dict[str, int]:
+    """{name: guest cost in 1/256 cycle} of the registered functions `names` in `version`, from the guest cost table
+    (decomp_functions.read_guest_costs). A production function without a cost would run in no guest time: on the
+    bench's cycle clock, timed events would come earlier than with the recompiled game (a frame shift that is not a
+    change of behaviour). Refused (SystemExit), unless `allow_no_guest_cost` (--allow-no-guest-cost, explicit). Oracle
+    builds run the originals, which are charged their real cycles: no check. Table rows of functions not registered in
+    a production build: warning (stale table)."""
+    costs = {name: row[version] for name, row in all_costs.items() if version in row}
+    if oracle:
+        return costs
+    no_cost = [n for n in names if n not in costs]
+    if no_cost:
+        message = (f"no guest cost for {version} ({', '.join(no_cost)}): these functions would cost no guest time, so "
+                   f"the deterministic cycle clock would run differently from the recompiled game (measure it: "
+                   f"tools/decomp_oracle.py run, then cost)")
+        if not allow_no_guest_cost:
+            raise SystemExit(f"== ERROR: {message}; --allow-no-guest-cost builds anyway")
+        print(f"== WARNING (--allow-no-guest-cost): {message}")
+    unused = sorted(n for n in costs if n not in set(names))
+    if unused:
+        print(f"== WARNING: guest cost table rows without an enabled function in {version}: {', '.join(unused)} "
+              f"(ignored; regenerate the table with tools/decomp_oracle.py cost)")
+    return costs
+
+
+def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, oracle: dict | None = None,
+                    allow_no_guest_cost: bool = False) -> str:
     """Registration table of the decompiled functions for `version` (tools/decomp_functions.py), written into the
     build folder only if it changed (no recompilation otherwise); "" if the game has no [decomp] table. `oracle`:
-    options of an oracle build (main: --oracle, --oracle-negative, --decomp-enable)."""
+    options of an oracle build (main: --oracle, --oracle-negative, --decomp-enable). A production build refuses an
+    enabled function without a guest cost in decomp/guest_cost.tsv, unless `allow_no_guest_cost`
+    (--allow-no-guest-cost)."""
     import decomp_functions  # noqa: E402
     game_cfg = oracle_options(tc.load_game(game), oracle)
     if not game_cfg.get("decomp"):
         return ""
     blocks: dict[int, tuple[list[int], list[int]]] = {}
+    # Floating-point instructions of each original (scan of its code): flag of the registration, the gateway declines
+    # while MSR[FP] = 0 so that the original takes the "FPU unavailable" exception itself (gc_abi.h).
+    fpu: dict[int, list[int]] = {}
+    # Oracle builds: call instructions and assertion blocks of each function (the oracle's non-leaf comparison).
+    calls: dict[int, list[int]] = {}
+    asserts: dict[int, list[int]] = {}
+    # Basic blocks too are for the oracle only (its table); a production table holds addresses and flags only.
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
-                                       blocks)
+                                       blocks if oracle else None, fpu, calls if oracle else None,
+                                       asserts if oracle else None)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):
@@ -513,11 +564,48 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
             raise SystemExit(f"--oracle-negative: no wrong variant (GC_DECOMP_EXPORT(<name>__wrong, ...)) for "
                              f"{', '.join(missing)} in {oracle['negative']}")
     sources_hash = decomp_functions.oracle_sources_hash(game_cfg, oracle.get("negative")) if oracle else ""
+    globals_lines = decomp_globals_table(game, game_cfg, version, disc_root, path.parent, entries, oracle)
+    # Guest cost of each function in this version (decomp/guest_cost.tsv, tools/decomp_oracle.py cost): the cycles the
+    # gateway charges to the cycle clock per call, as the original would have been (gc_abi.h registration::guest_cost).
+    costs = guest_costs_for_build(version, [f.name for _, f in entries], decomp_functions.read_guest_costs(game_cfg),
+                                  bool(oracle), allow_no_guest_cost)
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
-                                                                             sources_hash=sources_hash))
-    print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name})")
+                                                                             sources_hash=sources_hash, fpu=fpu,
+                                                                             calls=calls, asserts=asserts,
+                                                                             globals=globals_lines, costs=costs))
+    print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
+          f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     return path.as_posix()
+
+
+def decomp_globals_table(game: str, game_cfg: dict, version: str, disc_root: Path, out_dir: Path, entries: list,
+                         oracle: dict | None) -> list[str] | None:
+    """Globals table of the game ([decomp] globals, tools/decomp_globals.py): checks it for `version` (the build is
+    refused otherwise), writes the identifier header decomp_globals.h into `out_dir` (next to the registration
+    table, an include folder of the decompiled sources: runtime/core/cmake/GcrtDecomp.cmake) and returns the lines of
+    the version's address array for the registration table. Without a table: an empty header, None."""
+    import decomp_globals  # noqa: E402
+    rows = decomp_globals.read_table(game_cfg)
+    header = out_dir / "decomp_globals.h"
+    import decomp_functions  # noqa: E402
+    if decomp_globals.table_path(game_cfg) is None:
+        decomp_functions.write_if_changed(header, decomp_globals.header_source([]))
+        return None
+    # The sources this build compiles (decomp_excluded_sources), headers included: an identifier they name must
+    # have an address in this version.
+    src_dir = game_cfg["_dir"] / "decomp" / "src"
+    excluded = set(decomp_excluded_sources(game, oracle))
+    sources = [p for p in sorted(src_dir.rglob("*")) if p.suffix in (".cpp", ".h") and p.resolve() not in excluded]
+    if oracle:
+        for folder in (game_cfg["_dir"] / "decomp" / "oracle_tests", oracle.get("negative")):
+            if folder and Path(folder).is_dir():
+                sources += [p for p in sorted(Path(folder).rglob("*")) if p.suffix in (".cpp", ".h")]
+    res = decomp_globals.check_build(game_cfg, version, disc_root, [f for _, f in entries], sources)
+    decomp_functions.write_if_changed(header, decomp_globals.header_source(rows))
+    print(f"== Game globals: {len(res.addresses)} placed for {version}, {len(res.absent)} absent "
+          f"({decomp_globals.table_path(game_cfg).name}, checked in the DOL)")
+    return decomp_globals.table_source(version, rows, res)
 
 
 DECOMP_EXPORT = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+)\s*,")
@@ -544,7 +632,7 @@ def decomp_excluded_sources(game: str, oracle: dict | None = None) -> list[Path]
 def configure_and_build(game: str, version: str, config: str, disc_root: Path, recomp_dir: Path,
                         state: dict, jobs: int | None, tag: str | None = None,
                         pgo: tuple[str, Path | None] = ("OFF", None), compiler: Path | None = None,
-                        oracle: dict | None = None) -> Path:
+                        oracle: dict | None = None, allow_no_guest_cost: bool = False) -> Path:
     """compiler: explicit clang-cl (production of a PGO profile with another toolchain, tools/pgo.py --clang);
     default: the development one. lld-link, llvm-lib and llvm-rc are taken next to it."""
     cmake = tc.find_cmake()
@@ -588,10 +676,15 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         exe = llvm_bin / f"{tool}{tc.EXE}"
         if exe.exists():
             defs[var] = exe.as_posix()
-    defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir, oracle)
+    defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir, oracle,
+                                                   allow_no_guest_cost)
     # Decompilation oracle (--oracle): always set, so that a build folder goes back to a normal build without it.
     defs["GCRT_DECOMP_ORACLE"] = "ON" if oracle else "OFF"
     defs["GCRT_DECOMP_NEGATIVE_DIR"] = oracle["negative"].as_posix() if oracle and oracle.get("negative") else ""
+    # Oracle test functions (games/<game>/decomp/oracle_tests: rows of the table left disabled, enabled by
+    # --decomp-enable): compiled into oracle builds only, never into a production build.
+    tests = tc.load_game(game)["_dir"] / "decomp" / "oracle_tests"
+    defs["GCRT_DECOMP_TEST_DIR"] = tests.as_posix() if oracle and tests.is_dir() else ""
     # Always set (empty list included): sources of rows not enabled in this build are not compiled.
     excluded = decomp_excluded_sources(game, oracle)
     defs["GCRT_DECOMP_EXCLUDE"] = ";".join(x.as_posix() for x in excluded)
@@ -716,6 +809,10 @@ def main() -> int:
     parser.add_argument("--oracle-negative", metavar="DIR",
                         help="negative test of the oracle (implies --oracle): every enabled function is replaced by its "
                              "deliberately wrong variant GC_DECOMP_EXPORT(<name>__wrong, ...) from the .cpp files of DIR")
+    parser.add_argument("--allow-no-guest-cost", action="store_true",
+                        help="build a production executable even if an enabled decompiled function has no guest cost "
+                             "in decomp/guest_cost.tsv (it then costs no guest time on the bench's cycle clock; "
+                             "refused otherwise)")
     parser.add_argument("--decomp-enable", metavar="NAME,...",
                         help="oracle builds only: also build these disabled rows of the decompiled-functions table "
                              "(test functions; the hook list changes, so DolRecomp runs again)")
@@ -756,7 +853,8 @@ def main() -> int:
     build_dir = tc.build_dir(args.game, version, args.config, args.tag)
     profile = pgo_profile_for_build(args.game, version, args.config, state, mode, args.pgo_dir, build_dir)
     exe = configure_and_build(args.game, version, args.config, disc_root, recomp_dir, state, args.jobs, args.tag,
-                              pgo=("USE", profile) if profile else ("OFF", None), oracle=oracle)
+                              pgo=("USE", profile) if profile else ("OFF", None), oracle=oracle,
+                              allow_no_guest_cost=args.allow_no_guest_cost)
     if profile:
         import pgo as pgo_tools
         stale = pgo_tools.count_out_of_date(build_dir / "build.log")

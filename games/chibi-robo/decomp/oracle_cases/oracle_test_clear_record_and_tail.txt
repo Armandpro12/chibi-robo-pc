@@ -1,0 +1,13 @@
+# Synthetic cases of the decompilation oracle for oracle_test_clear_record_and_tail (format:
+# runtime/core/decomp/gc_oracle.cpp, "Synthetic cases"). Hand-written starting states with invented values (no game
+# data). Record at S. In a synthetic case the callee is simulated, never run (`call` line: its results), so only the
+# caller's own store (the word at +0x80) is written; the decompiled version must make the same call, with the same
+# argument, before that store.
+
+case oracle_test_clear_record_and_tail simulated_call
+area 0x100
+r3 = S
+mem S+0 4 11111111
+mem S+80 4 22222222
+call r3 = 12345678
+end

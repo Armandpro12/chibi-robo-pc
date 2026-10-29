@@ -9,9 +9,12 @@
 //     from the guest registers following the PowerPC EABI, calls F, writes the result and returns to LR;
 //   * decompiled -> recompiled: gc::abi::call_guest<R>(address, args...) sets the argument registers and runs the
 //     guest function in a nested run of the chassis until it returns (runtime/core/hle: gcrt_guest_call_prepared);
-//   * decompiled -> decompiled: a plain C++ call. When the target is only known at run time (function pointer or
-//     virtual function read from guest memory), gc::abi::call_address<R>(address, args...) calls the decompiled C++
-//     function directly if the registry has one at that address with the same C++ type, otherwise call_guest.
+//   * decompiled -> decompiled: gc::abi::call<&Fn>(args...), a plain C++ call of Fn (in an oracle build, while the
+//     caller is being compared, the call goes through the oracle instead: recorded calls replayed, gc_oracle.cpp).
+//     When the target is only known at run time (function pointer or virtual function read from guest memory),
+//     gc::abi::call_address<R>(address, args...) calls the decompiled C++ function directly if the registry has one
+//     at that address with the same C++ type, otherwise call_guest. Decompiled code never calls another decompiled
+//     function by a bare C++ call: the oracle would not see that call.
 //
 // PowerPC EABI followed here (SVR4 PowerPC supplement and the EABI; cross-checked on game code, notes/decomp.md D1.1):
 //   * integer, enumeration and pointer arguments: r3..r10, in order; 64-bit integers: an odd/even pair (r3:r4,
@@ -22,6 +25,23 @@
 //     written to the memory a hidden pointer in r3 designates, and the arguments then start at r4;
 //   * arguments that would go on the stack (more than 8 integer or 8 floating-point registers) are refused at
 //     compile time, as are bool (its guest representation is not checked: use u8) and the gc::be<T> wrapper (pass T).
+//
+// Guest time (cycle clock). With the cycle clock (GCRT_CLOCK_CYCLES, ticks = guest cycles / 12), guest time is the
+// cycles the recompiled code is charged for; a decompiled function costs none, so timed events (end of a load, audio)
+// would come earlier than with its original. The cycle clock is not only the bench's: it is the DEFAULT clock of normal
+// play too. The platform layer's default pacing (GCRT_PACING=throttle, platform.cpp) switches the CPU to the cycle clock
+// and paces it on real time; the A/B bench runs the same clock without pacing (--clock cycles). Only another pacing
+// (GCRT_PACING=host), without --clock cycles, keeps the real-time clock. The gateway therefore charges each call of a
+// decompiled function the EXCLUSIVE guest cost of its original (its own cycles, without those of the functions it
+// calls), measured by the oracle (registration::guest_cost_256ths, 1/256 cycle per call, with the remainder carried
+// from call to call: no per-call rounding loss; a mean cost quantized to 1/256 cycle still leaves a linear bias of at
+// most 1/512 cycle per call, none for a whole number of cycles). The callees are charged where they run: a recompiled
+// one by the chassis, a decompiled one by its own entry (through call_guest) or by gc::abi::call / call_address (plain
+// C++ calls). With the real-time clock nothing is charged: the cycle counter is not time there. GCRT_DECOMP_GUEST_COST=0
+// (read in every build, production and oracle) charges nothing: its only effect is on the cycle counter, for the
+// diagnostic of a timing difference. GCRT_DECOMP_CROSSCHECK (diagnostic, off by default) counts the cross-checked calls
+// twice: the chassis charges the recompiled original that crosscheck runs, on top of charge_guest_cost. To be removed
+// with the cycle clock coupling at D3.
 //
 // Rules (stage document, notes/decomp.md D1.1): decompiled code never names an address; the gateway is only built in
 // guest-memory mode and leaves the executable with the recompiled code (stage D3). No function with C linkage returns
@@ -65,6 +85,15 @@ enum : u32 {
 
 using entry_fn = bool (*)(GcrtCpu* g, u32 address);
 
+// Guest cost of one decompiled function (see "Guest time" above), state of the gateway: what each call charges to the
+// cycle clock, in 1/256 cycle (set by install from registration::guest_cost_256ths; 0 under GCRT_DECOMP_GUEST_COST=0),
+// and the fraction of a cycle not charged yet (carried to the next call: N calls charge N x per_call_256ths / 256 to
+// within one cycle in all; per_call_256ths itself differs from a mean cost by at most 1/512 cycle).
+struct guest_cost_state {
+    u32 per_call_256ths = 0;
+    u32 remainder_256ths = 0;
+};
+
 // One decompiled function, defined next to it by GC_DECOMP_EXPORT.
 struct export_record {
     const char* name;
@@ -74,12 +103,32 @@ struct export_record {
     u32 flags;
     u64* calls;            // calls received through the gateway
     u8 result_kind;        // detail::result_kind of the result (cross-check)
+    guest_cost_state* cost; // guest cost of the function (one per C++ function: detail::guest_cost<Fn>)
+};
+
+// Properties of the recompiled ORIGINAL at a registered address (scan of its code by the build, tools/build.py).
+enum : u32 {
+    registration_none = 0,
+    // The original holds a floating-point instruction. While MSR[FP] = 0 the console's OS gives the FPU lazily: the
+    // first floating-point instruction of a thread raises "FPU unavailable", and the OS handler saves the floating-
+    // point registers of the thread that owned the FPU, loads those of the running thread and sets MSR[FP] = 1
+    // (DolRecomp emits ppc_fp_available_inline before every such instruction; the native OS handles the exception).
+    // The decompiled version does not raise it: it would read the floating-point registers of another thread, and
+    // leave the FPU to the wrong thread. So, while MSR[FP] = 0, the entry declines and the original runs, exception
+    // included; once the handler has set MSR[FP] = 1, the next call (and, for an original whose first instruction is
+    // a floating-point one, the same call, resumed at that instruction) reaches the decompiled version again.
+    registration_uses_fpu = 1u << 0,
 };
 
 // Address of a decompiled function in the version that runs (table generated by the build, never written by hand).
 struct registration {
     u32 address;
     const export_record* record;
+    u32 flags; // registration_*
+    // Guest cycles the gateway adds to the cycle clock for each call, in 1/256 cycle (decomp/guest_cost.tsv of the
+    // game, measured by the oracle: the mean exclusive cycles of the recompiled original, see "Guest time" above).
+    // 0: nothing charged.
+    u32 guest_cost_256ths;
 };
 
 // Registers every function of `table` (gcrt_hle_register) and prepares the gateway (guest memory of gc_mem.h, report
@@ -275,12 +324,49 @@ template <auto Fn> inline u64 call_count = 0;
 
 // Set while the cross-check runs the recompiled original of `address`: the entry declines (lets the original run).
 extern u32 bypass_address;
+// MSR of the CPU the gateway is installed on (gc_abi.cpp install), read at every entry; MSR[FP] is bit 0x2000 (PPC bit
+// 18, as DolRecomp's ppc_fp_available_inline tests it).
+extern const u32* guest_msr;
+inline constexpr u32 msr_fp = 0x00002000u;
+// MSR[FP] = 0 at the entry of `address`: true if its registration has registration_uses_fpu (the entry then declines,
+// counted as fpu_declined in the report and, in an oracle build, apart from the compared calls), false otherwise.
+bool decline_without_fpu(u32 address) noexcept;
+// Guest cost of the decompiled function Fn (one per C++ function, pointed to by its export record).
+template <auto Fn> inline guest_cost_state guest_cost{};
+// Some registration has a guest cost and GCRT_DECOMP_GUEST_COST is not 0 (gc_abi.cpp install). charge_guest_cost adds
+// one call of `cost` to the cycle counter (gcrt_cpu_add_cycles) only while the CPU runs on the cycle clock
+// (GCRT_CLOCK_CYCLES: the default pacing of normal play and the bench, see "Guest time"); with the real-time clock
+// (GCRT_PACING=host) it does nothing.
+extern bool guest_cost_enabled;
+void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept;
+// True if the function registered at `address` has registration_uses_fpu (not counted).
+bool registered_uses_fpu(u32 address) noexcept;
+// True if the gateway is installed and MSR[FP] = 0.
+inline bool fpu_off() noexcept {
+    return guest_msr && !(*guest_msr & msr_fp);
+}
 // Called by entry after the decompiled function when GCRT_DECOMP_CROSSCHECK is on (gc_abi.cpp).
 extern bool crosscheck_enabled;
 void crosscheck(GcrtCpu* g, u32 address, const u32* saved_gpr, const f64* saved_fpr, const f64* saved_ps1);
 void first_call(u32 address);
 // Nested run of guest code with the registers already set (runtime/core/hle: gcrt_guest_call_prepared).
 bool run_guest(GcrtCpu* g, u32 address) noexcept;
+#if defined(GC_DECOMP_ORACLE)
+// Oracle builds: a call of decompiled code to the function at `address` (call_guest, call_address, call): run_guest,
+// except while the caller is being compared, where the oracle compares it with the original's call and replays it
+// (`argument_gprs`, `argument_fprs`: bit n = rn / fn holds an argument of the call's C++ type).
+bool call_function(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
+// True while the oracle compares a decompiled function (its calls must go through call_function).
+bool oracle_replaying() noexcept;
+#else
+// Other builds: no oracle, the calls are plain (the tests below fold away at compile time; nothing of the oracle is
+// left in a production executable).
+constexpr bool oracle_replaying() noexcept {
+    return false;
+}
+#endif
+// Guest address, in this build, of the registered decompiled function whose C++ function is `direct`, 0 if none.
+u32 address_of_function(void (*direct)()) noexcept;
 GcrtCpu* current_cpu() noexcept;
 
 #if defined(GC_DECOMP_ORACLE)
@@ -298,14 +384,30 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
 // Nested guest runs started through run_guest (gc_abi.cpp), counted so that the oracle sees a decompiled version that
 // calls guest code (not comparable as a leaf).
 extern u64 guest_calls;
+// Oracle: compares a call of the decompiled version being compared with the original's and replays it; false when
+// no comparison runs (gc_oracle.cpp).
+bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
+bool oracle_is_replaying() noexcept;
+// The entry of `address` declined because MSR[FP] = 0 (decline_without_fpu): counted apart by the oracle ("declined,
+// FPU off"), neither compared nor "not compared"; during another comparison it also makes that function not a leaf.
+void oracle_declined_fpu(u32 address) noexcept;
+// The entry of the registered function declined because its original runs (bypass_address): `lr` is the return
+// address that original was entered with (the nested run's), which a non-leaf original saves in its caller's frame.
+void oracle_bypassed_entry(u32 lr) noexcept;
 #endif
 
 } // namespace detail
 
 // HLE entry of the decompiled function Fn (recompiled -> decompiled).
 template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
-    if (address == detail::bypass_address)
-        return false; // cross-check in progress: the recompiled original runs
+    if (address == detail::bypass_address) {
+#if defined(GC_DECOMP_ORACLE)
+        detail::oracle_bypassed_entry(*registers_of(g).lr); // the LR the original runs with (gc_oracle.cpp)
+#endif
+        return false; // cross-check or oracle in progress: the recompiled original runs
+    }
+    if (detail::fpu_off() && detail::decline_without_fpu(address))
+        return false; // FPU not given to this thread yet: the original runs and raises "FPU unavailable" itself
     const registers r = registers_of(g);
     const u32 return_address = *r.lr;
     if (detail::call_count<Fn>++ == 0)
@@ -335,6 +437,8 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     } else {
         detail::function_traits<Fn>::invoke(r);
     }
+    if (detail::guest_cost_enabled)
+        detail::charge_guest_cost(g, detail::guest_cost<Fn>);
     *r.pc = return_address;
     return true;
 }
@@ -347,7 +451,8 @@ template <auto Fn> export_record make_export(const char* name, u32 flags) {
                          &detail::signature_tag<typename traits::pointer>::id,
                          flags,
                          &detail::call_count<Fn>,
-                         detail::result_kind_of<typename traits::result>()};
+                         detail::result_kind_of<typename traits::result>(),
+                         &detail::guest_cost<Fn>};
 }
 
 // Calls the guest function at `address` (decompiled -> recompiled). R: void or a value type (no hidden structure).
@@ -355,14 +460,34 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
     (detail::check_argument<A>(), ...);
     detail::check_result<R>();
     static_assert(!detail::is_hidden_struct_v<R>, "gc_abi: call_guest does not return structures yet");
-    constexpr auto alloc = detail::allocation<A...>::compute(3u);
+    // static: read by the lambdas below (oracle builds).
+    static constexpr auto alloc = detail::allocation<A...>::compute(3u);
     static_assert(alloc.next_gpr <= 11u && alloc.next_fpr <= 9u, "gc_abi: stack arguments not supported");
     GcrtCpu* g = detail::current_cpu();
     const registers r = registers_of(g);
     unsigned i = 0;
     ((detail::write_value<A>(r, alloc.slots[i++], args)), ...);
     (void)i;
+#if defined(GC_DECOMP_ORACLE)
+    // Argument registers of the call's C++ type, for the oracle's comparison of the call (computed at compile time).
+    constexpr u32 gprs = [] {
+        u32 m = 0;
+        for (std::size_t k = 0; k < sizeof...(A); k++)
+            if (alloc.slots[k].kind != detail::slot_fpr)
+                m |= (alloc.slots[k].kind == detail::slot_pair ? 3u : 1u) << alloc.slots[k].reg;
+        return m;
+    }();
+    constexpr u32 fprs = [] {
+        u32 m = 0;
+        for (std::size_t k = 0; k < sizeof...(A); k++)
+            if (alloc.slots[k].kind == detail::slot_fpr)
+                m |= 1u << alloc.slots[k].reg;
+        return m;
+    }();
+    detail::call_function(g, address, gprs, fprs);
+#else
     detail::run_guest(g, address);
+#endif
     if constexpr (!std::is_void_v<R>) {
         constexpr detail::slot result{detail::is_pair_v<R> ? detail::slot_pair
                                                            : (detail::is_fpr_v<R> ? detail::slot_fpr : detail::slot_word),
@@ -372,16 +497,65 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
 }
 
 // Calls the function at a run-time `address` (pointer read from guest memory): the decompiled C++ function if one is
-// registered there with exactly this C++ type, otherwise the guest code.
+// registered there with exactly this C++ type, otherwise the guest code. A decompiled function whose original uses the
+// FPU is reached through the guest code while MSR[FP] = 0 (its entry declines there, registration_uses_fpu).
+// Limit: a plain C++ call between decompiled functions does not go through the gateway; see notes/decomp.md.
 template <class R, class... A> R call_address(u32 address, A... args) {
-    if (const export_record* e = find(address)) {
+    // While the oracle compares the caller (oracle builds only), the call goes through call_guest, so that the oracle
+    // records it.
+    if (const export_record* e = find(address);
+        e && !detail::oracle_replaying() && !(detail::fpu_off() && detail::registered_uses_fpu(address))) {
         using pointer = R (*)(A...);
-        if (e->signature == &detail::signature_tag<pointer>::id)
-            return reinterpret_cast<pointer>(e->direct)(args...);
+        if (e->signature == &detail::signature_tag<pointer>::id) {
+            // A plain C++ call: the callee's guest cost is charged here, its entry is not reached.
+            if constexpr (std::is_void_v<R>) {
+                reinterpret_cast<pointer>(e->direct)(args...);
+                if (detail::guest_cost_enabled && e->cost)
+                    detail::charge_guest_cost(detail::current_cpu(), *e->cost);
+                return;
+            } else {
+                const R value = reinterpret_cast<pointer>(e->direct)(args...);
+                if (detail::guest_cost_enabled && e->cost)
+                    detail::charge_guest_cost(detail::current_cpu(), *e->cost);
+                return value;
+            }
+        }
         std::fprintf(stderr, "gc_abi: %s (%08X) called with another C++ type: guest code used\n", e->name,
                      static_cast<unsigned>(address));
     }
     return call_guest<R, A...>(address, args...);
+}
+
+// Calls the decompiled function Fn (decompiled -> decompiled): a plain C++ call, except while the oracle compares the
+// caller (oracle builds), where it goes through the oracle as a call to Fn's guest address (recorded calls replayed).
+// The export record of Fn must be registered in this build for that (a disabled row is not: the comparison then shows
+// a call to address 0).
+namespace detail {
+// call_guest with the callee's own parameter types (their registers), the arguments converted to them.
+template <class R, class... P, class... A> R call_through_oracle(R (*)(P...), u32 address, A... args) {
+    return call_guest<R, P...>(address, static_cast<P>(args)...);
+}
+} // namespace detail
+
+template <auto Fn, class... A> auto call(A... args) {
+#if defined(GC_DECOMP_ORACLE)
+    if (detail::oracle_replaying()) {
+        static const u32 address = detail::address_of_function(reinterpret_cast<void (*)()>(Fn));
+        return detail::call_through_oracle(Fn, address, args...);
+    }
+#endif
+    // A plain C++ call: Fn's entry is not reached, so its guest cost is charged here (as the original caller ran the
+    // original callee). Fn must be registered in the build for that (its cost is set by install).
+    if constexpr (std::is_void_v<decltype(Fn(args...))>) {
+        Fn(args...);
+        if (detail::guest_cost_enabled)
+            detail::charge_guest_cost(detail::current_cpu(), detail::guest_cost<Fn>);
+    } else {
+        auto value = Fn(args...);
+        if (detail::guest_cost_enabled)
+            detail::charge_guest_cost(detail::current_cpu(), detail::guest_cost<Fn>);
+        return value;
+    }
 }
 
 #if defined(GC_DECOMP_ORACLE_NEGATIVE)
@@ -390,6 +564,8 @@ template <class R, class... A> R call_address(u32 address, A... args) {
 namespace testing {
 void clobber_gpr(unsigned reg, u32 value) noexcept;
 void clobber_cr(u32 value) noexcept;
+// A store of `value` at (entry r1 + `offset`), through gc_mem.h: a variant that writes into its caller's frame.
+void store_word_at_entry_sp(u32 offset, u32 value) noexcept;
 } // namespace testing
 #endif
 

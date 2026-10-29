@@ -1,0 +1,20 @@
+# Synthetic cases of the decompilation oracle for hsd_pobj_clear_flags (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Polygon at S: flags (16 bits) at +0xC.
+
+case hsd_pobj_clear_flags no_polygon
+r3 = 0
+r4 = FFFF
+end
+
+case hsd_pobj_clear_flags clear_some
+r3 = S
+r4 = 00010041
+mem S+C 2 F0C3
+end
+
+case hsd_pobj_clear_flags clear_none
+r3 = S
+r4 = 0
+mem S+C 2 1234
+end

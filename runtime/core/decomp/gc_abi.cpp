@@ -23,6 +23,7 @@ struct entry_state {
     const registration* reg = nullptr;
     unsigned checks = 0;     // cross-checks done
     unsigned mismatches = 0; // cross-checks whose result differed
+    u64 fpu_declined = 0;    // entries declined because MSR[FP] = 0 (registration_uses_fpu)
 };
 
 GcrtCpu* s_cpu = nullptr;
@@ -84,6 +85,7 @@ registers registers_of(GcrtCpu* g) noexcept {
 
 void install(GcrtCpu* g, const registration* table, unsigned count) {
     s_cpu = g;
+    detail::guest_msr = &g->state.msr;
     // Guest RAM for gc_mem.h: the host buffer of the CPU, with its mirrors (gc_mem.h). The size includes the area of
     // the RELs placed after the 24 MiB (tools/build.py, host_ram_size).
     gc::init_guest_memory(g->state.ram, g->state.ram_size);
@@ -109,11 +111,41 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         s_slots[k] = i + 1;
         gcrt_hle_register(g, r.address, r.record->name, r.record->entry);
     }
+    // Guest cost of each function (registration::guest_cost_256ths, gc_abi.h "Guest time"), kept in the function's own
+    // state (export_record::cost) so that a call charges it without a lookup. GCRT_DECOMP_GUEST_COST=0, read in every
+    // build: nothing is charged (the cycle counter runs as with a gateway without guest costs; diagnostic of a timing
+    // difference). It changes nothing else, and nothing at all with the real-time clock (GCRT_PACING=host); the default
+    // pacing of normal play runs on the cycle clock, so there it does change the guest time (gc_abi.h "Guest time").
+    const char* cost_env = std::getenv("GCRT_DECOMP_GUEST_COST");
+    const bool costs_off = cost_env && cost_env[0] == '0' && cost_env[1] == 0;
+    unsigned costed = 0;
+    for (unsigned i = 0; i < count; i++)
+        if (table[i].record->cost)
+            *table[i].record->cost = guest_cost_state{};
+    for (unsigned i = 0; i < count; i++) {
+        guest_cost_state* cost = table[i].record->cost;
+        if (!cost)
+            continue;
+        const u32 wanted = costs_off ? 0u : table[i].guest_cost_256ths;
+        if (cost->per_call_256ths && cost->per_call_256ths != wanted)
+            std::fprintf(stderr, "gc_abi: %s registered twice with different guest costs: the last one is used\n",
+                         table[i].record->name);
+        cost->per_call_256ths = wanted;
+        cost->remainder_256ths = 0;
+        costed += wanted != 0;
+    }
+    detail::guest_cost_enabled = costed != 0;
     const char* cc = std::getenv("GCRT_DECOMP_CROSSCHECK");
     s_crosscheck_limit = cc && cc[0] ? static_cast<unsigned>(std::strtoul(cc, nullptr, 0)) : 0u;
     detail::crosscheck_enabled = s_crosscheck_limit != 0;
-    std::fprintf(stderr, "gc_abi: %u decompiled functions registered%s\n", count,
-                 detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
+    unsigned with_fpu = 0;
+    for (unsigned i = 0; i < count; i++)
+        with_fpu += (table[i].flags & registration_uses_fpu) != 0;
+    std::fprintf(stderr, "gc_abi: %u decompiled functions registered (%u whose original uses the FPU: declined while "
+                         "MSR[FP] = 0)%s\n",
+                 count, with_fpu, detail::crosscheck_enabled ? " (cross-check with the recompiled originals on)" : "");
+    std::fprintf(stderr, "gc_abi: guest cost charged to the cycle clock for %u of them (cycle clock only)%s\n", costed,
+                 costs_off ? " (GCRT_DECOMP_GUEST_COST=0: costs off)" : "");
     if (!s_report_registered) {
         s_report_registered = true;
         std::atexit(&report_at_exit);
@@ -133,10 +165,14 @@ void report(std::FILE* out) {
         // Path that reached the replacement: the hook compiled at the entry (direct `bl` calls) or the chassis.
         u64 dispatched = 0, via_hook = 0;
         gcrt_hle_calls_at(e.reg->address, &dispatched, &via_hook);
-        std::fprintf(out, "DECOMP %-32s %08X calls=%llu hook=%llu chassis=%llu", e.reg->record->name,
-                     static_cast<unsigned>(e.reg->address), static_cast<unsigned long long>(calls),
-                     static_cast<unsigned long long>(via_hook),
-                     static_cast<unsigned long long>(dispatched - via_hook));
+        // calls = runs of the decompiled version (call_count, after the declines); fpu_declined = entries left to the
+        // original because MSR[FP] = 0 (registration_uses_fpu), counted in hook/chassis too.
+        std::fprintf(out, "DECOMP %-32s %08X calls=%llu hook=%llu chassis=%llu fpu=%u fpu_declined=%llu",
+                     e.reg->record->name, static_cast<unsigned>(e.reg->address),
+                     static_cast<unsigned long long>(calls), static_cast<unsigned long long>(via_hook),
+                     static_cast<unsigned long long>(dispatched - via_hook),
+                     (e.reg->flags & registration_uses_fpu) ? 1u : 0u,
+                     static_cast<unsigned long long>(e.fpu_declined));
         if (s_crosscheck_limit)
             std::fprintf(out, " crosscheck=%u mismatches=%u", e.checks, e.mismatches);
         std::fputc('\n', out);
@@ -152,6 +188,35 @@ namespace detail {
 
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
+bool guest_cost_enabled = false;
+
+void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept {
+    // Real-time clock (GCRT_PACING=host): the cycle counter is not time, nothing to keep in step and nothing written.
+    // The default pacing of normal play and the bench both run on the cycle clock: the cost is charged there.
+    if (!g || g->clock != GCRT_CLOCK_CYCLES)
+        return;
+    const u64 total = static_cast<u64>(cost.remainder_256ths) + cost.per_call_256ths;
+    cost.remainder_256ths = static_cast<u32>(total & 0xFFu);
+    if (total >> 8)
+        gcrt_cpu_add_cycles(g, total >> 8);
+}
+const u32* guest_msr = nullptr;
+
+bool decline_without_fpu(u32 address) noexcept {
+    entry_state* e = lookup(address);
+    if (!e || !(e->reg->flags & registration_uses_fpu))
+        return false;
+    e->fpu_declined++;
+#if defined(GC_DECOMP_ORACLE)
+    oracle_declined_fpu(address);
+#endif
+    return true;
+}
+
+bool registered_uses_fpu(u32 address) noexcept {
+    const entry_state* e = lookup(address);
+    return e && (e->reg->flags & registration_uses_fpu);
+}
 
 GcrtCpu* current_cpu() noexcept {
     return s_cpu;
@@ -161,11 +226,36 @@ GcrtCpu* current_cpu() noexcept {
 u64 guest_calls = 0;
 #endif
 
+#if defined(GC_DECOMP_ORACLE)
+bool oracle_replaying() noexcept {
+    return oracle_is_replaying();
+}
+
+bool call_function(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept {
+    if (oracle_replay_call(g, address, argument_gprs, argument_fprs))
+        return true;
+    return run_guest(g, address);
+}
+#endif
+
+u32 address_of_function(void (*direct)()) noexcept {
+    for (const entry_state& e : s_entries)
+        if (e.reg->record->direct == direct)
+            return e.reg->address;
+    return 0;
+}
+
 bool run_guest(GcrtCpu* g, u32 address) noexcept {
 #if defined(GC_DECOMP_ORACLE)
     guest_calls++; // the oracle tells its own runs of the original from guest calls made by decompiled code
 #endif
+    // Cycles of the generated block that reached the gateway (DolRecomp: `downcount -= n` at the start of each block,
+    // the chassis charges -downcount when the block returns). The nested run sets downcount for each of its own blocks
+    // and charges them; without this, the outer block's cycles spent before the hook would be lost and the nested
+    // run's last block charged a second time when the outer block returns.
+    const s64 outer_downcount = g->state.downcount;
     const bool returned = gcrt_guest_call_prepared(g, address);
+    g->state.downcount = outer_downcount;
     if (!returned)
         std::fprintf(stderr, "gc_abi: the guest function %08X called by decompiled code did not return\n",
                      static_cast<unsigned>(address));

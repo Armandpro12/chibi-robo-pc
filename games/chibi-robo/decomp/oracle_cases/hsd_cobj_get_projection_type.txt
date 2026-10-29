@@ -1,0 +1,22 @@
+# Synthetic cases of the decompilation oracle for hsd_cobj_get_projection_type (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Camera at S: projection type (8 bits) at +0x50.
+
+case hsd_cobj_get_projection_type no_camera
+r3 = 0
+end
+
+case hsd_cobj_get_projection_type ortho
+r3 = S
+mem S+50 1 3
+end
+
+case hsd_cobj_get_projection_type frustum
+r3 = S
+mem S+50 1 2
+end
+
+case hsd_cobj_get_projection_type high_byte
+r3 = S
+mem S+50 1 FE
+end

@@ -1,0 +1,171 @@
+# Synthetic cases of the decompilation oracle for oracle_test_free_chain (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data): chains of 0 to 10 nodes at S,
+# node k at S+10*k (its first word: the next node). Every call is simulated (one `call` line each, results unused:
+# the callees return nothing), so these cases reach every block: each chain length leaves the walk at another level,
+# and the 10-node chain makes the recursive call (the 9-node one too, with a null argument).
+
+case oracle_test_free_chain chain_of_0
+area 0x100
+r3 = 0
+end
+
+case oracle_test_free_chain chain_of_1
+area 0x100
+r3 = S
+mem S+0 4 0
+call
+end
+
+case oracle_test_free_chain chain_of_2
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 0
+call
+call
+end
+
+case oracle_test_free_chain chain_of_3
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 0
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_4
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 0
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_5
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 0
+call
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_6
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 S+50
+mem S+50 4 0
+call
+call
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_7
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 S+50
+mem S+50 4 S+60
+mem S+60 4 0
+call
+call
+call
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_8
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 S+50
+mem S+50 4 S+60
+mem S+60 4 S+70
+mem S+70 4 0
+call
+call
+call
+call
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_9
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 S+50
+mem S+50 4 S+60
+mem S+60 4 S+70
+mem S+70 4 S+80
+mem S+80 4 0
+call
+call
+call
+call
+call
+call
+call
+call
+call
+call
+end
+
+case oracle_test_free_chain chain_of_10
+area 0x100
+r3 = S
+mem S+0 4 S+10
+mem S+10 4 S+20
+mem S+20 4 S+30
+mem S+30 4 S+40
+mem S+40 4 S+50
+mem S+50 4 S+60
+mem S+60 4 S+70
+mem S+70 4 S+80
+mem S+80 4 S+90
+mem S+90 4 0
+call
+call
+call
+call
+call
+call
+call
+call
+call
+call
+end

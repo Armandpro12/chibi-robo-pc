@@ -50,7 +50,13 @@ Promotion rule (report). A row of the game's functions table is proposed `verifi
   * the oracle compared the function at least once, never saw a difference (real calls and synthetic cases), found
     it to be a leaf in every run that called it, could compare every synthetic case, and left at most
     --max-not-compared real calls uncompared (default 0: a call whose original did not return, for instance, is not
-    compared, and is not evidence);
+    compared, and is not evidence). Two kinds of calls and cases are counted apart, not as uncompared: entries the
+    gateway declined because MSR[FP] = 0 for a function whose original uses the FPU ("fpu_declined": the original
+    ran, "FPU unavailable" exception included, runtime/core/decomp/gc_abi.h registration_uses_fpu), and synthetic
+    cases of a DISABLED row the executable does not build (header synthetic_skipped_functions; skipping the cases of an
+    enabled row or of a name that is not in the table is a problem). Also reported, never part of the verdict: the
+    compared calls whose decompiled fmadds under NI = 1 Dolphin would flush to zero and DolRecomp does not
+    (gc_float.h, "fmadds_dolphin_divergent");
   * block coverage: every basic block of the original reachable from its entry (tools/decomp_functions.py
     code_blocks) ran during at least one compared call or synthetic case; a block the analysis calls unreachable must
     never run (it would prove the analysis wrong);
@@ -245,6 +251,9 @@ def cmd_run(args) -> int:
         print("+", " ".join(cmd), flush=True)
         rc = subprocess.run(cmd, cwd=bench).returncode
         print(f"== {version}: tools/ab.py check returned {rc} (bench verdict of the oracle executable)")
+        play = run_play(args, game, game_cfg, bench, version, exe, out, own) if args.play else {}
+        if any(play.values()):
+            rc = rc or max(play.values())
         info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
                 "dolrecomp": df.dolrecomp_state(),
@@ -253,12 +262,55 @@ def cmd_run(args) -> int:
                 # in this order over its own environment); tools/run.py adds its own (GCRT_USER_DIR, ...) below.
                 "gcrt_env": {k: v for k, v in {**env_inherited, **own, **env_cli}.items()
                              if k.upper().startswith("GCRT_")},
-                "env_restricted": env_restricted, "allow_env": bool(args.allow_env)}
+                "env_restricted": env_restricted, "allow_env": bool(args.allow_env),
+                # --play: progression scenarios run after the bench, {name: exit code of tools/run.py} (in rc).
+                "play": play}
         (out / f"run-{version}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         code = code or rc
     print(f"== Oracle files: {oracle_dir(bench, game, args.label, '<ID>')}; next: "
           f"py -3 tools/decomp_oracle.py report --label {args.label}")
     return code
+
+
+def run_play(args, game: str, game_cfg: dict, bench: Path, version: str, exe: Path, out: Path,
+             own: dict[str, str]) -> dict[str, int]:
+    """--play: progression scenarios games/<game>/scenarios/play/<ID>/<name>.scn, in the order given, through
+    tools/run.py of the bench checkout (isolated user folder, no sound), writing their oracle files into the same
+    folder as the bench's. A scenario with an `after <name>` line starts from the user folder of that scenario's run,
+    which must come earlier in the list. Verdict of each: the exit code of tools/run.py (0 = ok). A scenario whose
+    header asks for other options (--stage, a save of its own) is not run here: give only self-contained ones."""
+    import os
+    folder = game_cfg["_dir"] / "scenarios" / "play" / version
+    done: dict[str, Path] = {}
+    codes: dict[str, int] = {}
+    env = dict(os.environ)
+    for key, value in own.items():
+        env[key] = value
+    for item in args.env:
+        key, value = item.split("=", 1)
+        env[key] = value
+    for name in [n for n in args.play.split(",") if n]:
+        scn = folder / f"{name}.scn"
+        if not scn.exists():
+            raise SystemExit(f"--play {name}: {scn} not found (scenarios/play/{version}/)")
+        after = None
+        for line in scn.read_text(encoding="utf-8").splitlines():
+            words = line.split("#", 1)[0].split()
+            if len(words) >= 2 and words[0] == "after":
+                after = words[1]
+        run_out = out / f"play-{name}"
+        cmd = [sys.executable, str(bench / "tools" / "run.py"), game, "--version", version, "--exe", str(exe),
+               "--audio", "off", "--scenario", str(scn), "--out", str(run_out)]
+        if after:
+            if after not in done:
+                raise SystemExit(f"--play {name}: needs the user folder of {after!r} ('after' line): list {after} "
+                                 f"before it")
+            cmd += ["--user-seed", str(done[after] / "user")]
+        print("+", " ".join(cmd), flush=True)
+        codes[name] = subprocess.run(cmd, cwd=bench, env=env).returncode
+        print(f"== {version}: play {name}: tools/run.py returned {codes[name]}")
+        done[name] = run_out
+    return codes
 
 
 def cmd_hash(args) -> int:
@@ -278,7 +330,7 @@ def new_aggregate(rec: dict) -> dict:
             "paths": set(), "synthetic_cases": 0, "synthetic_compared": 0, "synthetic_mismatches": 0,
             "synthetic_not_compared": 0, "blocks": None, "block_hits": {}, "dead_blocks": None,
             "dead_block_hits": {}, "results": set(), "results_count": 0, "path_count": 0, "synthetic_labels": set(),
-            "journal_reattached": 0, "restore_errors": 0}
+            "journal_reattached": 0, "restore_errors": 0, "fpu_declined": 0, "fmadds_dolphin_divergent": 0}
 
 
 def new_seen() -> dict[str, dict]:
@@ -291,15 +343,20 @@ def new_seen() -> dict[str, dict]:
 
 def read_results(bench: Path, game: str, labels: list[str], version: str,
                  current: dict | None = None, seen: dict | None = None,
-                 addresses: dict[str, int] | None = None) -> tuple[dict, list[str]]:
+                 addresses: dict[str, int] | None = None, kinds: dict[str, str] | None = None,
+                 skipped: dict[str, int] | None = None) -> tuple[dict, list[str]]:
     """{function: aggregate} over every oracle file of `labels` for `version`, and the problems found. A problem is
     blocking: --promote refuses, and every verdict of the version fails. `current`: {"sources": hash, "synthetic":
     hash} the results must have been produced with (None: not checked). `seen`: new_seen(), shared by the calls of one
     report (None: this call only). `addresses`: {function: address in `version`} of the table's DOL rows, which every
-    summary must carry (None: not checked)."""
+    summary must carry (None: not checked). `kinds`: {row name: kind} of the functions table (tools/decomp_functions.py:
+    done, replaced, listed): the synthetic cases an executable skipped because their function was not built
+    (header synthetic_skipped_functions) are accepted, and counted into `skipped` ({function: cases, summed over the
+    files}), only for a disabled row ("listed"); any other name is a problem (None: every skipped case is one)."""
     import hashlib
     agg: dict[str, dict] = {}
     problems: list[str] = []
+    skipped = skipped if skipped is not None else {}
     seen = seen if seen is not None else new_seen()
     for label in labels:
         folder = oracle_dir(bench, game, label, version)
@@ -382,8 +439,12 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                                         f"{expected:08X} in {version} (results of another version or table)")
                     a["runs"] += 1
                     for k in ("calls", "compared", "mismatches", "not_compared", "synthetic_compared",
-                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached"):
+                              "synthetic_mismatches", "synthetic_not_compared", "journal_reattached", "fpu_declined",
+                              "fmadds_dolphin_divergent"):
                         a[k] += int(rec.get(k, 0))
+                    if "fpu_declined" not in rec:
+                        problems.append(f"{path.name}: {name}: summary without fpu_declined (oracle executable older "
+                                        f"than the FPU decline of the gateway: rebuild and rerun)")
                     if "restore_errors" not in rec:
                         problems.append(f"{path.name}: {name}: summary without restore_errors (old oracle executable)")
                     elif int(rec["restore_errors"]):
@@ -391,6 +452,16 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                         problems.append(f"{path.name}: {name}: {rec['restore_errors']} failed self-checks of the undo "
                                         f"or redo of the original's writes (oracle fault: nothing promotes)")
                     a["synthetic_cases"] = max(a["synthetic_cases"], int(rec.get("synthetic_cases", 0)))
+                    # Non-leaf comparison (D2-1): calls recorded, thread switches refused in the nested run,
+                    # assertion blocks and the synthetic cases that ran each block.
+                    a["recorded_calls"] = a.get("recorded_calls", 0) + int(rec.get("recorded_calls", 0))
+                    a["max_calls"] = max(a.get("max_calls", 0), int(rec.get("max_calls", 0)))
+                    a["refused_switches"] = a.get("refused_switches", 0) + int(rec.get("refused_switches", 0))
+                    if rec.get("assert_blocks") is not None:
+                        a["assert_blocks"] = list(rec["assert_blocks"])
+                    for b, n in zip(rec.get("blocks") or [], rec.get("synthetic_block_hits") or []):
+                        sh = a.setdefault("synthetic_block_hits", {})
+                        sh[b] = sh.get(b, 0) + int(n)
                     a["fingerprints"].update(rec.get("fingerprints", []))
                     if int(rec["calls"]):  # a run that never called it says nothing about it
                         a["leaf"].add(rec["leaf"])
@@ -477,6 +548,27 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                 if int(header.get("synthetic_errors", 0)):
                     problems.append(f"{path.name}: {header['synthetic_errors']} errors in the synthetic cases "
                                     f"(stderr of the run)")
+                # Synthetic cases of functions this executable does not register: accepted (and counted apart) only
+                # for a disabled row of the table, which is not built; an enabled row or an unknown name is a problem.
+                listed_skips = header.get("synthetic_skipped_functions")
+                if listed_skips is None or "synthetic_skipped" not in header:
+                    problems.append(f"{path.name}: header without synthetic_skipped (oracle executable older than the "
+                                    f"skipping of unbuilt rows: rebuild and rerun)")
+                else:
+                    if sum(int(n) for n in listed_skips.values()) != int(header["synthetic_skipped"]):
+                        problems.append(f"{path.name}: synthetic_skipped {header['synthetic_skipped']} is not the sum "
+                                        f"of synthetic_skipped_functions")
+                    for skipped_name, n in listed_skips.items():
+                        kind = (kinds or {}).get(skipped_name)
+                        if kind == "listed":
+                            skipped[skipped_name] = skipped.get(skipped_name, 0) + int(n)
+                        elif kind is None:
+                            problems.append(f"{path.name}: {n} synthetic cases of {skipped_name}, which is not a row "
+                                            f"of the functions table (misspelled name in decomp/oracle_cases?)")
+                        else:
+                            problems.append(f"{path.name}: {n} synthetic cases of {skipped_name} skipped: the row is "
+                                            f"enabled but the executable does not register it (old executable, or "
+                                            f"another table)")
                 if summaries != int(header.get("functions", -1)):
                     problems.append(f"{path.name}: {summaries} summaries for {header.get('functions')} functions")
             if not ended:
@@ -507,8 +599,11 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
         return False, f"{len(problems)} problems with the results (WARNING lines): nothing promotes"
     if not a or a["calls"] == 0:
         return False, "never called by these scenarios"
-    if a["leaf"] - {"yes"}:
-        return False, f"not comparable as a leaf ({', '.join(sorted(a['reasons'])) or ', '.join(sorted(a['leaf']))})"
+    # "yes": a leaf; "calls": compared with its calls recorded and replayed (gc_oracle.cpp, "Calls").
+    if a["leaf"] - {"yes", "calls"}:
+        return False, f"not comparable ({', '.join(sorted(a['reasons'])) or ', '.join(sorted(a['leaf']))})"
+    if a.get("refused_switches"):
+        return False, f"{a['refused_switches']} thread switches refused during the original's nested run"
     if a["compared"] == 0:
         return False, "called but never compared"
     if a["not_compared"] > max_not_compared:
@@ -526,11 +621,16 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
     if dead_run:
         return False, f"blocks the analysis calls unreachable ran: {', '.join(dead_run)}"
     if missed:
+        asserts = [b for b in missed if b in set(a.get("assert_blocks") or [])]
+        hint = (f"; assertion blocks among them ({', '.join(asserts)}): only a synthetic case reaches them, with its "
+                f"calls simulated (`call` lines)") if asserts else ""
         return False, (f"blocks of the original never compared: {', '.join(missed)} ({len(blocks) - len(missed)}/"
                        f"{len(blocks)} covered): add a synthetic case (games/<game>/decomp/oracle_cases) or a scenario "
-                       f"that reaches them")
+                       f"that reaches them{hint}")
     n = len(a["fingerprints"])
     cov = f"{len(blocks)}/{len(blocks)} blocks"
+    if a.get("assert_blocks"):
+        cov += f" ({len(a['assert_blocks'])} assertion blocks, by synthetic cases: listed for review)"
     if n < min_cases:
         # Fewer distinct states than asked: accepted only if the scenarios have saturated them (at least
         # `saturation` comparisons, all of them on these few states).
@@ -595,9 +695,12 @@ def cmd_report(args) -> int:
     results = {}
     problems: list[str] = []
     seen = new_seen()  # shared by every version: a copy into another version's folder is refused too
+    kinds = {f.name: f.kind for f in functions}
+    skipped: dict[str, dict[str, int]] = {}
     for v in versions:
         addresses = {f.name: f.addresses[v] for f in functions if f.module == "dol" and f.addresses.get(v) is not None}
-        results[v], p = read_results(bench, game, labels, v, current, seen, addresses)
+        skipped[v] = {}
+        results[v], p = read_results(bench, game, labels, v, current, seen, addresses, kinds, skipped[v])
         problems += p
     print(f"Oracle report, labels {', '.join(labels)}; thresholds: --min-cases {args.min_cases} distinct cases per "
           f"version (or fewer, saturated, after --saturation {args.saturation} comparisons), --max-not-compared "
@@ -624,12 +727,23 @@ def cmd_report(args) -> int:
                 print(f"{'':44}blocks (compared calls + synthetic cases that ran each): {hits or '-'}")
                 if a.get("dead_blocks"):
                     print(f"{'':44}unreachable blocks: {', '.join(a['dead_blocks'])}")
+                if a.get("assert_blocks"):
+                    sh = a.get("synthetic_block_hits", {})
+                    listed = ", ".join(f"{b}:{sh.get(b, 0)} synthetic" for b in a["assert_blocks"])
+                    print(f"{'':44}assertion blocks (only lead to [decomp.no_return]; covered by synthetic cases, "
+                          f"to review): {listed}")
+                if a.get("recorded_calls"):
+                    print(f"{'':44}calls recorded and replayed: {a['recorded_calls']} (up to {a['max_calls']} per "
+                          f"comparison)")
                 print(f"{'':44}distinct results of the original (r3, r3:r4 or f1 bits): "
                       f"{', '.join(sorted(a['results'])[:12]) or '-'}{' ...' if len(a['results']) > 12 else ''}; "
                       f"distinct block sets per run: up to {a['path_count']}")
                 print(f"{'':44}synthetic cases: {a['synthetic_compared']} compared of {a['synthetic_cases']} per run, "
                       f"{a['synthetic_mismatches']} with differences; runs of the original where another write "
                       f"journal detached itself (oracle journal kept): {a['journal_reattached']}")
+                print(f"{'':44}declined, FPU off (MSR[FP] = 0: the original ran, not counted as calls nor as not "
+                      f"compared): {a['fpu_declined']}; compared calls with an fmadds that Dolphin would flush "
+                      f"under NI = 1 and DolRecomp does not: {a['fmadds_dolphin_divergent']}")
                 print(f"{'':44}paths of the stored cases: {', '.join(sorted(a['paths'])) or '-'}")
                 for e in a["examples"]:
                     print(f"{'':44}e.g. {e}")
@@ -645,6 +759,10 @@ def cmd_report(args) -> int:
         ok, reasons = proposed[f.name]
         if f.kind == "listed":
             state = "row disabled: never promoted" + (" (would pass)" if ok else "")
+            ignored = {v: skipped[v][f.name] for v in versions if skipped[v].get(f.name)}
+            if ignored:
+                state += ("; synthetic cases ignored (row not built in the executable): " +
+                          ", ".join(f"{v} {n}" for v, n in ignored.items()))
         elif ok:
             state = "proposed status: verified"
         else:
@@ -716,8 +834,12 @@ def write_status(game_cfg: dict, names: list[str], versions: list[str]) -> None:
 
 def case_lines(rec: dict) -> list[str]:
     """Case record (oracle jsonl) -> text form read by runtime/core/decomp/oracle_replay.cpp."""
+    # call_sites and original_entry_lr (the LR the original was entered with): the LR save word rule of
+    # gc_oracle_compare.h (0 for a case written before these fields existed: the word is then compared, the strict
+    # side).
     out = [f"case {rec['function']} {rec['address']} {rec['result_kind']} {rec.get('fingerprint', '-')} "
-           f"{rec.get('dead_stack', '00010000')}"]
+           f"{rec.get('dead_stack', '00010000')} {int(rec.get('call_sites', 0))} "
+           f"{rec.get('original_entry_lr', '00000000')}"]
     for key, tag in (("entry", "I"), ("original", "O")):
         r = rec[key]
         out.append(f"{tag}G " + " ".join(r["gpr"]))
@@ -738,6 +860,8 @@ def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, ex
         raise SystemExit("clang-cl not found (tools/doctor.py)")
     core = tc.ROOT / "runtime" / "core"
     src = sorted((tc.ROOT / "games" / game / "decomp" / "src").rglob("*.cpp"))
+    # Oracle test functions (disabled rows of the table, oracle builds only): their records are in the table too.
+    src += sorted((tc.ROOT / "games" / game / "decomp" / "oracle_tests").rglob("*.cpp"))
     if negative:
         src += sorted(negative.rglob("*.cpp"))
     src += extra
@@ -753,15 +877,30 @@ def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, ex
               f"extern const unsigned gc_replay_record_count = {len(names)};", ""]
     out.mkdir(parents=True, exist_ok=True)
     table.write_text("\n".join(lines), encoding="utf-8")
+    # Identifiers of the game globals (decomp_globals.h, as tools/build.py writes it next to its registration table):
+    # the decompiled sources include it. No address table is installed here: the cases of functions that use a
+    # global are skipped by cmd_replay (globals_users).
+    import decomp_globals  # noqa: E402
+    (out / "decomp_globals.h").write_text(decomp_globals.header_source(decomp_globals.read_table(game_cfg)),
+                                          encoding="utf-8")
     exe = out / f"oracle_replay{tc.EXE}"
     cmd = [str(clang), "/nologo", "/std:c++20", "/EHsc", "/O2", "/W4", "/clang:-ffp-contract=off",
-           "/DGC_MEM_OBSERVER", *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}",
+           "/DGC_MEM_OBSERVER", *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}", f"/I{out}",
            str(core / "decomp" / "oracle_replay.cpp"), str(table),
            *[str(s) for s in src], f"/Fo{out}\\", f"/Fe{exe}"]
     r = subprocess.run(cmd, capture_output=True, text=True, env=tc.msvc_env())
     if r.returncode != 0:
         raise SystemExit(f"replay build failed:\n{r.stdout}\n{r.stderr}")
     return exe
+
+
+def globals_users(game_cfg: dict) -> set[str]:
+    """Functions of the functions table whose original uses a game global (used_by of the globals table): the offline
+    replay installs no version address table (gc::set_global_table), so their cases are skipped, counted."""
+    import decomp_globals  # noqa: E402
+    if decomp_globals.table_path(game_cfg) is None:
+        return set()
+    return {u for row in decomp_globals.read_table(game_cfg) for u in row.used_by}
 
 
 def build_negative_records(negative: Path | None) -> dict[str, str]:
@@ -783,8 +922,9 @@ def cmd_replay(args) -> int:
     out = Path(args.out).resolve() if args.out else tc.ROOT / "build" / "oracle-replay"
     exe = build_replay(game, game_cfg, out, negative, [Path(p).resolve() for p in args.extra_source])
     records = build_negative_records(negative)
+    users = globals_users(game_cfg)
     text: list[str] = []
-    count = 0
+    count = skipped_calls = skipped_globals = 0
     for path in files:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
@@ -793,19 +933,195 @@ def cmd_replay(args) -> int:
                 continue
             if rec.get("kind") not in ("case", "mismatch") or (rec.get("kind") == "mismatch" and not args.mismatches):
                 continue
+            if rec.get("calls"):
+                # A case of a non-leaf function holds the calls the original made: the offline replay does not replay
+                # calls yet (the in-game oracle does). Skipped, counted.
+                skipped_calls += 1
+                continue
+            if rec.get("function") in users:
+                # Its global has no address offline (no version address table installed): skipped, counted.
+                skipped_globals += 1
+                continue
             if negative and rec["function"] in records:
                 rec = dict(rec, function=records[rec["function"]])
             text += case_lines(rec)
             count += 1
     cases = out / "cases.txt"
     cases.write_text("\n".join(text) + "\n", encoding="utf-8")
-    print(f"== Replay of {count} cases from {len(files)} files ({exe.name})")
+    print(f"== Replay of {count} cases from {len(files)} files ({exe.name}); {skipped_calls} cases with calls "
+          f"skipped (not replayable offline yet), {skipped_globals} cases of functions that use a game global "
+          f"skipped (no version address table offline)")
     r = subprocess.run([str(exe), str(cases)], capture_output=True, text=True)
     lines = r.stdout.splitlines()
     for line in lines:
         if not line.startswith("PASS ") or args.verbose:
             print(line)
     return r.returncode
+
+
+# --- cost ------------------------------------------------------------------------------------------------------------
+
+GUEST_COST_HEADER = """\
+# Guest cost of the decompiled functions of {game} (stage 2): for each function and version, the guest cycles the
+# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, "Guest time"), so that the cycle clock
+# (default pacing of normal play, and the A/B bench) runs as with the recompiled original. Without it a decompiled
+# function costs no guest time: timed events (end of a load, audio) come earlier, and the A/B bench sees a frame shift
+# that is not a change of behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the
+# originals: the mean EXCLUSIVE cycles of each original over its game calls (its own cycles, without those of the calls
+# it makes, charged where they run); a whole number when every call costs the same, otherwise the mean to 4 decimals
+# (the gateway charges it in 1/256 cycle and carries the remainder: a mean is off by at most 1/512 cycle per call).
+# Numbers about the game's code only, like the size column of functions.tsv. Path-dependent originals (least and most
+# of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: {labels}.
+"""
+
+DRIFT_ALERT = 1_000_000  # cycles: ~0.12 frame of guest time at 486 MHz / 60 Hz (8.1 M cycles a frame)
+
+
+def read_cost_summaries(files: list[Path], problems: list[str]) -> dict[str, list[dict]]:
+    """{function: [summary, ...]} of the cost fields of the oracle files (one summary per function and run). A summary
+    without the exclusive cost fields (oracle executable older than the exclusive measurement) is a problem."""
+    out: dict[str, list[dict]] = defaultdict(list)
+    for file in files:
+        for line in file.read_text(encoding="utf-8").splitlines():
+            if '"kind":"summary"' not in line:
+                continue
+            rec = json.loads(line)
+            if "cost_calls" not in rec:
+                problems.append(f"{file.name}: {rec.get('function')}: summary without cost (old oracle executable)")
+                continue
+            if not rec.get("cost_exclusive"):
+                problems.append(f"{file.name}: {rec.get('function')}: summary with an inclusive cost (oracle executable "
+                                f"older than the exclusive measurement): run the oracle again")
+                continue
+            rec["_run"] = file.stem
+            out[rec["function"]].append(rec)
+    return out
+
+
+def cost_of(summaries: list[dict]) -> dict:
+    """Totals of one function in one version: calls, exclusive cycles, least and most of one call, unmeasured calls,
+    nested runs, and the per-run (calls, cycles) for the drift."""
+    m = {"calls": 0, "cycles": 0, "min": None, "max": 0, "unmeasured": 0, "nested_calls": 0, "nested_cycles": 0,
+         "callee_cycles": 0, "runs": []}
+    for rec in summaries:
+        m["unmeasured"] += rec.get("cost_unmeasured", 0)
+        m["nested_calls"] += rec.get("cost_nested_calls", 0)
+        m["nested_cycles"] += rec.get("cost_nested_cycles", 0)
+        m["callee_cycles"] += rec.get("cost_callee_cycles", 0)
+        if not rec["cost_calls"]:
+            continue
+        m["calls"] += rec["cost_calls"]
+        m["cycles"] += rec["cost_cycles"]
+        m["min"] = rec["cost_min"] if m["min"] is None else min(m["min"], rec["cost_min"])
+        m["max"] = max(m["max"], rec["cost_max"])
+        m["runs"].append((rec["_run"], rec["cost_calls"], rec["cost_cycles"]))
+    return m
+
+
+def cmd_cost(args) -> int:
+    """Guest cost table (decomp/guest_cost.tsv, [decomp] guest_cost of game.toml) from the cost fields of the oracle's
+    summaries: the mean exclusive guest cycles of each original over its game calls, per version. Refused (code 1)
+    when an enabled function has no measured call in a version (unless --allow-missing), or when a summary has no
+    exclusive cost. Warns about table rows of disabled functions, unmeasured calls, and the drift of path-dependent
+    functions: for each run (one oracle file, i.e. one scenario), its cycles minus its calls x the charged mean; beyond
+    --drift-alert cycles (default 1 M) in one run, the table may not fit that scenario."""
+    game = game_name(args.game)
+    game_cfg = tc.load_game(game)
+    bench = Path(args.bench_root) if args.bench_root else main_checkout()
+    versions = versions_of(game_cfg, args.versions)
+    labels = [x for x in args.label.split(",") if x]
+    path = df.guest_cost_path(game_cfg)
+    if not path:
+        raise SystemExit("game.toml: [decomp] guest_cost is required")
+    include = [x for x in (args.include or "").split(",") if x]
+    if include and not args.dry_run:
+        raise SystemExit("--include (disabled rows, e.g. oracle test functions) is for --dry-run only: the tracked "
+                         "table lists the enabled functions")
+    table = df.read_table(game_cfg)
+    known = {f.name for f in table}
+    unknown = [n for n in include if n not in known]
+    if unknown:
+        raise SystemExit(f"--include: not in the functions table: {', '.join(unknown)}")
+    rows = [f for f in table if f.enabled or f.name in include]
+    problems: list[str] = []
+    measured: dict[tuple[str, str], dict] = {}
+    for version in versions:
+        files: list[Path] = []
+        for label in labels:
+            found = sorted(oracle_dir(bench, game, label, version).rglob("oracle-*.jsonl"))
+            if not found:
+                problems.append(f"{label}/{version}: no oracle file")
+            files += found
+        for name, summaries in read_cost_summaries(files, problems).items():
+            measured[(name, version)] = cost_of(summaries)
+    for p in problems:
+        print(f"PROBLEM {p}")
+    if problems:
+        return 1
+    out = [GUEST_COST_HEADER.format(game=game_cfg.get("name", game), labels=", ".join(labels)).rstrip("\n"),
+           "\t".join(["name"] + versions)]
+    notes: list[str] = []
+    missing: list[str] = []
+    warnings: list[str] = []
+    drift: list[str] = []
+    path_dependent: set[str] = set()
+    for f in rows:
+        cells = [f.name]
+        for version in versions:
+            m = measured.get((f.name, version))
+            calls, cycles, lo, hi = (m["calls"], m["cycles"], m["min"], m["max"]) if m else (0, 0, None, 0)
+            if m and not calls and m["nested_calls"]:
+                # Only reached inside recorded callees of other comparisons (exclusive there: no call sites).
+                calls, cycles = m["nested_calls"], m["nested_cycles"]
+                warnings.append(f"{f.name} ({version}): measured only inside recorded callees ({calls} calls)")
+            if not calls:
+                cells.append("-")
+                missing.append(f"{f.name} ({version})")
+                continue
+            if m["unmeasured"]:
+                warnings.append(f"{f.name} ({version}): {m['unmeasured']} game calls not measured (run as the original "
+                                f"alone by a function with call sites: no exclusive cost)")
+            cell = df.format_guest_cost(cycles, calls)
+            cells.append(cell)
+            if lo is not None and lo != hi:
+                path_dependent.add(f.name)
+                notes.append(f"#   {f.name} {version}: {lo}..{hi} cycles per call, mean {cycles / calls:.4f} over "
+                             f"{calls} calls")
+                charged = df.guest_cost_256ths(cell)  # 1/256 cycle
+                for run, n, c in m["runs"]:
+                    d = (c * df.GUEST_COST_FRACTION - n * charged) / df.GUEST_COST_FRACTION
+                    flag = "ALERT" if abs(d) > args.drift_alert else "drift"
+                    drift.append(f"{flag} {f.name} {version} {run}: {n} calls, mean {c / n:.4f}, {d:+.0f} cycles "
+                                 f"against the charged {cell}")
+        out.append("\t".join(cells))
+    if notes:
+        out += ["# Path-dependent originals (charge exact only on average):"] + notes
+    text = "\n".join(out) + "\n"
+    exact = len(rows) - len(path_dependent)
+    pairs = sum(1 for n in notes)
+    refused = bool(missing) and not args.allow_missing
+    if args.dry_run:
+        print(text, end="")
+    elif not refused:
+        path.write_bytes(text.encode("utf-8"))
+    print(f"{'would write' if args.dry_run or refused else 'written'} {path}: {len(rows)} functions, {exact} with an exact cost "
+          f"and {len(path_dependent)} with a mean ({pairs} function x version pairs path-dependent)")
+    tracked = {name for name in df.read_guest_costs(game_cfg)}
+    for name in sorted(tracked - {f.name for f in rows}):
+        print(f"WARNING table row without an enabled function: {name} (dropped from the table)")
+    for w in warnings:
+        print(f"WARNING {w}")
+    for line in drift:
+        print(line)
+    if any(line.startswith("ALERT") for line in drift):
+        print(f"WARNING drift beyond {args.drift_alert} cycles in a run: the charged mean may not fit that scenario")
+    for name in missing:
+        print(f"{'WARNING' if args.allow_missing else 'ERROR'} no measured call: {name} (nothing would be charged; "
+              f"add a scenario that reaches it)")
+    if refused:
+        print("refused: nothing written (--allow-missing writes the table with '-' for these)")
+        return 1
+    return 0
 
 
 def main() -> int:
@@ -822,6 +1138,9 @@ def main() -> int:
     r.add_argument("--allow-env", action="store_true",
                    help="accept restricted GCRT_* variables (inherited or --env; see RESTRICTED_ENV_*): an experiment, "
                         "its results never promote")
+    r.add_argument("--play", metavar="NAME,...",
+                   help="also run these progression scenarios (scenarios/play/<ID>/<name>.scn, tools/run.py) on the "
+                        "oracle executable, in order, after the bench: more real starting states")
     r.add_argument("--no-synthetic", action="store_true",
                    help="do not run the synthetic cases (the report then refuses the promotion)")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
@@ -837,6 +1156,18 @@ def main() -> int:
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
+    c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
+    c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
+    c.add_argument("--versions")
+    c.add_argument("--dry-run", action="store_true", help="print the table, write nothing")
+    c.add_argument("--include", metavar="NAME,...",
+                   help="with --dry-run: also show these disabled rows (oracle test functions)")
+    c.add_argument("--allow-missing", action="store_true",
+                   help="write the table even if an enabled function has no measured call ('-': nothing charged; "
+                        "a production build then refuses it unless --allow-no-guest-cost)")
+    c.add_argument("--drift-alert", type=int, default=DRIFT_ALERT, metavar="CYCLES",
+                   help="alert when one run's cycles differ from its calls x the charged mean by more than this "
+                        f"(default {DRIFT_ALERT})")
     y = sub.add_parser("replay", help="offline replay of captured cases on the decompiled code")
     y.add_argument("--label")
     y.add_argument("--versions")
@@ -847,7 +1178,8 @@ def main() -> int:
     y.add_argument("--out", help="build folder of the replay executable (default build/oracle-replay)")
     y.add_argument("--verbose", action="store_true")
     args = p.parse_args()
-    return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash}[args.cmd](args)
+    return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash,
+            "cost": cmd_cost}[args.cmd](args)
 
 
 if __name__ == "__main__":
