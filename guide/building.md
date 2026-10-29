@@ -67,6 +67,8 @@ build first checks each address against the symbol files of `games/chibi-robo/sy
 and the transposition report `GGTE01-to-GGTP01.tsv`), so it needs no extra step: a missing file stops the build with
 the command that restores it. After a change of the reference symbols, `py -3 tools/symbols.py chibi-robo transpose
 --to GGTP01` rewrites the report (it needs the cbr_decomp symbols in `external/` and the Ghidra analysis of GGTP01).
+The PAL build also needs the US version extracted (`tools/extract.py chibi-robo --version GGTE01`): it compares the
+game globals of `games/chibi-robo/symbols/globals.tsv` with the US main executable.
 
 Run the game by launching the executable directly ([settings-and-controls.md](settings-and-controls.md)).
 

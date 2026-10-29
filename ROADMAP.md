@@ -120,7 +120,7 @@ and assets are read from the player's files.
 | # | Milestone | State | Notes |
 |---|---|---|---|
 | D1 | Tooling | ✅ | Validated 2026-10-28. Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking; 12 leaf functions replace their recompiled versions and are verified in US and PAL. Follow-ups below. |
-| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions), part A: 23 functions verified, not merged yet. |
+| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions): 23 without game globals and 3 that write one (per-version globals table); floating-point unit off handled by the gateway; oracle for functions that call others. 40 functions verified in all (1.06 % of 3,772), on both US and PAL. |
 | D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock. **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
 | D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
 | D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
@@ -191,7 +191,8 @@ from D1" below).
   real functions of the game used as tests only (not counted as progress), in US and PAL over two reference scenarios
   and a progression scenario: a caller and its callee (2,238 and 2,232 comparisons per version, no difference) and a
   function that calls itself and two others in a fixed order (9,100 in US, 9,210 in PAL, every block, up to 10 calls per
-  comparison, no difference). Deliberately wrong callers are reported on every compared call in both versions (missing
+  comparison, no difference). These figures come from the final run on the integrated D2 work, with the
+  return-address rule below; a run made before that rule had given the same counts. Deliberately wrong callers are reported on every compared call in both versions (missing
   store, wrong argument, extra call, missing call, store before the call, wrong target), and calls in the wrong order on
   every call where the order matters. The return-address save word of the caller's frame is left out of the comparison
   only for a function that has call sites, and only when the original stored there the return address it was entered
@@ -210,8 +211,10 @@ from D1" below).
   (a thunk) makes the oracle build fail with a hook conflict. Never exercised on the game's code under comparison:
   conditional calls (`bcl`), tail calls, indirect calls (`bctrl`), the refusal of a thread switch, and a tail branch
   to a register restore helper (none of the last kind in the US or PAL main executable). How the oracle reads these
-  instructions is checked by local tests on hand-written instruction words, not in the game. The blocks that only lead
-  to a failed assertion are not yet covered by synthetic cases.
+  instructions is checked by local tests on hand-written instruction words, not in the game. A `bcctr` without link
+  is always taken as a tail branch to another function: the jump table of a `switch` would be recorded as a call,
+  which shows as a noisy "missing call" difference, never as a false pass; to be handled before a function with a
+  `switch` is enabled. The blocks that only lead to a failed assertion are not yet covered by synthetic cases.
 - **Game globals by version** (start of D2): decompiled code names a global by an identifier; its address in each
   version comes from `games/chibi-robo/symbols/globals.tsv`, which the build checks in both DOLs (right section, same
   contents where initialized, and the original code of each listed user references it at the same instruction
@@ -220,7 +223,7 @@ from D1" below).
   comparisons each, no difference).
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 17 verified (0.45 %; 636 bytes, 0.03 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
