@@ -77,6 +77,8 @@
 
 #define MAX_EVENTS 128u
 #define NESTED_CALL_BLOCK_BUDGET 200000000ull
+/* Blocks between two checks of the held-interrupt limit (gcrt_guest_call_set_held_irq_limit, opt-in). */
+#define HELD_IRQ_SLICE_BLOCKS 1000000ull
 
 typedef struct {
     u32 id;
@@ -210,6 +212,56 @@ static void call_returned(GcrtCpu* g, u32 original_return, void* data) {
 
 int gcrt_guest_call_depth(void) { return s_guest_call_depth; }
 
+/* Held-interrupt limit (opt-in, see gcrt_native.h). s_outer_ee: MSR[EE] of the outermost nested call when it started
+ * (the nested levels below it run with EE = 0 whatever the game had). */
+static u64 s_held_irq_limit;
+static bool s_outer_ee;
+
+void gcrt_guest_call_set_held_irq_limit(u64 ticks) { s_held_irq_limit = ticks; }
+
+/* Oldest due and unmasked event (external interrupt or alarm), or NULL. */
+static const Event* oldest_held_event(GcrtCpu* g) {
+    const Event* best = NULL;
+    for (unsigned i = 0; i < s_event_count; i++) {
+        const Event* e = &s_events[i];
+        if (e->due <= g->ticks && !gcrt_nirq_masked(g, e->interrupt) && (!best || e->due < best->due))
+            best = e;
+    }
+    return best;
+}
+
+/* Runs a nested call until it returns or stops. Default (no limit, or the outermost call started with EE = 0, e.g. a
+ * handler's callback): one run of the chassis with the block budget, as before the limit existed. With the limit:
+ * slices of HELD_IRQ_SLICE_BLOCKS blocks (a run of the chassis resumes at the pc where the previous one stopped, on a
+ * block boundary), and after each slice the oldest held interrupt is checked against the limit. */
+static GcrtStopReason run_nested(GcrtCpu* g, u32 function) {
+    const u64 end = g->blocks + NESTED_CALL_BLOCK_BUDGET;
+    if (!s_held_irq_limit || !s_outer_ee) {
+        GcrtRunLimits limits = {end, 0.0};
+        return gcrt_cpu_run(g, &limits);
+    }
+    const u64 entry_blocks = g->blocks;
+    for (;;) {
+        GcrtRunLimits limits = {g->blocks + HELD_IRQ_SLICE_BLOCKS < end ? g->blocks + HELD_IRQ_SLICE_BLOCKS : end, 0.0};
+        const GcrtStopReason reason = gcrt_cpu_run(g, &limits);
+        if (reason != GCRT_STOP_BLOCK_LIMIT || g->blocks >= end)
+            return reason;
+        const Event* e = oldest_held_event(g);
+        if (e && g->ticks - e->due > s_held_irq_limit) {
+            fprintf(stderr,
+                    "gcrt native: the nested call to %08X (depth %d, pc %08X) held the %s %u for %llu ticks (limit "
+                    "%llu) after %llu blocks: a callee waiting for an interrupt or another thread "
+                    "never returns in a nested call; stop\n",
+                    function, s_guest_call_depth, g->state.pc,
+                    e->interrupt >= GCRT_NIRQ_DECREMENTER ? "alarm class" : "interrupt", e->interrupt,
+                    (unsigned long long)(g->ticks - e->due), (unsigned long long)s_held_irq_limit,
+                    (unsigned long long)(g->blocks - entry_blocks));
+            g->stop = GCRT_STOP_HELD_INTERRUPT;
+            return g->stop;
+        }
+    }
+}
+
 bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, u32* result) {
     CPUState* c = &g->state;
     u32 gpr[32];
@@ -226,9 +278,10 @@ bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, 
     c->pc = function;
     c->msr &= ~MSR_EE;
     s_guest_calls++;
-    GcrtRunLimits limits = {g->blocks + NESTED_CALL_BLOCK_BUDGET, 0.0};
+    if (s_guest_call_depth == 0)
+        s_outer_ee = (msr & MSR_EE) != 0;
     s_guest_call_depth++;
-    GcrtStopReason reason = gcrt_cpu_run(g, &limits);
+    GcrtStopReason reason = run_nested(g, function);
     s_guest_call_depth--;
 
     memcpy(c->gpr, gpr, sizeof(gpr));
@@ -272,9 +325,10 @@ bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
     c->pc = function;
     c->msr &= ~MSR_EE;
     s_guest_calls++;
-    GcrtRunLimits limits = {g->blocks + NESTED_CALL_BLOCK_BUDGET, 0.0};
+    if (s_guest_call_depth == 0)
+        s_outer_ee = (msr & MSR_EE) != 0;
     s_guest_call_depth++;
-    GcrtStopReason reason = gcrt_cpu_run(g, &limits);
+    GcrtStopReason reason = run_nested(g, function);
     s_guest_call_depth--;
     c->pc = pc;
     c->lr = lr;

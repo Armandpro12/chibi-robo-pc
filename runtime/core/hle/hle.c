@@ -3,7 +3,9 @@
 #include "hle/gcrt_hle.h"
 
 #include "boot/gcrt_boot.h"
+#include "platform/gcrt_fatal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -324,6 +326,9 @@ typedef struct {
     u32 address;
 } Match;
 
+/* Fixed size. Every lookup (gcrt_hle_find, gcrt_hle_replace, gcrt_hle_is_copy...) reads this table only, so a match
+ * left out would be a replacement or a copy check silently missed: a scan that would exceed it is refused
+ * (scan_ranges), never truncated. */
 #define MAX_MATCHES 4096u
 static Match s_matches[MAX_MATCHES];
 static unsigned s_match_count;
@@ -430,7 +435,7 @@ static unsigned scan_ranges(GcrtCpu* g, ScanRange* ranges, unsigned count, const
             }
         }
     }
-    unsigned found = 0;
+    unsigned found = 0, dropped = 0;
     for (unsigned r = 0; r < count; r++) {
         ScanRange* sr = &ranges[r];
         if (!sr->candidate)
@@ -450,6 +455,8 @@ static unsigned scan_ranges(GcrtCpu* g, ScanRange* ranges, unsigned count, const
                     s_matches[s_match_count].sig = (u16)s;
                     s_matches[s_match_count].address = address;
                     s_match_count++;
+                } else {
+                    dropped++;
                 }
                 found++;
                 if (s_trace)
@@ -458,6 +465,16 @@ static unsigned scan_ranges(GcrtCpu* g, ScanRange* ranges, unsigned count, const
         }
         free(sr->candidate);
         sr->candidate = NULL;
+    }
+    if (dropped) {
+        /* Deterministic for a given executable and disc: met at the first launch that scans this code. */
+        char text[400];
+        snprintf(text, sizeof(text),
+                 "%s: %u SDK signature matches in total, more than the table holds (%u); %u would not be recorded, so "
+                 "replacements and copy checks would silently miss them. Raise MAX_MATCHES in hle/hle.c.",
+                 origin ? origin : "?", s_match_count + dropped, MAX_MATCHES, dropped);
+        fprintf(stderr, "gcrt hle: ERROR: %s\n", text);
+        gcrt_fatal_error("Signature match table full", text);
     }
     return found;
 }

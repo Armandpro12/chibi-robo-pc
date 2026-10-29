@@ -837,7 +837,7 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                     blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "",
                     fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
                     asserts: dict[int, list[int]] | None = None, globals: list[str] | None = None,
-                    costs: dict[str, int] | None = None) -> str:
+                    costs: dict[str, int] | None = None, no_return: list[int] | None = None) -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
     (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
     code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
@@ -849,7 +849,9 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     (the address array of the game globals in `version`, k_globals / k_global_count), installed by
     gc::set_global_table before the functions; None: no globals table. `costs`: {function name: guest cycles per
     call in `version`, 1/256 cycle} (read_guest_costs), registration::guest_cost_256ths; a missing name is 0 (nothing
-    charged: tools/build.py refuses that for a production build unless --allow-no-guest-cost)."""
+    charged: tools/build.py refuses that for a production build unless --allow-no-guest-cost). `no_return`: oracle
+    builds, guest addresses in `version` of the functions that do not return (no_return_addresses), given to the
+    oracle by gcrt_decomp_oracle_no_return (a synthetic case ends at a call to one of them)."""
     records = records or {}
     blocks = blocks or {}
     # Oracle builds: call_sites() (the oracle records the calls made at these instructions) and assertion_blocks()
@@ -868,7 +870,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
         lines += ["", 'extern "C" void gcrt_decomp_oracle_configure(struct GcrtCpu* g, const char* version, '
                       "const unsigned* addresses, const unsigned* sizes, const char* const* names, unsigned count, "
                       "const unsigned* block_first, const unsigned* blocks, const unsigned* call_first, const unsigned* calls, "
-                      "const char* sources_hash);"]
+                      "const char* sources_hash);",
+                  'extern "C" void gcrt_decomp_oracle_no_return(const unsigned* addresses, unsigned count);']
     lines += ["", "namespace {"]
     if globals is not None:
         lines += globals
@@ -909,6 +912,10 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
             cfirst.append(len(cflat))
             lines.append("const unsigned k_call_first[] = {" + ", ".join(str(x) for x in cfirst) + "};")
             lines.append("const unsigned k_calls[] = {" + ", ".join(f"0x{x:08X}u" for x in cflat + [0]) + "};")
+            # Functions that do not return (a final 0 keeps the array non-empty; the count leaves it out).
+            nr = sorted(no_return or [])
+            lines.append("const unsigned k_no_return[] = {" + ", ".join(f"0x{x:08X}u" for x in nr + [0]) + "};")
+            lines.append(f"constexpr unsigned k_no_return_count = {len(nr)};")
     else:
         lines += ["const ::gc::abi::registration* const k_table = nullptr;", "constexpr unsigned k_count = 0;"]
     lines += ["} // namespace", "",
@@ -919,6 +926,7 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     if oracle and entries:
         lines.append(f'    gcrt_decomp_oracle_configure(g, "{version}", k_addresses, k_sizes, k_names, k_count, '
                      f'k_block_first, k_blocks, k_call_first, k_calls, "{sources_hash}");')
+        lines.append("    gcrt_decomp_oracle_no_return(k_no_return, k_no_return_count);")
     lines += ["    gcrt_decomp_install_table(g, k_table, k_count);", "}", ""]
     return "\n".join(lines)
 

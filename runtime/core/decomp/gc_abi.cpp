@@ -288,6 +288,15 @@ bool run_guest(GcrtCpu* g, u32 address) noexcept {
     return returned;
 }
 
+void stop_after_no_return(u32 address) noexcept {
+    GcrtCpu* g = s_cpu;
+    if (!g || g->stop != GCRT_STOP_NONE)
+        return; // the nested run stopped the game itself (OSPanic, PPCHalt...)
+    std::fprintf(stderr, "gc_abi: the guest function %08X, declared without return, returned to decompiled code: "
+                         "the game stops\n", static_cast<unsigned>(address));
+    g->stop = GCRT_STOP_GUEST_HALT;
+}
+
 void first_call(u32 address) {
     const export_record* e = find(address);
     std::fprintf(stderr, "gc_abi: first call of %s (%08X)\n", e ? e->name : "?", static_cast<unsigned>(address));
