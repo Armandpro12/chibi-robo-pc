@@ -269,6 +269,18 @@ from D1" below).
   in US and PAL (it differed by -132 to +60 cycles), and images, sound and saves are unchanged; checked by a local
   test that fails without the patch. The guest time of the recompiled code itself changes slightly (-528 to +684
   cycles at the end of a scenario), so the bench references are to be recorded again.
+- **Cost by path** (D2, issue 59): the six functions whose original's cost depends on the path it takes are now
+  charged, call by call, the exact cycles of that path instead of a mean. The build reads a graph of the original's
+  conditional branches, with the cycles charged along each edge, from its instructions and from the code DolRecomp
+  generated (`tools/decomp_path_cost.py`, never written by hand); the decompiled code marks the outcome of each of the
+  original's branches (`gc::path::taken` / `falls_through`, `runtime/core/decomp/gc_path.h`), and the gateway walks the
+  graph. The oracle checks the path cost against the original's cycles on every measured call (0 different on the five
+  scenarios, US and PAL, about 870,000 calls each), and a production run charges the same cycles as the original on
+  each call. With it, the 40 functions leave the cycle counter equal to the build without decompiled functions at
+  every host wait of the five scenarios, in US and PAL, and images, sound and saves match the references. The tool
+  also shows 14 more originals whose cost depends on their path but that took a single path in the scenarios (mostly
+  null-pointer tests): they are still charged that path's cost, to be marked as well. Removed with the cycle clock at
+  D3.
 - **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
   same instruction pattern in each DOL (the register offsets differ), and the runtime replaces only the copy it anchors (after `ARInit`). The build now treats the
   copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight
