@@ -777,12 +777,14 @@ def forced_entries(game_cfg: dict, version: str) -> dict[int, list[str]]:
 def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
             blocks: dict[int, tuple[list[int], list[int]]] | None = None,
             fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
-            asserts: dict[int, list[int]] | None = None) -> list[tuple[int, Function]]:
+            asserts: dict[int, list[int]] | None = None,
+            words: dict[int, list[int]] | None = None) -> list[tuple[int, Function]]:
     """Enabled functions of `version` with their guest address, after the code checks. `layout`: tools/build.py
     rel_layout (virtual addresses of the RELs). `blocks`: if given, filled with {guest address: code_blocks()}.
     `fpu`: if given, filled with {guest address: fpu_instructions()} (empty list: no floating-point instruction).
     `calls`, `asserts`: if given, filled with {guest address: call_sites()} and {guest address: assertion_blocks()}
-    (oracle builds)."""
+    (oracle builds). `words`: if given, filled with {guest address: instruction words of the original} (graph of its
+    paths, tools/decomp_path_cost.py)."""
     import symbols as sy  # noqa: E402  (generic tool of the repository)
     functions = read_table(game_cfg)
     if not functions:
@@ -823,6 +825,9 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
             calls[guest] = call_sites(ranges, guest, f.size)
         if asserts is not None:
             asserts[guest] = assertion_blocks(ranges, guest, f.size, no_return_addresses(game_cfg, version))
+        if words is not None and not reason:
+            base, blob = _code_of(ranges, guest)
+            words[guest] = [_word(blob, guest - base + 4 * i) for i in range(f.size // 4)]
         out.append((guest, f))
     addresses = [a for a, _ in out]
     for a in sorted({a for a in addresses if addresses.count(a) > 1}):
@@ -837,7 +842,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                     blocks: dict[int, tuple[list[int], list[int]]] | None = None, sources_hash: str = "",
                     fpu: dict[int, list[int]] | None = None, calls: dict[int, list[int]] | None = None,
                     asserts: dict[int, list[int]] | None = None, globals: list[str] | None = None,
-                    costs: dict[str, int] | None = None, no_return: list[int] | None = None) -> str:
+                    costs: dict[str, int] | None = None, paths: list[str] | None = None,
+                    path_names: dict[int, str] | None = None, no_return: list[int] | None = None) -> str:
     """C++ registration table of `version` (build folder only: it holds addresses). `oracle`: oracle build
     (tools/build.py --oracle), the table also gives the oracle each function's size, its basic blocks (`blocks`,
     code_blocks(): reachable starts, then unreachable ones marked by bit 0) and the hash of the sources
@@ -849,7 +855,9 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     (the address array of the game globals in `version`, k_globals / k_global_count), installed by
     gc::set_global_table before the functions; None: no globals table. `costs`: {function name: guest cycles per
     call in `version`, 1/256 cycle} (read_guest_costs), registration::guest_cost_256ths; a missing name is 0 (nothing
-    charged: tools/build.py refuses that for a production build unless --allow-no-guest-cost). `no_return`: oracle
+    charged: tools/build.py refuses that for a production build unless --allow-no-guest-cost). `paths`: C++ lines of
+    the path graphs (tools/decomp_path_cost.py registry_lines) and `path_names` {guest address: graph name}
+    (registration::path of a function whose original's cost depends on its path, gc_path.h). `no_return`: oracle
     builds, guest addresses in `version` of the functions that do not return (no_return_addresses), given to the
     oracle by gcrt_decomp_oracle_no_return (a synthetic case ends at a call to one of them)."""
     records = records or {}
@@ -875,6 +883,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     lines += ["", "namespace {"]
     if globals is not None:
         lines += globals
+    if paths:
+        lines += paths
     if entries:
         lines.append("const ::gc::abi::registration k_table[] = {")
         for a, f in entries:
@@ -883,8 +893,11 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
             first = f"first floating-point instruction {fpu[a][0]:08X}" if fpu and fpu.get(a) else (
                 "no floating-point instruction" if fpu is not None else "not scanned")
             cost = (costs or {}).get(f.name, 0)
-            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}, {cost}u}}, "
-                         f"// {first}; guest cost {cost / GUEST_COST_FRACTION:.4f} cycles")
+            graph = (path_names or {}).get(a)
+            path = f", &{graph}" if graph else ""
+            note = "; cost by path, mean" if graph else "; guest cost"
+            lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}, {cost}u{path}}}, "
+                         f"// {first}{note} {cost / GUEST_COST_FRACTION:.4f} cycles")
         lines += ["};", "constexpr unsigned k_count = sizeof(k_table) / sizeof(k_table[0]);"]
         if oracle:
             lines.append("const unsigned k_addresses[] = {" + ", ".join(f"0x{a:08X}u" for a, _ in entries) + "};")

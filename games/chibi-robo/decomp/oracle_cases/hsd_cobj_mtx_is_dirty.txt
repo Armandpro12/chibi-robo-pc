@@ -77,3 +77,23 @@ mem S+28 4 S+80
 mem S+48 4 FFFFFFFD
 mem S+88 4 FFFFFFFD
 end
+
+# The two paths of 15 cycles of the original (D2-4c1b, cost by path checked on synthetic cases): an eye position that
+# did not move and no interest; no eye position and an interest that did not move. Both return 0.
+case hsd_cobj_mtx_is_dirty eye_still_no_interest
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 S+40
+mem S+28 4 00000000
+mem S+48 4 00000000
+mem S+88 4 00000000
+end
+
+case hsd_cobj_mtx_is_dirty no_eye_interest_still
+r3 = S
+mem S+8 4 00000000
+mem S+24 4 00000000
+mem S+28 4 S+80
+mem S+48 4 00000000
+mem S+88 4 00000000
+end

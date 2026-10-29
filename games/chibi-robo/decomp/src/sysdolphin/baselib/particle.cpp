@@ -10,6 +10,7 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
@@ -17,11 +18,12 @@ namespace hsd {
 // when that byte has its top bit set, two bytes holding a 15-bit big-endian value (the top bit of the first byte is
 // dropped). The first byte is written to `*count` and read back from it before the second one is read, as in the
 // original (the same bytes if `count` overlaps the stream).
+// (Path mark: runtime/core/decomp/gc_path.h; the original returns early by a conditional return, taken on one byte.)
 ptr<const be<u8>> psReadCount(ptr<const be<u8>> stream, ptr<be<u16>> count) {
     *count = gc::load(*stream);
     stream += 1;
     const u16 first = gc::load(*count);
-    if (!(first & 0x80))
+    if (gc::path::taken(!(first & 0x80)))
         return stream;
     const u8 second = gc::load(*stream);
     stream += 1;
@@ -36,5 +38,5 @@ ptr<HSD_Particle> psGetNextParticle(ptr<const HSD_Particle> particle) {
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(ps_read_count, hsd::psReadCount, gc::abi::flag_none);
+GC_DECOMP_EXPORT(ps_read_count, hsd::psReadCount, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(ps_get_next_particle, hsd::psGetNextParticle, gc::abi::flag_reads_only);

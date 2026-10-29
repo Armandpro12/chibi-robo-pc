@@ -45,3 +45,12 @@ r5 = 0FFFFFFF
 mem S+0 4 0
 mem S+4 4 FFFFFFFF
 end
+
+# A typed object of another type (D2-4c1b: the original's "type differs" branch taken), then the end of the list.
+case hsd_robj_get_by_type typed_other_type
+r3 = S
+r4 = 20000000
+r5 = 0
+mem S+0 4 0
+mem S+4 4 C0000000
+end
