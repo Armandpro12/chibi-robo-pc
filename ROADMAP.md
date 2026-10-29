@@ -265,6 +265,10 @@ from D1" below).
   copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight
   HSD accessors planned for the next batch were refused before), and the runtime refuses a second, different replacement at
   one address instead of silently overwriting the first. Checked in US and PAL against the runtime's own choice.
+  When the runtime picks one copy, it now examines every copy: a limit of 64 used to drop the later ones without a
+  message (five SDK names have 108 copies per DOL). The build also refuses a decompiled function at an entry that the
+  test scenarios force with `GCRT_FORCE_ARG` (`[run.force]`, `[stage.start]` in `game.toml`), which the runtime would
+  otherwise refuse at startup; a refused forced item is reported as not active.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
