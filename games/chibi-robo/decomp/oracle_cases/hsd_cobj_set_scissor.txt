@@ -24,3 +24,23 @@ r4 = S+80
 mem S+80 4 00000280
 mem S+84 4 000001E0
 end
+
+# A8 (D2-4c3): source box overlapping the camera's own box (never seen in the game: every call site reached passes a
+# copy on the caller's stack). The original loads the 8 bytes, then stores them.
+case hsd_cobj_set_scissor overlap_before
+r3 = S
+r4 = S+1A
+mem S+18 4 11112222
+mem S+1C 4 33334444
+mem S+20 4 55556666
+mem S+24 4 77778888
+end
+
+case hsd_cobj_set_scissor overlap_after
+r3 = S
+r4 = S+1E
+mem S+18 4 11112222
+mem S+1C 4 33334444
+mem S+20 4 55556666
+mem S+24 4 77778888
+end

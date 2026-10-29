@@ -15,3 +15,21 @@ r4 = S+40
 mem S+10 4 FFFFFFFF
 mem S+40 4 0
 end
+
+# A8 (D2-4c3): source colour overlapping the light's own colour (never seen in the game: the colour is passed by value,
+# so r4 is always a copy on the caller's stack). The original moves it with one word load and one word store.
+case hsd_lobj_set_color overlap_before
+r3 = S
+r4 = S+F
+mem S+C 4 01020304
+mem S+10 4 05060708
+mem S+14 4 090A0B0C
+end
+
+case hsd_lobj_set_color overlap_after
+r3 = S
+r4 = S+11
+mem S+C 4 01020304
+mem S+10 4 05060708
+mem S+14 4 090A0B0C
+end

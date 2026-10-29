@@ -29,3 +29,25 @@ r4 = S+80
 mem S+8 4 FFFFFFFF
 mem S+80 4 80000000
 end
+
+# A19 (D2-4c4): source position overlapping the object's own position (never seen in the game). The original loads x
+# and y, stores them, then loads and stores z. The source starts on the flags word (S+8), 4 bytes before the position.
+case hsd_wobj_set_position overlap_before
+r3 = S
+r4 = S+8
+mem S+8 4 00000005
+mem S+C 4 3F800000
+mem S+10 4 40000000
+mem S+14 4 40400000
+mem S+18 4 40800000
+end
+
+case hsd_wobj_set_position overlap_after
+r3 = S
+r4 = S+10
+mem S+8 4 00000001
+mem S+C 4 3F800000
+mem S+10 4 40000000
+mem S+14 4 40400000
+mem S+18 4 40800000
+end

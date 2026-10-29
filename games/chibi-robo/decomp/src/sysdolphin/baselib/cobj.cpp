@@ -34,20 +34,32 @@ u8 HSD_CObjMtxIsDirty(ptr<const HSD_CObj> cobj) {
     return 0;
 }
 
-// Sets the camera's scissor box (in pixels) from `*scissor`; nothing if there is no camera. The source is never the
-// camera's own box [hypothesis], so the copy order does not matter.
+// Sets the camera's scissor box (in pixels) from `*scissor`; nothing if there is no camera. The original loads the
+// whole box (two words) before storing it, so the box is first copied into a local: the result is the original's
+// even when the source overlaps the camera's own box (anomaly A19; the calls reached by the reference scenarios pass
+// a copy on the caller's stack [hypothesis for the call sites never reached]).
 void HSD_CObjSetScissor(ptr<HSD_CObj> cobj, ptr<const HSD_CObj::Scissor> scissor) {
     if (gc::path::taken(cobj == nullptr)) // original: a conditional return
         return;
-    cobj->scissor = *scissor;
+    const HSD_CObj::Scissor box = *scissor;
+    cobj->scissor = box;
 }
 
 // Sets the camera's viewport from `*viewport`; nothing if there is no camera. The four floats are copied as they are
-// (the original moves their bits with integer loads and stores); same remark on the copy order as above.
+// (the original moves their bits with integer loads and stores), in the original's order: left and right are both
+// loaded, then stored, then top and bottom; so the result is the original's even when the source overlaps the
+// camera's own viewport (A19; the calls reached by the scenarios pass a stack copy [hypothesis for the others]).
 void HSD_CObjSetViewportf(ptr<HSD_CObj> cobj, ptr<const HSD_CObj::Viewport> viewport) {
     if (gc::path::taken(cobj == nullptr)) // original: a conditional return
         return;
-    cobj->viewport = *viewport;
+    const be<f32> left = viewport->left;
+    const be<f32> right = viewport->right;
+    cobj->viewport.left = left;
+    cobj->viewport.right = right;
+    const be<f32> top = viewport->top;
+    const be<f32> bottom = viewport->bottom;
+    cobj->viewport.top = top;
+    cobj->viewport.bottom = bottom;
 }
 
 // The camera's projection type; perspective if there is no camera.

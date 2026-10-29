@@ -13,9 +13,12 @@
 namespace hsd {
 
 // Sets the light's colour. The colour is passed by value in C, which the PowerPC EABI turns into a pointer to a copy
-// (r4); there is no test of a missing light (the original has none).
+// (r4); there is no test of a missing light (the original has none). The original moves the four bytes with one
+// word load and one word store, so the colour is first copied into a local: the result is the original's even when
+// the source overlaps the light's own colour (anomaly A19).
 void HSD_LObjSetColor(ptr<HSD_LObj> lobj, ptr<const GXColor> color) {
-    lobj->color = *color;
+    const GXColor value = *color;
+    lobj->color = value;
 }
 
 } // namespace hsd
