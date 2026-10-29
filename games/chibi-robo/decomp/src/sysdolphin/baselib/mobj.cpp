@@ -13,8 +13,12 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 #include "decomp_globals.h"
 
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
 namespace hsd {
 
 // current_mobj of mobj.c: the material being drawn [hypothesis on the meaning: from the names and the callers of
@@ -35,14 +39,14 @@ u32 HSD_MObjGetFlags(ptr<const HSD_MObj> mobj) {
 
 // Sets the flags of `mask` in the material's render mode; nothing if there is no material.
 void HSD_MObjSetFlags(ptr<HSD_MObj> mobj, u32 mask) {
-    if (mobj == nullptr)
+    if (gc::path::taken(mobj == nullptr)) // original: a conditional return
         return;
     mobj->rendermode |= mask;
 }
 
 // Clears the flags of `mask` in the material's render mode; nothing if there is no material.
 void HSD_MObjClearFlags(ptr<HSD_MObj> mobj, u32 mask) {
-    if (mobj == nullptr)
+    if (gc::path::taken(mobj == nullptr)) // original: a conditional return
         return;
     mobj->rendermode &= ~mask;
 }
@@ -58,6 +62,6 @@ ptr<HSD_TObj> HSD_MObjGetTObj(ptr<const HSD_MObj> mobj) {
 
 GC_DECOMP_EXPORT(hsd_mobj_set_current, hsd::HSD_MObjSetCurrent, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_mobj_get_flags, hsd::HSD_MObjGetFlags, gc::abi::flag_reads_only);
-GC_DECOMP_EXPORT(hsd_mobj_set_flags, hsd::HSD_MObjSetFlags, gc::abi::flag_none);
-GC_DECOMP_EXPORT(hsd_mobj_clear_flags, hsd::HSD_MObjClearFlags, gc::abi::flag_none);
+GC_DECOMP_EXPORT(hsd_mobj_set_flags, hsd::HSD_MObjSetFlags, gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_mobj_clear_flags, hsd::HSD_MObjClearFlags, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_mobj_get_tobj, hsd::HSD_MObjGetTObj, gc::abi::flag_reads_only);

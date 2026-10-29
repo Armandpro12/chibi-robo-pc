@@ -11,6 +11,7 @@
 // given by that symmetry (notes of the decompilation stage).
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 #include <cstddef>
 
@@ -72,12 +73,16 @@ static_assert(sizeof(HSD_ArchivePublicInfo) == 8);
 
 // Name of the public symbol number `index`, or null if there is no such symbol.
 ptr<char> HSD_ArchiveGetPublic(ptr<HSD_Archive> archive, s32 index) {
-    // A negative index is refused before the unsigned comparison with the count (both versions test both).
-    if (index < 0 || gc::load(archive->header.nb_public) <= static_cast<u32>(index))
+    // A negative index is refused before the unsigned comparison with the count (both versions test both). Path
+    // marks (runtime/core/decomp/gc_path.h): the original branches to its "null" on index < 0, then to the symbol
+    // when the count is above the index (falls_through on the opposite test).
+    if (gc::path::taken(index < 0) ||
+        gc::path::falls_through(gc::load(archive->header.nb_public) <= static_cast<u32>(index)))
         return nullptr;
     return archive->symbols + static_cast<std::ptrdiff_t>(gc::load(archive->public_info[index].symbol));
 }
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_archive_get_public, hsd::HSD_ArchiveGetPublic, gc::abi::flag_reads_only);
+GC_DECOMP_EXPORT(hsd_archive_get_public, hsd::HSD_ArchiveGetPublic,
+                 gc::abi::flag_reads_only | gc::abi::flag_path_marked);

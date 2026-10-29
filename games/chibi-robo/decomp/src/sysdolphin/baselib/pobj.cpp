@@ -14,10 +14,14 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 #include "decomp_globals.h"
 
 #include <cstddef>
 
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
 namespace hsd {
 
 using gc::u32;
@@ -46,28 +50,29 @@ void HSD_PObjClearMtxMark(ptr<void> object, u32 mark) {
 // Clears the flags of `mask` in the polygon's 16-bit flags; nothing if there is no polygon. Only the low 16 bits of
 // `mask` matter (the original stores a halfword).
 void HSD_PObjClearFlags(ptr<HSD_PObj> pobj, u32 mask) {
-    if (pobj == nullptr)
+    if (gc::path::taken(pobj == nullptr)) // original: a conditional return
         return;
     pobj->flags = static_cast<u16>(gc::load(pobj->flags) & ~mask);
 }
 
 // Sets the flags of `mask` in the polygon's 16-bit flags; nothing if there is no polygon.
 void HSD_PObjSetFlags(ptr<HSD_PObj> pobj, u32 mask) {
-    if (pobj == nullptr)
+    if (gc::path::taken(pobj == nullptr)) // original: a conditional return
         return;
     pobj->flags = static_cast<u16>(gc::load(pobj->flags) | mask);
 }
 
 // Animation callback: stores the animated value `*value` as the shape blend weight of `polygon`, the weight number
 // `track - 2` of the array when the shape set has one, its single weight otherwise. Nothing for a missing polygon
-// or one that is not shape-animated. The float is moved as it is (lfs/stfs keep its bits).
+// or one that is not shape-animated. The float is moved as it is (lfs/stfs keep its bits). (The original returns by
+// conditional returns on the first two tests and branches to the single weight: falls_through there.)
 void pobj_set_shape_blend(ptr<HSD_PObj> polygon, s32 track, ptr<const be<f32>> value) {
-    if (polygon == nullptr)
+    if (gc::path::taken(polygon == nullptr))
         return;
-    if ((gc::load(polygon->flags) & pobj_kind_mask) != pobj_kind_shape_animated)
+    if (gc::path::taken((gc::load(polygon->flags) & pobj_kind_mask) != pobj_kind_shape_animated))
         return;
     const ptr<HSD_ShapeSet> shape_set = polygon->u.shape_set;
-    if (gc::load(shape_set->flags) & shape_set_weight_array) {
+    if (gc::path::falls_through(gc::load(shape_set->flags) & shape_set_weight_array)) {
         // weights + 4 * track - 8, wrapping modulo 2^32 as the original's add (no overflow in host arithmetic).
         const ptr<be<f32>> weights = shape_set->blend.weights;
         weights[static_cast<std::ptrdiff_t>(track) - 2] = *value;
@@ -79,6 +84,6 @@ void pobj_set_shape_blend(ptr<HSD_PObj> polygon, s32 track, ptr<const be<f32>> v
 } // namespace hsd
 
 GC_DECOMP_EXPORT(hsd_pobj_clear_mtx_mark, hsd::HSD_PObjClearMtxMark, gc::abi::flag_none);
-GC_DECOMP_EXPORT(hsd_pobj_clear_flags, hsd::HSD_PObjClearFlags, gc::abi::flag_none);
-GC_DECOMP_EXPORT(hsd_pobj_set_flags, hsd::HSD_PObjSetFlags, gc::abi::flag_none);
-GC_DECOMP_EXPORT(hsd_pobj_set_shape_blend, hsd::pobj_set_shape_blend, gc::abi::flag_none);
+GC_DECOMP_EXPORT(hsd_pobj_clear_flags, hsd::HSD_PObjClearFlags, gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_pobj_set_flags, hsd::HSD_PObjSetFlags, gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_pobj_set_shape_blend, hsd::pobj_set_shape_blend, gc::abi::flag_path_marked);

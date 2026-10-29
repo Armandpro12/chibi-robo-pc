@@ -681,8 +681,41 @@ def guest_costs_for_build(version: str, names: list[str], all_costs: dict[str, d
     return costs
 
 
+def path_costs_for_build(version: str, entries: list, words: dict[int, list[int]], recomp_dir: Path | None,
+                         costs: dict[str, int], oracle: bool) -> tuple[list[str], dict[int, str]]:
+    """Cost by path (runtime/core/decomp/gc_path.h): the graph of each registered original whose cost depends on its
+    path (tools/decomp_path_cost.py, from its instructions and the cost groups of the code DolRecomp generated in
+    `recomp_dir`), as C++ lines of the registration table and {address: graph name}. A function whose original's cost
+    is the same on every path keeps its table cost, which must then be that constant in a production build (a stale or
+    wrong cell is refused: it would charge other cycles than the original's)."""
+    import decomp_path_cost  # noqa: E402
+    if recomp_dir is None or not entries:
+        return [], {}
+    errors: dict[int, str] = {}
+    graphs = decomp_path_cost.graphs_for(recomp_dir, words, errors)
+    for a, f in entries:
+        if a in errors:
+            # No graph (e.g. a loop DolRecomp outlined): the function keeps its table cost; a path-marked one is then
+            # charged its mean, which the gateway's install message counts.
+            print(f"== WARNING: no path graph for {f.name} ({version}): {errors[a]}")
+    dependent = [a for a, _ in entries if a in graphs and graphs[a].constant() is None]
+    if not oracle:
+        wrong = []
+        for a, f in entries:
+            c = graphs[a].constant() if a in graphs else None
+            if c is not None and f.name in costs and costs[f.name] != c * 256:
+                wrong.append(f"{f.name} (table {costs[f.name] / 256:.4f}, original {c})")
+        if wrong:
+            raise SystemExit(f"== ERROR: guest cost table cells of {version} differ from the constant cost of the "
+                             f"original's code (tools/decomp_path_cost.py): {', '.join(wrong)}")
+    lines, names = decomp_path_cost.registry_lines(graphs, dependent)
+    print(f"== Cost by path: {len(dependent)} of {len(entries)} functions of {version} have a path-dependent original "
+          f"({', '.join(f.name for a, f in entries if a in names) or 'none'})")
+    return lines, names
+
+
 def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, oracle: dict | None = None,
-                    allow_no_guest_cost: bool = False) -> str:
+                    allow_no_guest_cost: bool = False, recomp_dir: Path | None = None) -> str:
     """Registration table of the decompiled functions for `version` (tools/decomp_functions.py), written into the
     build folder only if it changed (no recompilation otherwise); "" if the game has no [decomp] table. `oracle`:
     options of an oracle build (main: --oracle, --oracle-negative, --decomp-enable). A production build refuses an
@@ -700,9 +733,10 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     calls: dict[int, list[int]] = {}
     asserts: dict[int, list[int]] = {}
     # Basic blocks too are for the oracle only (its table); a production table holds addresses and flags only.
+    words: dict[int, list[int]] = {}
     entries = decomp_functions.resolve(game_cfg, version, disc_root, decomp_functions._layout(game_cfg, disc_root),
                                        blocks if oracle else None, fpu, calls if oracle else None,
-                                       asserts if oracle else None)
+                                       asserts if oracle else None, words)
     path = build_dir / "decomp" / "decomp_registry.cpp"
     records = negative_records(oracle.get("negative")) if oracle else {}
     if oracle and oracle.get("negative"):
@@ -716,11 +750,13 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     # gateway charges to the cycle clock per call, as the original would have been (gc_abi.h registration::guest_cost).
     costs = guest_costs_for_build(version, [f.name for _, f in entries], decomp_functions.read_guest_costs(game_cfg),
                                   bool(oracle), allow_no_guest_cost)
+    paths, path_names = path_costs_for_build(version, entries, words, recomp_dir, costs, bool(oracle))
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
                                                                              sources_hash=sources_hash, fpu=fpu,
                                                                              calls=calls, asserts=asserts,
                                                                              globals=globals_lines, costs=costs,
+                                                                             paths=paths, path_names=path_names,
                                                                              no_return=sorted(
                                                                                  decomp_functions.no_return_addresses(
                                                                                      game_cfg, version))
@@ -867,7 +903,7 @@ def configure_and_build(game: str, version: str, config: str, disc_root: Path, r
         if exe.exists():
             defs[var] = exe.as_posix()
     defs["GCRT_DECOMP_REGISTRY"] = decomp_registry(game, version, disc_root, build_dir, oracle,
-                                                   allow_no_guest_cost)
+                                                   allow_no_guest_cost, recomp_dir)
     # Decompilation oracle (--oracle): always set, so that a build folder goes back to a normal build without it.
     defs["GCRT_DECOMP_ORACLE"] = "ON" if oracle else "OFF"
     defs["GCRT_DECOMP_NEGATIVE_DIR"] = oracle["negative"].as_posix() if oracle and oracle.get("negative") else ""

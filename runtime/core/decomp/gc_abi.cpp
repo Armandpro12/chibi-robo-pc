@@ -33,6 +33,7 @@ unsigned s_crosscheck_limit = 0;     // GCRT_DECOMP_CROSSCHECK: cross-checks per
 bool s_report_registered = false;
 u64 s_cost_charged_cycles = 0;  // guest cycles charged by charge_guest_cost (cycle clock)
 u64 s_cost_uncharged_calls = 0; // calls whose cost was not charged: real-time clock (GCRT_PACING=host)
+bool s_path_error_reported = false; // first path error printed (gc_path.h)
 
 u32 slot_hash(u32 address, std::size_t mask) {
     return static_cast<u32>(((address >> 2) * 2654435761u) & mask);
@@ -127,7 +128,7 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     // pacing of normal play runs on the cycle clock, so there it does change the guest time (gc_abi.h "Guest time").
     const char* cost_env = std::getenv("GCRT_DECOMP_GUEST_COST");
     const bool costs_off = cost_env && cost_env[0] == '0' && cost_env[1] == 0;
-    unsigned costed = 0;
+    unsigned costed = 0, with_path = 0, mean_only = 0;
     for (unsigned i = 0; i < count; i++)
         if (table[i].record->cost)
             *table[i].record->cost = guest_cost_state{};
@@ -142,7 +143,13 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         cost->per_call_256ths = wanted;
         cost->remainder_256ths = 0;
         cost->registered = true;
-        costed += wanted != 0;
+        // Cost by path (gc_path.h): the graph of the original, unless the costs are off or the decompiled code does
+        // not mark the original's branches (then the mean, a debt the message below counts).
+        cost->path = costs_off || !(table[i].record->flags & flag_path_marked) ? nullptr : table[i].path;
+        if (table[i].path && !(table[i].record->flags & flag_path_marked))
+            mean_only++;
+        costed += wanted != 0 || cost->path != nullptr;
+        with_path += cost->path != nullptr;
     }
     detail::guest_cost_enabled = costed != 0;
     const char* cc = std::getenv("GCRT_DECOMP_CROSSCHECK");
@@ -160,8 +167,9 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     // The clock is not known yet here (the platform's pacing may switch to the cycle clock later): the message says
     // when the costs apply; the exit report (DECOMP guest_cost) says what was charged.
     std::fprintf(stderr, "gc_abi: guest cost of %u of them charged to the cycle clock, only while the CPU runs on it "
-                         "(default pacing, bench; nothing with the real-time clock, GCRT_PACING=host)%s\n", costed,
-                 costs_off ? " (GCRT_DECOMP_GUEST_COST=0: costs off)" : "");
+                         "(default pacing, bench; nothing with the real-time clock, GCRT_PACING=host), %u by the path "
+                         "of their original, %u path-dependent charged their mean (code without path marks)%s\n",
+                 costed, with_path, mean_only, costs_off ? " (GCRT_DECOMP_GUEST_COST=0: costs off)" : "");
     if (!s_report_registered) {
         s_report_registered = true;
         std::atexit(&report_at_exit);
@@ -191,6 +199,9 @@ void report(std::FILE* out) {
                      static_cast<unsigned long long>(e.fpu_declined));
         if (s_crosscheck_limit)
             std::fprintf(out, " crosscheck=%u mismatches=%u", e.checks, e.mismatches);
+        if (const guest_cost_state* c = e.reg->record->cost; c && c->path)
+            std::fprintf(out, " path_walks=%llu path_errors=%llu", static_cast<unsigned long long>(c->path_walks),
+                         static_cast<unsigned long long>(c->path_errors));
         std::fputc('\n', out);
     }
     u64 dispatch_calls = 0, dispatch_misses = 0;
@@ -202,6 +213,18 @@ void report(std::FILE* out) {
     std::fprintf(out, "DECOMP guest_cost charged_cycles=%llu uncharged_calls=%llu\n",
                  static_cast<unsigned long long>(s_cost_charged_cycles),
                  static_cast<unsigned long long>(s_cost_uncharged_calls));
+    // Cost by path (gc_path.h): calls charged by the walk of their original's graph, and path errors (walks that did
+    // not end on a return of the original: the table's mean was charged; 0 expected).
+    u64 path_functions = 0, path_walks = 0, path_errors = 0;
+    for (const entry_state& e : s_entries)
+        if (const guest_cost_state* c = e.reg->record->cost; c && c->path) {
+            path_functions++;
+            path_walks += c->path_walks;
+            path_errors += c->path_errors;
+        }
+    std::fprintf(out, "DECOMP path_cost functions=%llu walks=%llu errors=%llu\n",
+                 static_cast<unsigned long long>(path_functions), static_cast<unsigned long long>(path_walks),
+                 static_cast<unsigned long long>(path_errors));
 }
 
 namespace detail {
@@ -209,6 +232,36 @@ namespace detail {
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
 bool guest_cost_enabled = false;
+path_walk* current_path = nullptr;
+
+void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost, const path_scope& scope) noexcept {
+    const path_walk& w = scope.walk;
+    if (!w.graph || !g || g->clock != GCRT_CLOCK_CYCLES) {
+        charge_guest_cost(g, cost); // constant cost, or the real-time clock (nothing charged there)
+        return;
+    }
+    if (path_complete(w)) {
+        cost.path_walks++;
+        if (w.cycles)
+            gcrt_cpu_add_cycles(g, w.cycles);
+        s_cost_charged_cycles += w.cycles;
+        return;
+    }
+    // The decompiled code marked fewer or more outcomes than the original's path has: its markers do not follow the
+    // original's branches (gc_path.h). The table's mean is charged; the oracle shows such a call as a path mismatch.
+    cost.path_errors++;
+    if (!s_path_error_reported) {
+        s_path_error_reported = true;
+        const char* name = "?";
+        for (const entry_state& e : s_entries)
+            if (e.reg->record->cost == &cost)
+                name = e.reg->record->name;
+        std::fprintf(stderr, "gc_abi: PATH ERROR in %s: %u outcomes marked, walk %s (the mean cost is charged; "
+                             "first error only, all counted in DECOMP path_cost)\n", name, w.steps,
+                     w.error ? "had already reached a return" : "did not reach a return");
+    }
+    charge_guest_cost(g, cost);
+}
 
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept {
     // Real-time clock (GCRT_PACING=host): the cycle counter is not time, nothing to keep in step and nothing written.

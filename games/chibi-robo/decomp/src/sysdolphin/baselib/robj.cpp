@@ -9,17 +9,25 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
 // The first reference object of the list that starts at `robj` whose type is `type` (already shifted into bits
 // 28-30) and, unless `subtype` is 0, whose subtype is `subtype`; objects without a type are skipped. Null if none.
+// The original tests the pointer at its entry, then jumps to the test at the bottom of its loop, so the first object
+// is tested twice: the entry test below, then the loop's test (same sense) before each turn.
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
 ptr<HSD_RObj> HSD_RObjGetByType(ptr<HSD_RObj> robj, u32 type, u32 subtype) {
-    for (ptr<HSD_RObj> current = robj; current != nullptr; current = current->next) {
+    if (gc::path::falls_through(robj == nullptr))
+        return nullptr;
+    for (ptr<HSD_RObj> current = robj; gc::path::taken(current != nullptr); current = current->next) {
         const u32 flags = gc::load(current->flags);
-        if (!(flags & robj_has_type) || (flags & robj_type_mask) != type)
+        if (gc::path::taken(!(flags & robj_has_type)) || gc::path::taken((flags & robj_type_mask) != type))
             continue;
-        if (subtype == 0 || subtype == (flags & robj_subtype_mask))
+        if (gc::path::taken(subtype == 0) || gc::path::falls_through(subtype == (flags & robj_subtype_mask)))
             return current;
     }
     return nullptr;
@@ -27,4 +35,4 @@ ptr<HSD_RObj> HSD_RObjGetByType(ptr<HSD_RObj> robj, u32 type, u32 subtype) {
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_robj_get_by_type, hsd::HSD_RObjGetByType, gc::abi::flag_reads_only);
+GC_DECOMP_EXPORT(hsd_robj_get_by_type, hsd::HSD_RObjGetByType, gc::abi::flag_reads_only | gc::abi::flag_path_marked);
