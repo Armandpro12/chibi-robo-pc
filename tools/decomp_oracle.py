@@ -963,19 +963,68 @@ def cmd_replay(args) -> int:
 
 GUEST_COST_HEADER = """\
 # Guest cost of the decompiled functions of {game} (stage 2): for each function and version, the guest cycles the
-# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, registration::guest_cost), so that the
-# deterministic cycle clock of the bench runs as with the recompiled original. Without it a decompiled function costs no
-# guest time: timed events (end of a load, audio) come earlier and the A/B bench sees a frame shift that is not a
-# change of behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the originals (the mean
-# cycles of each original over its game calls, rounded); numbers about the game's code only, like the size column of
+# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, "Guest time"), so that the deterministic
+# cycle clock of the bench runs as with the recompiled original. Without it a decompiled function costs no guest time:
+# timed events (end of a load, audio) come earlier and the A/B bench sees a frame shift that is not a change of
+# behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the originals: the mean EXCLUSIVE
+# cycles of each original over its game calls (its own cycles, without those of the calls it makes, charged where they
+# run); a whole number when every call costs the same, otherwise the mean to 4 decimals (the gateway charges it in
+# 1/256 cycle and carries the remainder: no rounding bias). Numbers about the game's code only, like the size column of
 # functions.tsv. Path-dependent originals (least and most of one call differ) are listed below the table: their charge
 # is a mean, exact only on average. Measured on: {labels}.
 """
 
+DRIFT_ALERT = 1_000_000  # cycles: ~0.12 frame of guest time at 486 MHz / 60 Hz (8.1 M cycles a frame)
+
+
+def read_cost_summaries(files: list[Path], problems: list[str]) -> dict[str, list[dict]]:
+    """{function: [summary, ...]} of the cost fields of the oracle files (one summary per function and run). A summary
+    without the exclusive cost fields (oracle executable older than the exclusive measurement) is a problem."""
+    out: dict[str, list[dict]] = defaultdict(list)
+    for file in files:
+        for line in file.read_text(encoding="utf-8").splitlines():
+            if '"kind":"summary"' not in line:
+                continue
+            rec = json.loads(line)
+            if "cost_calls" not in rec:
+                problems.append(f"{file.name}: {rec.get('function')}: summary without cost (old oracle executable)")
+                continue
+            if not rec.get("cost_exclusive"):
+                problems.append(f"{file.name}: {rec.get('function')}: summary with an inclusive cost (oracle executable "
+                                f"older than the exclusive measurement): run the oracle again")
+                continue
+            rec["_run"] = file.stem
+            out[rec["function"]].append(rec)
+    return out
+
+
+def cost_of(summaries: list[dict]) -> dict:
+    """Totals of one function in one version: calls, exclusive cycles, least and most of one call, unmeasured calls,
+    nested runs, and the per-run (calls, cycles) for the drift."""
+    m = {"calls": 0, "cycles": 0, "min": None, "max": 0, "unmeasured": 0, "nested_calls": 0, "nested_cycles": 0,
+         "callee_cycles": 0, "runs": []}
+    for rec in summaries:
+        m["unmeasured"] += rec.get("cost_unmeasured", 0)
+        m["nested_calls"] += rec.get("cost_nested_calls", 0)
+        m["nested_cycles"] += rec.get("cost_nested_cycles", 0)
+        m["callee_cycles"] += rec.get("cost_callee_cycles", 0)
+        if not rec["cost_calls"]:
+            continue
+        m["calls"] += rec["cost_calls"]
+        m["cycles"] += rec["cost_cycles"]
+        m["min"] = rec["cost_min"] if m["min"] is None else min(m["min"], rec["cost_min"])
+        m["max"] = max(m["max"], rec["cost_max"])
+        m["runs"].append((rec["_run"], rec["cost_calls"], rec["cost_cycles"]))
+    return m
+
 
 def cmd_cost(args) -> int:
     """Guest cost table (decomp/guest_cost.tsv, [decomp] guest_cost of game.toml) from the cost fields of the oracle's
-    summaries: the mean guest cycles of each original over its game calls, per version."""
+    summaries: the mean exclusive guest cycles of each original over its game calls, per version. Refused (code 1)
+    when an enabled function has no measured call in a version (unless --allow-missing), or when a summary has no
+    exclusive cost. Warns about table rows of disabled functions, unmeasured calls, and the drift of path-dependent
+    functions: for each run (one oracle file, i.e. one scenario), its cycles minus its calls x the charged mean; beyond
+    --drift-alert cycles (default 1 M) in one run, the table may not fit that scenario."""
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
     bench = Path(args.bench_root) if args.bench_root else main_checkout()
@@ -984,29 +1033,27 @@ def cmd_cost(args) -> int:
     path = df.guest_cost_path(game_cfg)
     if not path:
         raise SystemExit("game.toml: [decomp] guest_cost is required")
-    rows = [f for f in df.read_table(game_cfg) if f.enabled]
-    measured: dict[tuple[str, str], list[int]] = {}  # (name, version) -> [calls, cycles, min, max]
+    include = [x for x in (args.include or "").split(",") if x]
+    if include and not args.dry_run:
+        raise SystemExit("--include (disabled rows, e.g. oracle test functions) is for --dry-run only: the tracked "
+                         "table lists the enabled functions")
+    table = df.read_table(game_cfg)
+    known = {f.name for f in table}
+    unknown = [n for n in include if n not in known]
+    if unknown:
+        raise SystemExit(f"--include: not in the functions table: {', '.join(unknown)}")
+    rows = [f for f in table if f.enabled or f.name in include]
     problems: list[str] = []
+    measured: dict[tuple[str, str], dict] = {}
     for version in versions:
+        files: list[Path] = []
         for label in labels:
-            files = sorted(oracle_dir(bench, game, label, version).rglob("oracle-*.jsonl"))
-            if not files:
+            found = sorted(oracle_dir(bench, game, label, version).rglob("oracle-*.jsonl"))
+            if not found:
                 problems.append(f"{label}/{version}: no oracle file")
-            for file in files:
-                for line in file.read_text(encoding="utf-8").splitlines():
-                    if '"kind":"summary"' not in line:
-                        continue
-                    rec = json.loads(line)
-                    if "cost_calls" not in rec:
-                        problems.append(f"{file.name}: {rec.get('function')}: summary without cost (old oracle executable)")
-                        continue
-                    if not rec["cost_calls"]:
-                        continue
-                    m = measured.setdefault((rec["function"], version), [0, 0, 1 << 64, 0])
-                    m[0] += rec["cost_calls"]
-                    m[1] += rec["cost_cycles"]
-                    m[2] = min(m[2], rec["cost_min"])
-                    m[3] = max(m[3], rec["cost_max"])
+            files += found
+        for name, summaries in read_cost_summaries(files, problems).items():
+            measured[(name, version)] = cost_of(summaries)
     for p in problems:
         print(f"PROBLEM {p}")
     if problems:
@@ -1015,29 +1062,65 @@ def cmd_cost(args) -> int:
            "\t".join(["name"] + versions)]
     notes: list[str] = []
     missing: list[str] = []
+    warnings: list[str] = []
+    drift: list[str] = []
+    path_dependent: set[str] = set()
     for f in rows:
         cells = [f.name]
         for version in versions:
             m = measured.get((f.name, version))
-            if not m:
+            calls, cycles, lo, hi = (m["calls"], m["cycles"], m["min"], m["max"]) if m else (0, 0, None, 0)
+            if m and not calls and m["nested_calls"]:
+                # Only reached inside recorded callees of other comparisons (exclusive there: no call sites).
+                calls, cycles = m["nested_calls"], m["nested_cycles"]
+                warnings.append(f"{f.name} ({version}): measured only inside recorded callees ({calls} calls)")
+            if not calls:
                 cells.append("-")
                 missing.append(f"{f.name} ({version})")
                 continue
-            cells.append(str((2 * m[1] + m[0]) // (2 * m[0])))  # mean, rounded half up
-            if m[2] != m[3]:
-                notes.append(f"#   {f.name} {version}: {m[2]}..{m[3]} cycles per call, mean {m[1] / m[0]:.2f} over "
-                             f"{m[0]} calls")
+            if m["unmeasured"]:
+                warnings.append(f"{f.name} ({version}): {m['unmeasured']} game calls not measured (run as the original "
+                                f"alone by a function with call sites: no exclusive cost)")
+            cell = df.format_guest_cost(cycles, calls)
+            cells.append(cell)
+            if lo is not None and lo != hi:
+                path_dependent.add(f.name)
+                notes.append(f"#   {f.name} {version}: {lo}..{hi} cycles per call, mean {cycles / calls:.4f} over "
+                             f"{calls} calls")
+                charged = df.guest_cost_256ths(cell)  # 1/256 cycle
+                for run, n, c in m["runs"]:
+                    d = (c * df.GUEST_COST_FRACTION - n * charged) / df.GUEST_COST_FRACTION
+                    flag = "ALERT" if abs(d) > args.drift_alert else "drift"
+                    drift.append(f"{flag} {f.name} {version} {run}: {n} calls, mean {c / n:.4f}, {d:+.0f} cycles "
+                                 f"against the charged {cell}")
         out.append("\t".join(cells))
     if notes:
         out += ["# Path-dependent originals (charge exact only on average):"] + notes
     text = "\n".join(out) + "\n"
+    exact = len(rows) - len(path_dependent)
+    pairs = sum(1 for n in notes)
+    refused = bool(missing) and not args.allow_missing
     if args.dry_run:
         print(text, end="")
-    else:
+    elif not refused:
         path.write_bytes(text.encode("utf-8"))
-        print(f"written {path} ({len(rows)} functions, {len(notes)} path-dependent)")
+    print(f"{'would write' if args.dry_run or refused else 'written'} {path}: {len(rows)} functions, {exact} with an exact cost "
+          f"and {len(path_dependent)} with a mean ({pairs} function x version pairs path-dependent)")
+    tracked = {name for name in df.read_guest_costs(game_cfg)}
+    for name in sorted(tracked - {f.name for f in rows}):
+        print(f"WARNING table row without an enabled function: {name} (dropped from the table)")
+    for w in warnings:
+        print(f"WARNING {w}")
+    for line in drift:
+        print(line)
+    if any(line.startswith("ALERT") for line in drift):
+        print(f"WARNING drift beyond {args.drift_alert} cycles in a run: the charged mean may not fit that scenario")
     for name in missing:
-        print(f"WARNING no measured call: {name} (nothing charged)")
+        print(f"{'WARNING' if args.allow_missing else 'ERROR'} no measured call: {name} (nothing would be charged; "
+              f"add a scenario that reaches it)")
+    if refused:
+        print("refused: nothing written (--allow-missing writes the table with '-' for these)")
+        return 1
     return 0
 
 
@@ -1077,6 +1160,14 @@ def main() -> int:
     c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
     c.add_argument("--versions")
     c.add_argument("--dry-run", action="store_true", help="print the table, write nothing")
+    c.add_argument("--include", metavar="NAME,...",
+                   help="with --dry-run: also show these disabled rows (oracle test functions)")
+    c.add_argument("--allow-missing", action="store_true",
+                   help="write the table even if an enabled function has no measured call ('-': nothing charged; "
+                        "a production build then refuses it unless --allow-no-guest-cost)")
+    c.add_argument("--drift-alert", type=int, default=DRIFT_ALERT, metavar="CYCLES",
+                   help="alert when one run's cycles differ from its calls x the charged mean by more than this "
+                        f"(default {DRIFT_ALERT})")
     y = sub.add_parser("replay", help="offline replay of captured cases on the decompiled code")
     y.add_argument("--label")
     y.add_argument("--versions")

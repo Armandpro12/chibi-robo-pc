@@ -46,6 +46,9 @@ const export_record* find(u32) noexcept {
 namespace detail {
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
+// No guest clock here (no CPU): the guest cost of the gateway (gc_abi.h "Guest time") is never charged.
+bool guest_cost_enabled = false;
+void charge_guest_cost(GcrtCpu*, guest_cost_state&) noexcept {}
 // No MSR here: the replayed cases are compared calls, all made with MSR[FP] = 1 (the gateway declines the others), so
 // the replay never declines.
 const u32* guest_msr = nullptr;

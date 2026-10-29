@@ -95,10 +95,39 @@ def guest_cost_path(game_cfg: dict) -> Path | None:
     return game_cfg["_dir"] / rel if rel else None
 
 
+GUEST_COST_FRACTION = 256  # registration::guest_cost_256ths: the gateway charges 1/256 cycle units (gc_abi.h)
+GUEST_COST_CELL = re.compile(r"^(\d+)(?:\.(\d{1,4}))?$")
+
+
+def guest_cost_256ths(cell: str) -> int:
+    """1/256-cycle units of a cell of the guest cost table: a whole number of cycles (a constant cost) or a mean with at
+    most 4 decimals ("6.6049"), rounded half up to the nearest 1/256 cycle (exact arithmetic, no float). The gateway
+    carries the remainder from call to call, so N calls charge N x the mean to within 1/512 cycle per call."""
+    m = GUEST_COST_CELL.match(cell)
+    if not m:
+        raise ValueError(f"{cell!r}: number of cycles expected (digits, at most 4 decimals)")
+    decimals = m.group(2) or ""
+    scale = 10 ** len(decimals)
+    value = int(m.group(1)) * scale + (int(decimals) if decimals else 0)  # cycles x scale
+    return (2 * value * GUEST_COST_FRACTION + scale) // (2 * scale)
+
+
+def format_guest_cost(cycles: int, calls: int) -> str:
+    """Cell of the guest cost table for a mean of `cycles` / `calls`: the whole number when it is exact, otherwise the
+    mean rounded half up to 4 decimals (guest_cost_256ths reads it back)."""
+    if calls <= 0:
+        raise ValueError("no call")
+    if cycles % calls == 0:
+        return str(cycles // calls)
+    q = (2 * cycles * 10000 + calls) // (2 * calls)  # mean x 10^4, rounded half up
+    return f"{q // 10000}.{q % 10000:04d}"
+
+
 def read_guest_costs(game_cfg: dict) -> dict[str, dict[str, int]]:
-    """{function name: {version ID: guest cycles per call}} of the guest cost table (tools/decomp_oracle.py cost writes
-    it): what the gateway charges to the cycle clock for each call of the decompiled function, the mean cost of its
-    recompiled original measured by the oracle. Missing table or row: nothing charged (0)."""
+    """{function name: {version ID: guest cost per call, in 1/256 cycle}} of the guest cost table (tools/decomp_oracle.py
+    cost writes it): what the gateway charges to the cycle clock for each call of the decompiled function, the mean
+    exclusive cost of its recompiled original measured by the oracle. Missing table, row or cell ("-"): no cost for
+    that function and version (tools/build.py refuses a production build that enables it)."""
     path = guest_cost_path(game_cfg)
     if not path or not path.exists():
         return {}
@@ -118,9 +147,10 @@ def read_guest_costs(game_cfg: dict) -> dict[str, dict[str, int]]:
         row: dict[str, int] = {}
         for version, cell in zip(header[1:], cells[1:]):
             if cell not in ("", "-"):
-                if not cell.isdigit():
-                    raise SystemExit(f"{path}:{n}: {cell!r}: whole number of cycles expected")
-                row[version] = int(cell)
+                try:
+                    row[version] = guest_cost_256ths(cell)
+                except ValueError as e:
+                    raise SystemExit(f"{path}:{n}: {e}")
         if cells[0] in out:
             raise SystemExit(f"{path}:{n}: {cells[0]} listed twice")
         out[cells[0]] = row
@@ -785,7 +815,8 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
     (the safe side: declining only lets the original run). `globals`: lines of tools/decomp_globals.py table_source
     (the address array of the game globals in `version`, k_globals / k_global_count), installed by
     gc::set_global_table before the functions; None: no globals table. `costs`: {function name: guest cycles per
-    call in `version`} (read_guest_costs), registration::guest_cost; a missing name is 0 (nothing charged)."""
+    call in `version`, 1/256 cycle} (read_guest_costs), registration::guest_cost_256ths; a missing name is 0 (nothing
+    charged: tools/build.py refuses that for a production build unless --allow-no-guest-cost)."""
     records = records or {}
     blocks = blocks or {}
     # Oracle builds: call_sites() (the oracle records the calls made at these instructions) and assertion_blocks()
@@ -817,7 +848,7 @@ def registry_source(version: str, entries: list[tuple[int, Function]], oracle: b
                 "no floating-point instruction" if fpu is not None else "not scanned")
             cost = (costs or {}).get(f.name, 0)
             lines.append(f"    {{0x{a:08X}u, &gc_decomp_export_{records.get(f.name, f.name)}, {flags}, {cost}u}}, "
-                         f"// {first}")
+                         f"// {first}; guest cost {cost / GUEST_COST_FRACTION:.4f} cycles")
         lines += ["};", "constexpr unsigned k_count = sizeof(k_table) / sizeof(k_table[0]);"]
         if oracle:
             lines.append("const unsigned k_addresses[] = {" + ", ".join(f"0x{a:08X}u" for a, _ in entries) + "};")

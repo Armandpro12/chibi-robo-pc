@@ -212,10 +212,19 @@ struct function_state {
     // Runs of the original during which another journal detached or replaced itself (the oracle stayed attached),
     // and self-checks of the undo and redo of W1 that failed (must stay 0).
     u64 journal_reattached = 0, restore_errors = 0;
-    // Guest cycles the original was charged for in the game calls of this function (its runs by the oracle, synthetic
-    // cases excluded): total, calls measured, least and most of one call. The guest cost of the decompiled version
-    // (registration::guest_cost, decomp/guest_cost.tsv of the game) is their mean (tools/decomp_oracle.py cost).
+    // EXCLUSIVE guest cycles of the original in the game calls of this function (its runs by the oracle, synthetic
+    // cases excluded): the cycles of the whole run minus those of its recorded calls (call_hook), which production
+    // charges where they run (the chassis for a recompiled callee, the callee's own guest cost for a decompiled one).
+    // Total, calls measured, least and most of one call. The guest cost of the decompiled version
+    // (registration::guest_cost_256ths, decomp/guest_cost.tsv of the game) is their mean (tools/decomp_oracle.py
+    // cost). cost_callee_cycles: the recorded calls' cycles taken out (inclusive = cost_cycles + cost_callee_cycles).
+    // cost_unmeasured: game calls whose exclusive cost could not be measured (run as the original alone, not compared,
+    // by a function with call sites: its calls were not recorded, so their cycles cannot be taken out).
+    // cost_nested_*: runs of this function's original inside a recorded callee of another comparison (a real game
+    // call too, kept apart: tools/decomp_oracle.py cost uses them only for a function without calls of its own);
+    // measured only for a function without call sites (its run there is exclusive).
     u64 cost_cycles = 0, cost_calls = 0, cost_min = UINT64_MAX, cost_max = 0;
+    u64 cost_callee_cycles = 0, cost_unmeasured = 0, cost_nested_calls = 0, cost_nested_cycles = 0;
 };
 
 const char* s_version = "?";
@@ -260,6 +269,7 @@ bool s_initialized = false;
 std::unordered_map<u32, u32> s_call_probes;
 std::vector<call_record> s_calls;    // calls of the current run of the original
 bool s_call_active = false;          // a recorded callee is running (nested run): hooks ignore what it does
+u64 s_callee_cycles = 0;             // guest cycles of the recorded calls of the current game call (exclusive cost)
 bool s_replaying = false;            // the decompiled version runs: its calls are compared and replayed
 std::size_t s_replay_index = 0;      // next recorded call to replay
 const synthetic_case* s_synthetic_case = nullptr; // synthetic case being run (its calls are simulated)
@@ -604,7 +614,15 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         const u64 external = s_external_writes;
         check_history(g, f, s_ring_checked, g->ring_pos);
         const u64 refused = gcrt_native_os_refused_nested();
+        // Cycles of the callee (taken out of F's cost: production charges them where the callee runs). The block of
+        // F that holds the call keeps its own downcount (see run_guest, gc_abi.cpp): without that, its cycles before
+        // the call would be lost and the callee's last block charged twice, once by the nested run and once when F's
+        // block returns to the chassis.
+        const s64 outer_downcount = c->downcount;
+        const u64 cycles_before = g->cycles;
         gcrt_guest_call_prepared(g, target); // restores pc, lr (= return_to for a call) and MSR[EE]
+        s_callee_cycles += g->cycles - cycles_before;
+        c->downcount = outer_downcount;
         f.refused_switches += gcrt_native_os_refused_nested() - refused;
         s_ring_checked = g->ring_pos;
         s_external_writes = external; // the callee's stores outside RAM are not F's: they stay done
@@ -793,11 +811,19 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.fpu_declined),
                      static_cast<unsigned long long>(f.fmadds_dolphin_divergent), f.leaf_reason[0] ? " reason=" : "",
                      f.leaf_reason);
-        if (f.cost_calls)
-            std::fprintf(stdout, "ORACLE-COST %-32s %s %08X calls=%llu cycles=%llu min=%llu max=%llu%s\n", f.name,
-                         s_version, static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.cost_calls),
-                         static_cast<unsigned long long>(f.cost_cycles), static_cast<unsigned long long>(f.cost_min),
-                         static_cast<unsigned long long>(f.cost_max), s_test_free_original ? " (not charged: test)" : "");
+        if (f.cost_calls || f.cost_unmeasured || f.cost_nested_calls)
+            std::fprintf(stdout,
+                         "ORACLE-COST %-32s %s %08X calls=%llu cycles=%llu min=%llu max=%llu callees=%llu "
+                         "unmeasured=%llu nested=%llu/%llu%s\n",
+                         f.name, s_version, static_cast<unsigned>(f.address),
+                         static_cast<unsigned long long>(f.cost_calls), static_cast<unsigned long long>(f.cost_cycles),
+                         static_cast<unsigned long long>(f.cost_calls ? f.cost_min : 0),
+                         static_cast<unsigned long long>(f.cost_max),
+                         static_cast<unsigned long long>(f.cost_callee_cycles),
+                         static_cast<unsigned long long>(f.cost_unmeasured),
+                         static_cast<unsigned long long>(f.cost_nested_calls),
+                         static_cast<unsigned long long>(f.cost_nested_cycles),
+                         s_test_free_original ? " (not charged: test)" : "");
         if (!s_out)
             continue;
         std::fprintf(s_out,
@@ -808,7 +834,9 @@ void report_at_exit() {
                      "\"synthetic_not_compared\":%llu,\"journal_reattached\":%llu,\"restore_errors\":%llu,"
                      "\"fpu_declined\":%llu,\"fmadds_dolphin_divergent\":%llu,\"paths\":%zu,"
                      "\"recorded_calls\":%llu,\"max_calls\":%llu,\"refused_switches\":%llu,"
-                     "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,",
+                     "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,"
+                     "\"cost_exclusive\":true,\"cost_callee_cycles\":%llu,\"cost_unmeasured\":%llu,"
+                     "\"cost_nested_calls\":%llu,\"cost_nested_cycles\":%llu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
@@ -824,7 +852,11 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.refused_switches),
                      static_cast<unsigned long long>(f.cost_calls), static_cast<unsigned long long>(f.cost_cycles),
                      static_cast<unsigned long long>(f.cost_calls ? f.cost_min : 0),
-                     static_cast<unsigned long long>(f.cost_max));
+                     static_cast<unsigned long long>(f.cost_max),
+                     static_cast<unsigned long long>(f.cost_callee_cycles),
+                     static_cast<unsigned long long>(f.cost_unmeasured),
+                     static_cast<unsigned long long>(f.cost_nested_calls),
+                     static_cast<unsigned long long>(f.cost_nested_cycles));
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         print_u64_list(s_out, "synthetic_block_hits", f.synthetic_block_hits);
@@ -1472,8 +1504,15 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
         if (s_call_active) {
             const u32 outer_bypass = bypass_address;
             bypass_address = address;
+            const u64 cycles_before = g->cycles;
             run_guest(g, address);
             bypass_address = outer_bypass;
+            // A real game call of this function too (its caller is compared): its cost, kept apart, is exclusive
+            // only for a function without call sites (its own calls are not recorded here).
+            if (function_state* nested = find_function(address); nested && nested->call_sites.empty()) {
+                nested->cost_nested_calls++;
+                nested->cost_nested_cycles += g->cycles - cycles_before;
+            }
             return true;
         }
         // Another decompiled function reached during a comparison otherwise (no recorded call): the function being
@@ -1509,11 +1548,21 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
         check_code(*f);
     if (comparable(f->leaf) && !f->synthetic_done)
         run_synthetic(g, *f, invoke, signature);
-    // Guest cycles of this game call of the original (the decompiled version runs natively and the calls it makes are
-    // replayed, not run: the difference is the original's).
+    // Exclusive guest cycles of this game call of the original: the cycles of the call (the decompiled version runs
+    // natively and the calls it makes are replayed, not run: the difference is the original's) minus those of the
+    // original's recorded calls (call_hook, s_callee_cycles). A run that recorded nothing (not compared) is exclusive
+    // only for a function without call sites; otherwise it is counted as unmeasured.
     const u64 cycles_before = g->cycles;
-    auto note_cost = [&]() {
-        const u64 spent = g->cycles - cycles_before;
+    s_callee_cycles = 0;
+    auto note_cost = [&](bool calls_recorded) {
+        if (!calls_recorded && !f->call_sites.empty()) {
+            f->cost_unmeasured++;
+            return;
+        }
+        const u64 inclusive = g->cycles - cycles_before;
+        const u64 callees = std::min(s_callee_cycles, inclusive);
+        const u64 spent = inclusive - callees;
+        f->cost_callee_cycles += callees;
         f->cost_cycles += spent;
         f->cost_calls++;
         f->cost_min = std::min(f->cost_min, spent);
@@ -1525,11 +1574,13 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
         bypass_address = address;
         run_guest(g, address);
         bypass_address = 0;
-        note_cost();
+        note_cost(false);
         return true;
     }
-    compare_call(g, *f, invoke, signature, nullptr, s_dead_stack);
-    note_cost();
+    // A compared call had all its calls recorded (a transfer the build did not hook, seen by check_history, makes the
+    // call not compared: its cycles were not taken out).
+    const bool compared = compare_call(g, *f, invoke, signature, nullptr, s_dead_stack);
+    note_cost(compared);
     return true; // registers and memory are the original's
 }
 

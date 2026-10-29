@@ -26,6 +26,17 @@
 //   * arguments that would go on the stack (more than 8 integer or 8 floating-point registers) are refused at
 //     compile time, as are bool (its guest representation is not checked: use u8) and the gc::be<T> wrapper (pass T).
 //
+// Guest time (bench clock only). With the deterministic cycle clock of the A/B bench (GCRT_CLOCK_CYCLES, ticks =
+// guest cycles / 12), guest time is the cycles the recompiled code is charged for; a decompiled function costs none,
+// so timed events (end of a load, audio) would come earlier than with its original. The gateway therefore charges each
+// call of a decompiled function the EXCLUSIVE guest cost of its original (its own cycles, without those of the
+// functions it calls), measured by the oracle (registration::guest_cost_256ths, 1/256 cycle per call, with the
+// remainder carried from call to call: no rounding bias). The callees are charged where they run: a recompiled one by
+// the chassis, a decompiled one by its own entry (through call_guest) or by gc::abi::call / call_address (plain C++
+// calls). With the real-time clock nothing is charged: the cycle counter is not time there, and a real game never
+// sees this. GCRT_DECOMP_GUEST_COST=0 (read in every build, production and oracle) charges nothing: its only effect is
+// on the cycle counter, for the diagnostic of a timing difference. To be removed with the cycle clock coupling at D3.
+//
 // Rules (stage document, notes/decomp.md D1.1): decompiled code never names an address; the gateway is only built in
 // guest-memory mode and leaves the executable with the recompiled code (stage D3). No function with C linkage returns
 // a gc::ptr<T> or gc::be<T> (the Microsoft x64 ABI returns them through a hidden pointer): the C entry points below
@@ -68,6 +79,15 @@ enum : u32 {
 
 using entry_fn = bool (*)(GcrtCpu* g, u32 address);
 
+// Guest cost of one decompiled function (see "Guest time" above), state of the gateway: what each call charges to the
+// cycle clock, in 1/256 cycle (set by install from registration::guest_cost_256ths; 0 under GCRT_DECOMP_GUEST_COST=0),
+// and the fraction of a cycle not charged yet (carried to the next call, so that N calls charge N x the mean to within
+// one cycle in all).
+struct guest_cost_state {
+    u32 per_call_256ths = 0;
+    u32 remainder_256ths = 0;
+};
+
 // One decompiled function, defined next to it by GC_DECOMP_EXPORT.
 struct export_record {
     const char* name;
@@ -77,6 +97,7 @@ struct export_record {
     u32 flags;
     u64* calls;            // calls received through the gateway
     u8 result_kind;        // detail::result_kind of the result (cross-check)
+    guest_cost_state* cost; // guest cost of the function (one per C++ function: detail::guest_cost<Fn>)
 };
 
 // Properties of the recompiled ORIGINAL at a registered address (scan of its code by the build, tools/build.py).
@@ -98,11 +119,10 @@ struct registration {
     u32 address;
     const export_record* record;
     u32 flags; // registration_*
-    // Guest cycles the gateway adds to the cycle clock for each call (decomp/guest_cost.tsv of the game, measured by the
-    // oracle: the cycles the recompiled original is charged for, on average). With the deterministic cycle clock the
-    // guest time is the cycles run, so a replacement that costs nothing makes guest time run slower than with the
-    // original, and timed events (end of a load, audio) come earlier. 0: nothing charged.
-    u32 guest_cost;
+    // Guest cycles the gateway adds to the cycle clock for each call, in 1/256 cycle (decomp/guest_cost.tsv of the
+    // game, measured by the oracle: the mean exclusive cycles of the recompiled original, see "Guest time" above).
+    // 0: nothing charged.
+    u32 guest_cost_256ths;
 };
 
 // Registers every function of `table` (gcrt_hle_register) and prepares the gateway (guest memory of gc_mem.h, report
@@ -305,9 +325,13 @@ inline constexpr u32 msr_fp = 0x00002000u;
 // MSR[FP] = 0 at the entry of `address`: true if its registration has registration_uses_fpu (the entry then declines,
 // counted as fpu_declined in the report and, in an oracle build, apart from the compared calls), false otherwise.
 bool decline_without_fpu(u32 address) noexcept;
-// Some registration has a guest cost (gc_abi.cpp); charge_guest_cost adds the one of `address` to the cycle clock.
+// Guest cost of the decompiled function Fn (one per C++ function, pointed to by its export record).
+template <auto Fn> inline guest_cost_state guest_cost{};
+// Some registration has a guest cost and GCRT_DECOMP_GUEST_COST is not 0 (gc_abi.cpp install). charge_guest_cost adds
+// one call of `cost` to the cycle counter (gcrt_cpu_add_cycles) only while the CPU runs on the cycle clock
+// (GCRT_CLOCK_CYCLES); with the real-time clock it does nothing.
 extern bool guest_cost_enabled;
-void charge_guest_cost(GcrtCpu* g, u32 address) noexcept;
+void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept;
 // True if the function registered at `address` has registration_uses_fpu (not counted).
 bool registered_uses_fpu(u32 address) noexcept;
 // True if the gateway is installed and MSR[FP] = 0.
@@ -407,7 +431,7 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
         detail::function_traits<Fn>::invoke(r);
     }
     if (detail::guest_cost_enabled)
-        detail::charge_guest_cost(g, address);
+        detail::charge_guest_cost(g, detail::guest_cost<Fn>);
     *r.pc = return_address;
     return true;
 }
@@ -420,7 +444,8 @@ template <auto Fn> export_record make_export(const char* name, u32 flags) {
                          &detail::signature_tag<typename traits::pointer>::id,
                          flags,
                          &detail::call_count<Fn>,
-                         detail::result_kind_of<typename traits::result>()};
+                         detail::result_kind_of<typename traits::result>(),
+                         &detail::guest_cost<Fn>};
 }
 
 // Calls the guest function at `address` (decompiled -> recompiled). R: void or a value type (no hidden structure).
@@ -474,8 +499,20 @@ template <class R, class... A> R call_address(u32 address, A... args) {
     if (const export_record* e = find(address);
         e && !detail::oracle_replaying() && !(detail::fpu_off() && detail::registered_uses_fpu(address))) {
         using pointer = R (*)(A...);
-        if (e->signature == &detail::signature_tag<pointer>::id)
-            return reinterpret_cast<pointer>(e->direct)(args...);
+        if (e->signature == &detail::signature_tag<pointer>::id) {
+            // A plain C++ call: the callee's guest cost is charged here, its entry is not reached.
+            if constexpr (std::is_void_v<R>) {
+                reinterpret_cast<pointer>(e->direct)(args...);
+                if (detail::guest_cost_enabled && e->cost)
+                    detail::charge_guest_cost(detail::current_cpu(), *e->cost);
+                return;
+            } else {
+                const R value = reinterpret_cast<pointer>(e->direct)(args...);
+                if (detail::guest_cost_enabled && e->cost)
+                    detail::charge_guest_cost(detail::current_cpu(), *e->cost);
+                return value;
+            }
+        }
         std::fprintf(stderr, "gc_abi: %s (%08X) called with another C++ type: guest code used\n", e->name,
                      static_cast<unsigned>(address));
     }
@@ -500,7 +537,18 @@ template <auto Fn, class... A> auto call(A... args) {
         return detail::call_through_oracle(Fn, address, args...);
     }
 #endif
-    return Fn(args...);
+    // A plain C++ call: Fn's entry is not reached, so its guest cost is charged here (as the original caller ran the
+    // original callee). Fn must be registered in the build for that (its cost is set by install).
+    if constexpr (std::is_void_v<decltype(Fn(args...))>) {
+        Fn(args...);
+        if (detail::guest_cost_enabled)
+            detail::charge_guest_cost(detail::current_cpu(), detail::guest_cost<Fn>);
+    } else {
+        auto value = Fn(args...);
+        if (detail::guest_cost_enabled)
+            detail::charge_guest_cost(detail::current_cpu(), detail::guest_cost<Fn>);
+        return value;
+    }
 }
 
 #if defined(GC_DECOMP_ORACLE_NEGATIVE)
