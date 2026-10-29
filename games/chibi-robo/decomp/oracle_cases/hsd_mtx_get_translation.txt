@@ -1,0 +1,35 @@
+# Synthetic cases of the decompilation oracle for hsd_mtx_get_translation (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# 3x4 matrix at S (rows of 16 bytes): translation column at S+C, S+1C, S+2C. The original loads and stores each float
+# in turn (x, then y, then z).
+
+case hsd_mtx_get_translation column
+r3 = S
+r4 = S+80
+mem S+C 4 3F800000
+mem S+1C 4 40000000
+mem S+2C 4 40400000
+end
+
+# A19 (D2-4c4): destination overlapping the column (never seen in the game), so that a value written is read again.
+# Destination starts on the column's y: the y read is the x just written.
+case hsd_mtx_get_translation overlap_column_y
+r3 = S
+r4 = S+1C
+mem S+C 4 3F800000
+mem S+1C 4 40000000
+mem S+20 4 40800000
+mem S+24 4 40A00000
+mem S+2C 4 40400000
+end
+
+# Destination's y is the column's z: the z read is the y just written.
+case hsd_mtx_get_translation overlap_column_z
+r3 = S
+r4 = S+28
+mem S+C 4 3F800000
+mem S+1C 4 40000000
+mem S+28 4 40800000
+mem S+2C 4 40400000
+mem S+30 4 40A00000
+end
