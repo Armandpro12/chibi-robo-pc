@@ -36,8 +36,8 @@ u8 HSD_CObjMtxIsDirty(ptr<const HSD_CObj> cobj) {
 
 // Sets the camera's scissor box (in pixels) from `*scissor`; nothing if there is no camera. The original loads the
 // whole box (two words) before storing it, so the box is first copied into a local: the result is the original's
-// even when the source overlaps the camera's own box (anomaly A19; in the game the source is always a copy on the
-// caller's stack).
+// even when the source overlaps the camera's own box (anomaly A19; the calls reached by the reference scenarios pass
+// a copy on the caller's stack [hypothesis for the call sites never reached]).
 void HSD_CObjSetScissor(ptr<HSD_CObj> cobj, ptr<const HSD_CObj::Scissor> scissor) {
     if (gc::path::taken(cobj == nullptr)) // original: a conditional return
         return;
@@ -48,7 +48,7 @@ void HSD_CObjSetScissor(ptr<HSD_CObj> cobj, ptr<const HSD_CObj::Scissor> scissor
 // Sets the camera's viewport from `*viewport`; nothing if there is no camera. The four floats are copied as they are
 // (the original moves their bits with integer loads and stores), in the original's order: left and right are both
 // loaded, then stored, then top and bottom; so the result is the original's even when the source overlaps the
-// camera's own viewport (anomaly A19; in the game the source is always a copy on the caller's stack).
+// camera's own viewport (A19; the calls reached by the scenarios pass a stack copy [hypothesis for the others]).
 void HSD_CObjSetViewportf(ptr<HSD_CObj> cobj, ptr<const HSD_CObj::Viewport> viewport) {
     if (gc::path::taken(cobj == nullptr)) // original: a conditional return
         return;
