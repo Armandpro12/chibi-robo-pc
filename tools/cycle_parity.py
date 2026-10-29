@@ -7,9 +7,11 @@ reads the counters the executable prints at exit (stdout.log of tools/run.py: `b
 scenario of a bench run and of the reference, and reports the difference of `cycles` (and of `ticks`).
 
 The references (tests/<game>/<ID>/reference-native/, tools/ab.py record) are runs of a recompiled executable without
-decompiled functions: with every decompiled function charging the exact cost of its original, the final cycle count is
-the reference's. Functions charged a mean cost (path-dependent originals, tools/decomp_oracle.py cost) leave a small
-difference; a function charging nothing leaves one of millions of cycles.
+decompiled functions. Expected [hypothesis, not established]: with every decompiled function charging the exact cost of
+its original, the final cycle count is the reference's, and functions charged a mean cost (path-dependent originals,
+tools/decomp_oracle.py cost) leave a small difference. Measured so far: a few thousand cycles below the reference with
+the charged costs; the cause (the means or something else) is not established. A function charging nothing leaves a
+difference of millions of cycles.
 
 Usage:
   py -3 tools/cycle_parity.py <game> --label L [--versions GGTE01,GGTP01] [--scenarios a,b] [--ref-dir DIR]

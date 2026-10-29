@@ -974,11 +974,11 @@ GUEST_COST_HEADER = """\
 # of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: {labels}.
 """
 
-# Alert threshold of the drift, in cycles per run. 50 000: about 9 times the largest drift measured on the oracle
-# runs of D2 (5 548 cycles, runs f2-o1 and f3-o1, 40 functions), and still about 160 times less than one frame of
-# guest time (486 MHz / 60 Hz = 8.1 M cycles; 9.7 M at 50 Hz), so an alert comes long before a scenario can shift by
-# a frame. The former 1 M was about 180 times the largest drift seen: it would only have caught a mean already off
-# by an eighth of a frame.
+# Alert threshold of the drift, in cycles per run. 50 000: about 3.6 times the largest drift measured on the oracle
+# runs of D2 (13 996 cycles, run d23-o1, 40 functions; 5 548 in the earlier runs f2-o1 and f3-o1), and still about 160
+# times less than one frame of guest time (486 MHz / 60 Hz = 8.1 M cycles; 9.7 M at 50 Hz), so an alert comes long
+# before a scenario can shift by a frame. The former 1 M was about 70 times the largest drift seen: it would only have
+# caught a mean already off by an eighth of a frame.
 DRIFT_ALERT = 50_000
 
 
