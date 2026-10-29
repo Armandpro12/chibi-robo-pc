@@ -299,12 +299,22 @@ D1 is validated; these items are carried over to the start of D2.
 
 ## Stage 3 — Multiplayer ⬜
 
-1. Study what must be synchronized: player, objects, NPCs, scene state, area loading.
-2. Network layer: host and client, tolerant of packet loss and latency.
-3. A second Chibi-Robo that mirrors the other player's position and animation.
-4. Interactions: picked-up objects, actions, area changes.
-5. Multiplayer balancing.
-6. Real test between two PCs.
+Four ways to play: over a virtual private network (Tailscale first, other clients as widely as possible), over the Internet without
+one, on a local network, and on the same screen. The milestones go from the broadest to the most specific:
+
+1. Study what must be synchronized (player, objects, NPCs, scene state, area loading) and settle the open design questions.
+2. Groundwork: in-game menu mechanism with a "Multiplayer" entry, automated two-instance test, reusable hooks and events.
+3. A second player in the world (no network yet), the biggest unknown, so it comes first.
+4. Generic network layer by IP address or machine name, tolerant of packet loss and latency, with a version check. It already covers
+   any virtual private network and a local network with manual entry.
+5. First real test between two PCs (messages only), to find firewall, packet size and Wi-Fi issues early.
+6. A remote player mirrored from the network (position and animation).
+7. Interactions: picked-up objects, actions, area changes, separate saves, disconnections.
+8. Local-network discovery, and compatibility tests client by client for virtual private networks.
+9. Same-screen play: separate inputs per player, shared or split camera.
+10. Internet play without a private network (any hosted server needs the project owner's approval first).
+11. Multiplayer balancing.
+12. Full real tests on each mode.
 
 ## Stage 4 — Technical remaster ⬜
 
