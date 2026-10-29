@@ -5,6 +5,7 @@
 // identical in US and PAL.
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 #include <cstddef>
 
@@ -27,11 +28,15 @@ constexpr s32 first_active_state = 1;
 constexpr s32 end_of_active_states = 6;
 
 // 1 if the cell is in an active state, 0 otherwise.
+// (Path marks: runtime/core/decomp/gc_path.h; the original branches to its "0" on state < 1, then on state >= 6.)
 u8 is_state_active(gc::ptr<const StateCell> cell) {
     const s32 state = gc::load(cell->state);
-    return state >= first_active_state && state < end_of_active_states ? 1 : 0;
+    if (gc::path::falls_through(state >= first_active_state) && gc::path::falls_through(state < end_of_active_states))
+        return 1;
+    return 0;
 }
 
 } // namespace chibi
 
-GC_DECOMP_EXPORT(state_cell_is_state_active, chibi::is_state_active, gc::abi::flag_reads_only);
+GC_DECOMP_EXPORT(state_cell_is_state_active, chibi::is_state_active,
+                 gc::abi::flag_reads_only | gc::abi::flag_path_marked);

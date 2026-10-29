@@ -48,11 +48,12 @@ u32 HSD_JObjGetFlags(ptr<const HSD_JObj> jobj) {
     return gc::load(jobj->flags);
 }
 
-// The joint's display objects, null if there is no joint or if its union holds particles or a spline.
+// The joint's display objects, null if there is no joint or if its union holds particles or a spline. (Path marks:
+// the original branches to its "null" on no joint, and to its "dobj" when neither flag is set: falls_through.)
 ptr<HSD_DObj> HSD_JObjGetDObj(ptr<const HSD_JObj> jobj) {
-    if (jobj == nullptr)
+    if (gc::path::taken(jobj == nullptr))
         return nullptr;
-    if (gc::load(jobj->flags) & (jobj_particles | jobj_spline))
+    if (gc::path::falls_through(gc::load(jobj->flags) & (jobj_particles | jobj_spline)))
         return nullptr;
     return jobj->u.dobj;
 }
@@ -61,4 +62,4 @@ ptr<HSD_DObj> HSD_JObjGetDObj(ptr<const HSD_JObj> jobj) {
 
 GC_DECOMP_EXPORT(hsd_jobj_sort_anim, hsd::JObjSortAnim, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_jobj_get_flags, hsd::HSD_JObjGetFlags, gc::abi::flag_reads_only);
-GC_DECOMP_EXPORT(hsd_jobj_get_dobj, hsd::HSD_JObjGetDObj, gc::abi::flag_reads_only);
+GC_DECOMP_EXPORT(hsd_jobj_get_dobj, hsd::HSD_JObjGetDObj, gc::abi::flag_reads_only | gc::abi::flag_path_marked);

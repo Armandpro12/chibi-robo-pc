@@ -9,17 +9,19 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
 using gc::s32;
 
 // Attaches `particle` to `appsrt` and returns the AppSRT's new use count; -1 (nothing done) if either is null or if
-// the particle already follows an AppSRT.
+// the particle already follows an AppSRT. (Path marks: runtime/core/decomp/gc_path.h; the original tests the AppSRT,
+// then the particle, then branches to the attachment when the particle has no AppSRT: falls_through there.)
 s32 psAttachParticleAppSRT(ptr<HSD_Particle> particle, ptr<HSD_psAppSRT> appsrt) {
-    if (appsrt == nullptr || particle == nullptr)
+    if (gc::path::taken(appsrt == nullptr) || gc::path::taken(particle == nullptr))
         return -1;
-    if (particle->appsrt != nullptr)
+    if (gc::path::falls_through(particle->appsrt != nullptr))
         return -1;
     particle->appsrt = appsrt;
     const u16 used_count = static_cast<u16>(gc::load(appsrt->used_count) + 1);
@@ -29,4 +31,4 @@ s32 psAttachParticleAppSRT(ptr<HSD_Particle> particle, ptr<HSD_psAppSRT> appsrt)
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(ps_attach_particle_app_srt, hsd::psAttachParticleAppSRT, gc::abi::flag_none);
+GC_DECOMP_EXPORT(ps_attach_particle_app_srt, hsd::psAttachParticleAppSRT, gc::abi::flag_path_marked);

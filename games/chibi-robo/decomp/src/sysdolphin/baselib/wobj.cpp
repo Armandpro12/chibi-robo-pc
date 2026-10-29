@@ -9,16 +9,18 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
 // Moves the world object to `*pos` and marks its position as changed. Nothing if either pointer is null. The floats
 // are copied as they are (the original moves their bits with integer loads and stores). The flags are written twice,
-// as in the original (set, then clear).
+// as in the original (set, then clear). (Path marks: runtime/core/decomp/gc_path.h; the original returns by a
+// conditional return on a null object, then branches over its return when the position is not null.)
 void HSD_WObjSetPosition(ptr<HSD_WObj> wobj, ptr<const Vec3> pos) {
-    if (wobj == nullptr)
+    if (gc::path::taken(wobj == nullptr))
         return;
-    if (pos == nullptr)
+    if (gc::path::falls_through(pos == nullptr))
         return;
     wobj->pos = *pos;
     wobj->flags |= wobj_position_changed;
@@ -27,4 +29,4 @@ void HSD_WObjSetPosition(ptr<HSD_WObj> wobj, ptr<const Vec3> pos) {
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_wobj_set_position, hsd::HSD_WObjSetPosition, gc::abi::flag_none);
+GC_DECOMP_EXPORT(hsd_wobj_set_position, hsd::HSD_WObjSetPosition, gc::abi::flag_path_marked);
