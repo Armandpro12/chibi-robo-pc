@@ -16,9 +16,10 @@ one has been validated.
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first release of the C++ version | 🟡 in progress |
 | 3 | Multiplayer | Several players: over Tailscale, over the Internet without it, on a local network, or on the same screen | ⬜ |
-| 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes right after multiplayer so that the next two stages benefit from it | ⬜ |
-| 3b | PS Vita port | Planned, after the modding platform, before the remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
-| 4 | Remaster | PC-style controls and saves, audio settings, remastered models, optional HD pack, built on the modding platform | ⬜ |
+| 4a | Technical remaster | Unlimited frame rate, widescreen (16:9 and beyond), resolution, PC-style controls and saves, separate audio volumes. Comes right after multiplayer | ⬜ |
+| 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes after the technical remaster so that the next two stages benefit from it | ⬜ |
+| 3b | PS Vita port | Planned, after the modding platform, before the models and textures remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
+| 4b | Models and textures remaster | Remastered 3D models and textures, optional HD pack, built on the modding platform | ⬜ |
 
 The stage numbers are historical (they match the GitHub milestones); the order is the order of the rows above.
 
@@ -305,10 +306,24 @@ D1 is validated; these items are carried over to the start of D2.
 5. Multiplayer balancing.
 6. Real test between two PCs.
 
+## Stage 4a — Technical remaster ⬜
+
+Right after multiplayer (project owner's decision, 2026-10-29). Every improvement can be switched off to get the faithful
+behaviour back.
+
+- **Display**: free resolution and window, widescreen (16:9 and beyond) without stretching the image, and an unlimited frame
+  rate by drawing between two steps of the game logic while the logic itself keeps its original pace. Whether the game allows
+  this, and whether US and PAL share the same original rate, is to be checked in the decompiled code.
+- **PC-style controls**: an in-game controls menu, actions named by what they do, mouse camera, button icons
+  matching the device in use.
+- **PC-style saves**: no more memory card wording or screens, several save slots, backup copies.
+- **Separate audio volumes**: master, music, effects (and voices if possible).
+
 ## Stage 5 — Modding platform ⬜
 
-Right after multiplayer (project owner's decision, 2026-10-29), so that the PS Vita port and the remaster build on it: the loader
-and file replacement stay portable, and the remaster's extractor, texture and model replacement and HD pack reuse M1 to M3.
+After the technical remaster (project owner's decision, 2026-10-29), so that the PS Vita port and the models and textures remaster
+build on it: the loader and file replacement stay portable, and the remaster's extractor, texture and model replacement and HD pack
+reuse M1 to M3.
 
 | # | Milestone |
 |---|---|
@@ -338,13 +353,12 @@ package, and no protection is bypassed.
 6. Validation: reference scenarios, frame rate measured on the console, the two-instance multiplayer test, and a real test on a
    PS Vita.
 
-## Stage 4 — Remaster ⬜
+## Stage 4b — Models and textures remaster ⬜
 
-- **PC-style controls**: an in-game controls menu, actions named by what they do, mouse camera, button icons
-  matching the device in use.
-- **PC-style saves**: no more memory card wording or screens, several save slots, backup copies.
-- **Separate audio volumes**: master, music, effects (and voices if possible).
+After the PS Vita port, built on the modding platform (project owner's decision, 2026-10-29).
+
 - **Remastered 3D models**: format documented, glTF export and import, replacement models loaded by the runtime.
+- **Textures**: replacement textures through the modding platform.
 - **Optional HD pack**: distributed separately (never in this repository), installed and verified by the installer; it is a mod of
   the modding platform.
 
