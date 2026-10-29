@@ -11,18 +11,25 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
-// 1 if the camera's viewing matrix is out of date: its own flag, or its eye position or interest moved.
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
+// 1 if the camera's viewing matrix is out of date: its own flag, or its eye position or interest moved. (The original
+// branches away on a null eye position or interest, and on an unmoved interest: hence falls_through there.)
 u8 HSD_CObjMtxIsDirty(ptr<const HSD_CObj> cobj) {
-    if (gc::load(cobj->flags) & cobj_mtx_dirty)
+    if (gc::path::taken(gc::load(cobj->flags) & cobj_mtx_dirty))
         return 1;
     const ptr<const HSD_WObj> eyepos = cobj->eyepos;
-    if (eyepos != nullptr && (gc::load(eyepos->flags) & wobj_position_changed))
+    if (gc::path::falls_through(eyepos != nullptr) &&
+        gc::path::taken(gc::load(eyepos->flags) & wobj_position_changed))
         return 1;
     const ptr<const HSD_WObj> interest = cobj->interest;
-    if (interest != nullptr && (gc::load(interest->flags) & wobj_position_changed))
+    if (gc::path::falls_through(interest != nullptr) &&
+        gc::path::falls_through(gc::load(interest->flags) & wobj_position_changed))
         return 1;
     return 0;
 }
@@ -66,7 +73,7 @@ void HSD_CObjClearFlags(ptr<HSD_CObj> cobj, u32 mask) {
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_cobj_mtx_is_dirty, hsd::HSD_CObjMtxIsDirty, gc::abi::flag_reads_only);
+GC_DECOMP_EXPORT(hsd_cobj_mtx_is_dirty, hsd::HSD_CObjMtxIsDirty, gc::abi::flag_reads_only | gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_cobj_set_scissor, hsd::HSD_CObjSetScissor, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_cobj_set_viewportf, hsd::HSD_CObjSetViewportf, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_cobj_get_projection_type, hsd::HSD_CObjGetProjectionType, gc::abi::flag_reads_only);

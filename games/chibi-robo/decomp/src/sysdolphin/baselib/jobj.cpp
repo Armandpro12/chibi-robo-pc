@@ -13,20 +13,25 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
 // Moves the first curve of kind fobj_type_joint to the front of the animation's curve list; nothing if there is no
 // animation, no curve, or no curve of that kind. The list is walked through the address of each link, as in the
-// original (the head's link is the animation's fobj field).
+// original (the head's link is the animation's fobj field). The loop's test is the original's one, at the bottom of
+// its loop and reached first by a jump.
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
 void JObjSortAnim(ptr<HSD_AObj> aobj) {
-    if (aobj == nullptr)
+    if (gc::path::taken(aobj == nullptr))
         return;
-    if (aobj->fobj == nullptr)
+    if (gc::path::falls_through(aobj->fobj == nullptr))
         return;
     ptr<ptr<HSD_FObj>> link = gc::address_of(aobj->fobj);
-    for (ptr<HSD_FObj> fobj = *link; fobj != nullptr; fobj = *link) {
-        if (gc::load(fobj->obj_type) == fobj_type_joint) {
+    for (ptr<HSD_FObj> fobj = *link; gc::path::taken(fobj != nullptr); fobj = *link) {
+        if (gc::path::falls_through(gc::load(fobj->obj_type) == fobj_type_joint)) {
             *link = fobj->next;      // unlink it
             fobj->next = aobj->fobj; // and put it in front
             aobj->fobj = fobj;
@@ -54,6 +59,6 @@ ptr<HSD_DObj> HSD_JObjGetDObj(ptr<const HSD_JObj> jobj) {
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_jobj_sort_anim, hsd::JObjSortAnim, gc::abi::flag_none);
+GC_DECOMP_EXPORT(hsd_jobj_sort_anim, hsd::JObjSortAnim, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_jobj_get_flags, hsd::HSD_JObjGetFlags, gc::abi::flag_reads_only);
 GC_DECOMP_EXPORT(hsd_jobj_get_dobj, hsd::HSD_JObjGetDObj, gc::abi::flag_reads_only);

@@ -9,39 +9,45 @@
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp/gc_path.h"
 
 namespace hsd {
 
-// Kind of a node: zero for no node, texture or raster for the two marker pointers, otherwise the node's own type.
+// Cost by path (runtime/core/decomp/gc_path.h): gc::path::taken / falls_through mark, in the original's order, the
+// outcome of each of its conditional branches (identical in US and PAL), so that each call is charged the cycles of the
+// original's path; they return their condition unchanged.
+// Kind of a node: zero for no node, texture or raster for the two marker pointers, otherwise the node's own type. (The
+// original branches away on the "other" side of each test: falls_through.)
 HSD_TExpType HSD_TExpGetType(ptr<const HSD_TExp> texp) {
-    if (texp == nullptr)
+    if (gc::path::falls_through(texp == nullptr))
         return HSD_TExpType::zero;
-    if (is_texp_marker(texp, texp_marker_texture))
+    if (gc::path::falls_through(is_texp_marker(texp, texp_marker_texture)))
         return HSD_TExpType::texture;
-    if (is_texp_marker(texp, texp_marker_raster))
+    if (gc::path::falls_through(is_texp_marker(texp, texp_marker_raster)))
         return HSD_TExpType::raster;
     return gc::load(texp->type);
 }
 
 // Counts one more reference to the node: to the colour or the alpha result of a TEV stage (`select`), or to a
-// constant. Other kinds keep no count. The original has the call to HSD_TExpGetType inlined.
+// constant. Other kinds keep no count. The original has the call to HSD_TExpGetType inlined (its path marks count
+// for this function then) and tests the kind in this order: constant, above constant (signed), tev.
 void HSD_TExpRef(ptr<HSD_TExp> texp, u8 select) {
-    switch (HSD_TExpGetType(texp)) {
-    case HSD_TExpType::tev:
-        if (select == texp_select_colour)
-            texp->tev.c_ref += 1;
-        else
-            texp->tev.a_ref += 1;
-        break;
-    case HSD_TExpType::constant:
+    const HSD_TExpType type = HSD_TExpGetType(texp);
+    if (gc::path::taken(type == HSD_TExpType::constant)) {
         texp->cnst.ref += 1;
-        break;
-    default:
-        break;
+        return;
     }
+    if (gc::path::taken(type > HSD_TExpType::constant))
+        return; // a kind above constant: no count
+    if (gc::path::taken(type != HSD_TExpType::tev))
+        return; // zero, texture or raster: no count
+    if (gc::path::falls_through(select == texp_select_colour))
+        texp->tev.c_ref += 1;
+    else
+        texp->tev.a_ref += 1;
 }
 
 } // namespace hsd
 
-GC_DECOMP_EXPORT(hsd_texp_get_type, hsd::HSD_TExpGetType, gc::abi::flag_reads_only);
-GC_DECOMP_EXPORT(hsd_texp_ref, hsd::HSD_TExpRef, gc::abi::flag_none);
+GC_DECOMP_EXPORT(hsd_texp_get_type, hsd::HSD_TExpGetType, gc::abi::flag_reads_only | gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_texp_ref, hsd::HSD_TExpRef, gc::abi::flag_path_marked);

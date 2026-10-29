@@ -225,6 +225,9 @@ struct function_state {
     // measured only for a function without call sites (its run there is exclusive).
     u64 cost_cycles = 0, cost_calls = 0, cost_min = UINT64_MAX, cost_max = 0;
     u64 cost_callee_cycles = 0, cost_unmeasured = 0, cost_nested_calls = 0, cost_nested_cycles = 0;
+    // Cost by path (gc_path.h): measured calls whose decompiled version walked its original's graph, and those whose
+    // walk did not end on a return or whose cycles differ from the original's exclusive cycles (0 expected).
+    u64 path_checked = 0, path_mismatches = 0;
 };
 
 const char* s_version = "?";
@@ -260,6 +263,16 @@ unsigned s_test_no_store_hook = 0;     // GCRT_DECOMP_ORACLE_TEST_NO_STORE_HOOK 
 // everything the oracle runs for a game call, so the original's results are kept but its cycles are not charged, as in
 // a production executable where the decompiled function replaces it at no guest cost.
 unsigned s_test_free_original = 0;
+// Walk of the original's path by the decompiled version of the last comparison (gc_path.h; compare_call), checked
+// against the original's exclusive cycles by oracle_entry.
+struct path_result {
+    bool walked = false;
+    bool complete = false;
+    u64 cycles = 0;
+    u32 steps = 0;
+};
+path_result s_path_last;
+const gc::abi::guest_cost_state s_no_cost{};
 unsigned s_depth = 0;               // > 0 while a comparison runs
 function_state* s_running = nullptr; // function being compared
 bool s_in_original = false;          // the original of s_running is running (block hooks record)
@@ -824,6 +837,10 @@ void report_at_exit() {
                          static_cast<unsigned long long>(f.cost_nested_calls),
                          static_cast<unsigned long long>(f.cost_nested_cycles),
                          s_test_free_original ? " (not charged: test)" : "");
+        if (f.path_checked || f.path_mismatches)
+            std::fprintf(stdout, "ORACLE-PATH %-32s %s %08X checked=%llu mismatches=%llu\n", f.name, s_version,
+                         static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.path_checked),
+                         static_cast<unsigned long long>(f.path_mismatches));
         if (!s_out)
             continue;
         std::fprintf(s_out,
@@ -836,7 +853,8 @@ void report_at_exit() {
                      "\"recorded_calls\":%llu,\"max_calls\":%llu,\"refused_switches\":%llu,"
                      "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,"
                      "\"cost_exclusive\":true,\"cost_callee_cycles\":%llu,\"cost_unmeasured\":%llu,"
-                     "\"cost_nested_calls\":%llu,\"cost_nested_cycles\":%llu,",
+                     "\"cost_nested_calls\":%llu,\"cost_nested_cycles\":%llu,\"path_checked\":%llu,"
+                     "\"path_mismatches\":%llu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
@@ -856,7 +874,9 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.cost_callee_cycles),
                      static_cast<unsigned long long>(f.cost_unmeasured),
                      static_cast<unsigned long long>(f.cost_nested_calls),
-                     static_cast<unsigned long long>(f.cost_nested_cycles));
+                     static_cast<unsigned long long>(f.cost_nested_cycles),
+                     static_cast<unsigned long long>(f.path_checked),
+                     static_cast<unsigned long long>(f.path_mismatches));
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         print_u64_list(s_out, "synthetic_block_hits", f.synthetic_block_hits);
@@ -1215,7 +1235,15 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_depth++;
     s_running = &f;
     s_replaying = true;
-    invoke(registers_of(g));
+    {
+        // The walk of the original's path (gc_path.h), as the gateway does it in production.
+        const export_record* record = gc::abi::find(f.address);
+        const gc::abi::detail::path_scope path(record && record->cost ? *record->cost : s_no_cost);
+        invoke(registers_of(g));
+        if (path.walk.graph)
+            s_path_last = path_result{true, gc::abi::detail::path_complete(path.walk), path.walk.cycles,
+                                      path.walk.steps};
+    }
     s_replaying = false;
     s_running = nullptr;
     s_depth--;
@@ -1567,7 +1595,20 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
         f->cost_calls++;
         f->cost_min = std::min(f->cost_min, spent);
         f->cost_max = std::max(f->cost_max, spent);
+        // Cost by path: the cycles the gateway would charge for this call against the original's.
+        if (s_path_last.walked) {
+            f->path_checked++;
+            if (!s_path_last.complete || s_path_last.cycles != spent) {
+                if (f->path_mismatches++ < 5)
+                    std::fprintf(stderr, "gc_oracle: PATH COST MISMATCH %s: original %llu exclusive cycles, path "
+                                         "%llu (%u outcomes marked, walk %s)\n", f->name,
+                                 static_cast<unsigned long long>(spent),
+                                 static_cast<unsigned long long>(s_path_last.cycles), s_path_last.steps,
+                                 s_path_last.complete ? "complete" : "incomplete");
+            }
+        }
     };
+    s_path_last = path_result{};
     if (!comparable(f->leaf)) {
         // Not comparable: the original runs alone (the game keeps its results).
         f->not_compared++;

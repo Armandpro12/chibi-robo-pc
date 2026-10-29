@@ -445,6 +445,13 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                     if "fpu_declined" not in rec:
                         problems.append(f"{path.name}: {name}: summary without fpu_declined (oracle executable older "
                                         f"than the FPU decline of the gateway: rebuild and rerun)")
+                    # Cost by path (runtime/core/decomp/gc_path.h): a call whose path cost differs from the original's
+                    # exclusive cycles means marks that do not follow the original's branches.
+                    a["path_checked"] = a.get("path_checked", 0) + int(rec.get("path_checked", 0))
+                    if int(rec.get("path_mismatches", 0)):
+                        a["path_mismatches"] = a.get("path_mismatches", 0) + int(rec["path_mismatches"])
+                        problems.append(f"{path.name}: {name}: {rec['path_mismatches']} calls whose cost by path "
+                                        f"differs from the original's cycles (gc_oracle: PATH COST MISMATCH in stderr)")
                     if "restore_errors" not in rec:
                         problems.append(f"{path.name}: {name}: summary without restore_errors (old oracle executable)")
                     elif int(rec["restore_errors"]):
@@ -745,6 +752,9 @@ def cmd_report(args) -> int:
                       f"compared): {a['fpu_declined']}; compared calls with an fmadds that Dolphin would flush "
                       f"under NI = 1 and DolRecomp does not: {a['fmadds_dolphin_divergent']}")
                 print(f"{'':44}paths of the stored cases: {', '.join(sorted(a['paths'])) or '-'}")
+                if a.get("path_checked") or a.get("path_mismatches"):
+                    print(f"{'':44}cost by path: {a.get('path_checked', 0)} calls checked against the original's "
+                          f"cycles, {a.get('path_mismatches', 0)} different")
                 for e in a["examples"]:
                     print(f"{'':44}e.g. {e}")
             else:
