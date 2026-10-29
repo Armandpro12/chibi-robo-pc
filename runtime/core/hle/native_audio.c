@@ -1113,28 +1113,19 @@ static bool replace_dsp_check_mail(GcrtCpu* g) {
      * DSPReadMailFromDSP is "From", the one before it is "To" (order of dsp.c). */
     const u32 from = gcrt_hle_resolve_preceding("DSPCheckMailFromDSP", "DSPReadMailFromDSP");
     const u32 size = gcrt_hle_catalog_size("DSPCheckMailToDSP");
-    u32 copies[8];
-    const unsigned n = gcrt_hle_find_all("DSPCheckMailToDSP", copies, 8);
-    u32 to = 0;
-    for (unsigned i = 0; i < n && i < 8u; i++)
-        if (from && size && copies[i] == from - size)
-            to = copies[i];
-    bool ok = true;
-    if (from)
-        ok &= gcrt_hle_register(g, from, "DSPCheckMailFromDSP", hle_dsp_check_mail_from_dsp);
-    else
-        ok = false;
-    if (to)
-        ok &= gcrt_hle_register(g, to, "DSPCheckMailToDSP", hle_dsp_check_mail_to_dsp);
-    else
-        ok = false;
-    s_au.replaced += (from ? 1u : 0u) + (to ? 1u : 0u);
-    if (!from || !to) {
+    /* Every copy is examined (gcrt_hle_is_copy), not only the first ones of a fixed buffer. */
+    const u32 to = from && size && gcrt_hle_is_copy("DSPCheckMailToDSP", from - size) ? from - size : 0;
+    /* Counted and reported as replaced only when gcrt_hle_register accepted it (it refuses an address that another
+     * function already holds): `replaced` and `missing` tell the truth in the "native audio" trace. */
+    const bool from_ok = from && gcrt_hle_register(g, from, "DSPCheckMailFromDSP", hle_dsp_check_mail_from_dsp);
+    const bool to_ok = to && gcrt_hle_register(g, to, "DSPCheckMailToDSP", hle_dsp_check_mail_to_dsp);
+    s_au.replaced += (from_ok ? 1u : 0u) + (to_ok ? 1u : 0u);
+    if (!from_ok || !to_ok) {
         size_t used = strlen(s_au.missing);
-        snprintf(s_au.missing + used, sizeof(s_au.missing) - used, "%s%s%s", used ? " " : "",
-                 from ? "" : "DSPCheckMailFromDSP", to ? "" : " DSPCheckMailToDSP");
+        snprintf(s_au.missing + used, sizeof(s_au.missing) - used, "%s%s%s%s", used ? " " : "",
+                 from_ok ? "" : "DSPCheckMailFromDSP", !from_ok && !to_ok ? " " : "", to_ok ? "" : "DSPCheckMailToDSP");
     }
-    return ok;
+    return from_ok && to_ok;
 }
 
 void gcrt_native_audio_install(GcrtCpu* g) {
