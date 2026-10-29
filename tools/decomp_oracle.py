@@ -452,6 +452,14 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                         a["path_mismatches"] = a.get("path_mismatches", 0) + int(rec["path_mismatches"])
                         problems.append(f"{path.name}: {name}: {rec['path_mismatches']} calls whose cost by path "
                                         f"differs from the original's cycles (gc_oracle: PATH COST MISMATCH in stderr)")
+                    a["synthetic_path_checked"] = (a.get("synthetic_path_checked", 0)
+                                                   + int(rec.get("synthetic_path_checked", 0)))
+                    if int(rec.get("synthetic_path_mismatches", 0)):
+                        a["synthetic_path_mismatches"] = (a.get("synthetic_path_mismatches", 0)
+                                                          + int(rec["synthetic_path_mismatches"]))
+                        problems.append(f"{path.name}: {name}: {rec['synthetic_path_mismatches']} synthetic cases whose "
+                                        f"cost by path differs from the original's cycles (ORACLE-PATH-CASE ... "
+                                        f"MISMATCH in stdout)")
                     if "restore_errors" not in rec:
                         problems.append(f"{path.name}: {name}: summary without restore_errors (old oracle executable)")
                     elif int(rec["restore_errors"]):
@@ -752,9 +760,11 @@ def cmd_report(args) -> int:
                       f"compared): {a['fpu_declined']}; compared calls with an fmadds that Dolphin would flush "
                       f"under NI = 1 and DolRecomp does not: {a['fmadds_dolphin_divergent']}")
                 print(f"{'':44}paths of the stored cases: {', '.join(sorted(a['paths'])) or '-'}")
-                if a.get("path_checked") or a.get("path_mismatches"):
+                if a.get("path_checked") or a.get("path_mismatches") or a.get("synthetic_path_checked"):
                     print(f"{'':44}cost by path: {a.get('path_checked', 0)} calls checked against the original's "
-                          f"cycles, {a.get('path_mismatches', 0)} different")
+                          f"cycles, {a.get('path_mismatches', 0)} different; synthetic cases "
+                          f"{a.get('synthetic_path_checked', 0)} checked, {a.get('synthetic_path_mismatches', 0)} "
+                          f"different")
                 for e in a["examples"]:
                     print(f"{'':44}e.g. {e}")
             else:
