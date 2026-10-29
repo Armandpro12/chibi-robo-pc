@@ -114,7 +114,8 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     // Guest cost of each function (registration::guest_cost_256ths, gc_abi.h "Guest time"), kept in the function's own
     // state (export_record::cost) so that a call charges it without a lookup. GCRT_DECOMP_GUEST_COST=0, read in every
     // build: nothing is charged (the cycle counter runs as with a gateway without guest costs; diagnostic of a timing
-    // difference on the bench). It changes nothing else, and nothing at all with the real-time clock.
+    // difference). It changes nothing else, and nothing at all with the real-time clock (GCRT_PACING=host); the default
+    // pacing of normal play runs on the cycle clock, so there it does change the guest time (gc_abi.h "Guest time").
     const char* cost_env = std::getenv("GCRT_DECOMP_GUEST_COST");
     const bool costs_off = cost_env && cost_env[0] == '0' && cost_env[1] == 0;
     unsigned costed = 0;
@@ -190,8 +191,8 @@ bool crosscheck_enabled = false;
 bool guest_cost_enabled = false;
 
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept {
-    // Real-time clock: the cycle counter is not time, nothing to keep in step (and nothing written: a real game never
-    // sees the guest costs).
+    // Real-time clock (GCRT_PACING=host): the cycle counter is not time, nothing to keep in step and nothing written.
+    // The default pacing of normal play and the bench both run on the cycle clock: the cost is charged there.
     if (!g || g->clock != GCRT_CLOCK_CYCLES)
         return;
     const u64 total = static_cast<u64>(cost.remainder_256ths) + cost.per_call_256ths;

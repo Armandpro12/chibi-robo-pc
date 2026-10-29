@@ -963,15 +963,15 @@ def cmd_replay(args) -> int:
 
 GUEST_COST_HEADER = """\
 # Guest cost of the decompiled functions of {game} (stage 2): for each function and version, the guest cycles the
-# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, "Guest time"), so that the deterministic
-# cycle clock of the bench runs as with the recompiled original. Without it a decompiled function costs no guest time:
-# timed events (end of a load, audio) come earlier and the A/B bench sees a frame shift that is not a change of
-# behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the originals: the mean EXCLUSIVE
-# cycles of each original over its game calls (its own cycles, without those of the calls it makes, charged where they
-# run); a whole number when every call costs the same, otherwise the mean to 4 decimals (the gateway charges it in
-# 1/256 cycle and carries the remainder: no rounding bias). Numbers about the game's code only, like the size column of
-# functions.tsv. Path-dependent originals (least and most of one call differ) are listed below the table: their charge
-# is a mean, exact only on average. Measured on: {labels}.
+# gateway charges to the cycle clock per call (runtime/core/decomp/gc_abi.h, "Guest time"), so that the cycle clock
+# (default pacing of normal play, and the A/B bench) runs as with the recompiled original. Without it a decompiled
+# function costs no guest time: timed events (end of a load, audio) come earlier, and the A/B bench sees a frame shift
+# that is not a change of behaviour. Written by tools/decomp_oracle.py cost from the oracle's measurement of the
+# originals: the mean EXCLUSIVE cycles of each original over its game calls (its own cycles, without those of the calls
+# it makes, charged where they run); a whole number when every call costs the same, otherwise the mean to 4 decimals
+# (the gateway charges it in 1/256 cycle and carries the remainder: a mean is off by at most 1/512 cycle per call).
+# Numbers about the game's code only, like the size column of functions.tsv. Path-dependent originals (least and most
+# of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: {labels}.
 """
 
 DRIFT_ALERT = 1_000_000  # cycles: ~0.12 frame of guest time at 486 MHz / 60 Hz (8.1 M cycles a frame)

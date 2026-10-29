@@ -26,16 +26,22 @@
 //   * arguments that would go on the stack (more than 8 integer or 8 floating-point registers) are refused at
 //     compile time, as are bool (its guest representation is not checked: use u8) and the gc::be<T> wrapper (pass T).
 //
-// Guest time (bench clock only). With the deterministic cycle clock of the A/B bench (GCRT_CLOCK_CYCLES, ticks =
-// guest cycles / 12), guest time is the cycles the recompiled code is charged for; a decompiled function costs none,
-// so timed events (end of a load, audio) would come earlier than with its original. The gateway therefore charges each
-// call of a decompiled function the EXCLUSIVE guest cost of its original (its own cycles, without those of the
-// functions it calls), measured by the oracle (registration::guest_cost_256ths, 1/256 cycle per call, with the
-// remainder carried from call to call: no rounding bias). The callees are charged where they run: a recompiled one by
-// the chassis, a decompiled one by its own entry (through call_guest) or by gc::abi::call / call_address (plain C++
-// calls). With the real-time clock nothing is charged: the cycle counter is not time there, and a real game never
-// sees this. GCRT_DECOMP_GUEST_COST=0 (read in every build, production and oracle) charges nothing: its only effect is
-// on the cycle counter, for the diagnostic of a timing difference. To be removed with the cycle clock coupling at D3.
+// Guest time (cycle clock). With the cycle clock (GCRT_CLOCK_CYCLES, ticks = guest cycles / 12), guest time is the
+// cycles the recompiled code is charged for; a decompiled function costs none, so timed events (end of a load, audio)
+// would come earlier than with its original. The cycle clock is not only the bench's: it is the DEFAULT clock of normal
+// play too. The platform layer's default pacing (GCRT_PACING=throttle, platform.cpp) switches the CPU to the cycle clock
+// and paces it on real time; the A/B bench runs the same clock without pacing (--clock cycles). Only another pacing
+// (GCRT_PACING=host), without --clock cycles, keeps the real-time clock. The gateway therefore charges each call of a
+// decompiled function the EXCLUSIVE guest cost of its original (its own cycles, without those of the functions it
+// calls), measured by the oracle (registration::guest_cost_256ths, 1/256 cycle per call, with the remainder carried
+// from call to call: no per-call rounding loss; a mean cost quantized to 1/256 cycle still leaves a linear bias of at
+// most 1/512 cycle per call, none for a whole number of cycles). The callees are charged where they run: a recompiled
+// one by the chassis, a decompiled one by its own entry (through call_guest) or by gc::abi::call / call_address (plain
+// C++ calls). With the real-time clock nothing is charged: the cycle counter is not time there. GCRT_DECOMP_GUEST_COST=0
+// (read in every build, production and oracle) charges nothing: its only effect is on the cycle counter, for the
+// diagnostic of a timing difference. GCRT_DECOMP_CROSSCHECK (diagnostic, off by default) counts the cross-checked calls
+// twice: the chassis charges the recompiled original that crosscheck runs, on top of charge_guest_cost. To be removed
+// with the cycle clock coupling at D3.
 //
 // Rules (stage document, notes/decomp.md D1.1): decompiled code never names an address; the gateway is only built in
 // guest-memory mode and leaves the executable with the recompiled code (stage D3). No function with C linkage returns
@@ -81,8 +87,8 @@ using entry_fn = bool (*)(GcrtCpu* g, u32 address);
 
 // Guest cost of one decompiled function (see "Guest time" above), state of the gateway: what each call charges to the
 // cycle clock, in 1/256 cycle (set by install from registration::guest_cost_256ths; 0 under GCRT_DECOMP_GUEST_COST=0),
-// and the fraction of a cycle not charged yet (carried to the next call, so that N calls charge N x the mean to within
-// one cycle in all).
+// and the fraction of a cycle not charged yet (carried to the next call: N calls charge N x per_call_256ths / 256 to
+// within one cycle in all; per_call_256ths itself differs from a mean cost by at most 1/512 cycle).
 struct guest_cost_state {
     u32 per_call_256ths = 0;
     u32 remainder_256ths = 0;
@@ -329,7 +335,8 @@ bool decline_without_fpu(u32 address) noexcept;
 template <auto Fn> inline guest_cost_state guest_cost{};
 // Some registration has a guest cost and GCRT_DECOMP_GUEST_COST is not 0 (gc_abi.cpp install). charge_guest_cost adds
 // one call of `cost` to the cycle counter (gcrt_cpu_add_cycles) only while the CPU runs on the cycle clock
-// (GCRT_CLOCK_CYCLES); with the real-time clock it does nothing.
+// (GCRT_CLOCK_CYCLES: the default pacing of normal play and the bench, see "Guest time"); with the real-time clock
+// (GCRT_PACING=host) it does nothing.
 extern bool guest_cost_enabled;
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept;
 // True if the function registered at `address` has registration_uses_fpu (not counted).
