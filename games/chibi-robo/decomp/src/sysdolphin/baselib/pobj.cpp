@@ -1,22 +1,47 @@
-// HSD polygon objects (sysdolphin): HSD_PObj flags and the shape blending of a shape-animated one.
+// HSD polygon objects (sysdolphin): HSD_PObj flags, the matrix marks and the shape blending of a shape-animated one.
 //
 // Original unit: sysdolphin/baselib/pobj.c [hypothesis: the functions sit between the pobj.c and tobj.c source-file
-// strings in both versions]. The code was written from the disassembly of both versions (identical in US and PAL).
+// strings in both versions]. The code was written from the disassembly of both versions (identical in US and PAL,
+// the address of the global aside).
 // Cross-check of pobj_set_shape_blend [hypothesis on the identity]: it has the logic and the fields of
 // PObjUpdateFunc, with ShapeSetSetAnimResult inlined, in cbr_decomp's pobj.c (https://github.com/eavpsp/cbr_decomp,
 // folder decomp_dtk_main/src, CC0 1.0); the first weight track 2 is HSD_A_S_W0 there. Structure names and layout:
 // pobj.h. HSD_PObjSetFlags and HSD_PObjClearFlags are this project's names [hypothesis], after the HSD_MObj and
-// HSD_CObj pairs of the same shape (notes of the decompilation stage).
+// HSD_CObj pairs of the same shape (notes of the decompilation stage). HSD_PObjClearMtxMark and mtx_mark[2] of
+// {obj, mark}: names and layout from the same pobj.c; doldecomp/melee's sysdolphin uses the same function name (names
+// only, see the project rules). The role of the marks is this project's [hypothesis].
 #include "pobj.h"
 
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
+#include "decomp_globals.h"
 
 #include <cstddef>
 
 namespace hsd {
 
 using gc::u32;
+
+// One matrix mark: the object whose matrix was last loaded, and a mark of how [hypothesis on the meaning].
+struct MatrixMark {
+    ptr<void> object;
+    be<u32> mark;
+};
+#if !defined(GC_NATIVE_MEMORY)
+static_assert(sizeof(MatrixMark) == 8 && offsetof(MatrixMark, mark) == 4);
+#endif
+
+// mtx_mark of pobj.c: two marks (HSD_PObjClearMtxMark writes both at once).
+constexpr gc::global<gc::array<MatrixMark, 2>, global_id::hsd_pobj_mtx_mark> matrix_marks{};
+
+// Sets both matrix marks to (`object`, `mark`). The original stores the words in the order object 0, mark 0,
+// object 1, mark 1.
+void HSD_PObjClearMtxMark(ptr<void> object, u32 mark) {
+    for (auto& entry : *matrix_marks) {
+        entry.object = object;
+        entry.mark = mark;
+    }
+}
 
 // Clears the flags of `mask` in the polygon's 16-bit flags; nothing if there is no polygon. Only the low 16 bits of
 // `mask` matter (the original stores a halfword).
@@ -53,6 +78,7 @@ void pobj_set_shape_blend(ptr<HSD_PObj> polygon, s32 track, ptr<const be<f32>> v
 
 } // namespace hsd
 
+GC_DECOMP_EXPORT(hsd_pobj_clear_mtx_mark, hsd::HSD_PObjClearMtxMark, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_pobj_clear_flags, hsd::HSD_PObjClearFlags, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_pobj_set_flags, hsd::HSD_PObjSetFlags, gc::abi::flag_none);
 GC_DECOMP_EXPORT(hsd_pobj_set_shape_blend, hsd::pobj_set_shape_blend, gc::abi::flag_none);
