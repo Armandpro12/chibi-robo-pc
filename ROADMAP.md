@@ -222,6 +222,17 @@ from D1" below).
   offsets) before writing the identifiers and the version's address table; a wrong PAL address refuses the PAL build.
   First use: three HSD functions that write globals, verified by the oracle in US and PAL (8.5 to 27.6 million
   comparisons each in the integrated run, no difference).
+- **Guest time of decompiled functions** (D2): the bench runs the game on a deterministic clock where guest time is
+  the cycles the recompiled code is charged for. A decompiled function cost nothing on that clock, so the integrated
+  work ran slightly faster in guest time; in PAL the end of a load then came one frame earlier, and four of the five
+  reference scenarios differed from the references by that one frame (same images one frame apart, audio shifted),
+  although every function gave the original's results. Shown by an oracle executable that keeps the originals'
+  results but leaves their cycles uncharged (test switch): same difference, to the figure. The oracle now measures
+  the cycles of each original over its game calls; `tools/decomp_oracle.py cost` writes their mean per version into
+  `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call (exact for 28 of the 40 functions,
+  whose original always costs the same; a mean for the other 12). With it, the production executables of the
+  integrated work match the references exactly in all five scenarios, in US and PAL. Production play uses the PC
+  clock and is not affected.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
