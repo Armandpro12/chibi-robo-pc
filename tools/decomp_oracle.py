@@ -251,6 +251,9 @@ def cmd_run(args) -> int:
         print("+", " ".join(cmd), flush=True)
         rc = subprocess.run(cmd, cwd=bench).returncode
         print(f"== {version}: tools/ab.py check returned {rc} (bench verdict of the oracle executable)")
+        play = run_play(args, game, game_cfg, bench, version, exe, out, own) if args.play else {}
+        if any(play.values()):
+            rc = rc or max(play.values())
         info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
                 "dolrecomp": df.dolrecomp_state(),
@@ -259,12 +262,55 @@ def cmd_run(args) -> int:
                 # in this order over its own environment); tools/run.py adds its own (GCRT_USER_DIR, ...) below.
                 "gcrt_env": {k: v for k, v in {**env_inherited, **own, **env_cli}.items()
                              if k.upper().startswith("GCRT_")},
-                "env_restricted": env_restricted, "allow_env": bool(args.allow_env)}
+                "env_restricted": env_restricted, "allow_env": bool(args.allow_env),
+                # --play: progression scenarios run after the bench, {name: exit code of tools/run.py} (in rc).
+                "play": play}
         (out / f"run-{version}.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         code = code or rc
     print(f"== Oracle files: {oracle_dir(bench, game, args.label, '<ID>')}; next: "
           f"py -3 tools/decomp_oracle.py report --label {args.label}")
     return code
+
+
+def run_play(args, game: str, game_cfg: dict, bench: Path, version: str, exe: Path, out: Path,
+             own: dict[str, str]) -> dict[str, int]:
+    """--play: progression scenarios games/<game>/scenarios/play/<ID>/<name>.scn, in the order given, through
+    tools/run.py of the bench checkout (isolated user folder, no sound), writing their oracle files into the same
+    folder as the bench's. A scenario with an `after <name>` line starts from the user folder of that scenario's run,
+    which must come earlier in the list. Verdict of each: the exit code of tools/run.py (0 = ok). A scenario whose
+    header asks for other options (--stage, a save of its own) is not run here: give only self-contained ones."""
+    import os
+    folder = game_cfg["_dir"] / "scenarios" / "play" / version
+    done: dict[str, Path] = {}
+    codes: dict[str, int] = {}
+    env = dict(os.environ)
+    for key, value in own.items():
+        env[key] = value
+    for item in args.env:
+        key, value = item.split("=", 1)
+        env[key] = value
+    for name in [n for n in args.play.split(",") if n]:
+        scn = folder / f"{name}.scn"
+        if not scn.exists():
+            raise SystemExit(f"--play {name}: {scn} not found (scenarios/play/{version}/)")
+        after = None
+        for line in scn.read_text(encoding="utf-8").splitlines():
+            words = line.split("#", 1)[0].split()
+            if len(words) >= 2 and words[0] == "after":
+                after = words[1]
+        run_out = out / f"play-{name}"
+        cmd = [sys.executable, str(bench / "tools" / "run.py"), game, "--version", version, "--exe", str(exe),
+               "--audio", "off", "--scenario", str(scn), "--out", str(run_out)]
+        if after:
+            if after not in done:
+                raise SystemExit(f"--play {name}: needs the user folder of {after!r} ('after' line): list {after} "
+                                 f"before it")
+            cmd += ["--user-seed", str(done[after] / "user")]
+        print("+", " ".join(cmd), flush=True)
+        codes[name] = subprocess.run(cmd, cwd=bench, env=env).returncode
+        print(f"== {version}: play {name}: tools/run.py returned {codes[name]}")
+        done[name] = run_out
+    return codes
 
 
 def cmd_hash(args) -> int:
@@ -406,6 +452,16 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                         problems.append(f"{path.name}: {name}: {rec['restore_errors']} failed self-checks of the undo "
                                         f"or redo of the original's writes (oracle fault: nothing promotes)")
                     a["synthetic_cases"] = max(a["synthetic_cases"], int(rec.get("synthetic_cases", 0)))
+                    # Non-leaf comparison (D2-1): calls recorded, thread switches refused in the nested run,
+                    # assertion blocks and the synthetic cases that ran each block.
+                    a["recorded_calls"] = a.get("recorded_calls", 0) + int(rec.get("recorded_calls", 0))
+                    a["max_calls"] = max(a.get("max_calls", 0), int(rec.get("max_calls", 0)))
+                    a["refused_switches"] = a.get("refused_switches", 0) + int(rec.get("refused_switches", 0))
+                    if rec.get("assert_blocks") is not None:
+                        a["assert_blocks"] = list(rec["assert_blocks"])
+                    for b, n in zip(rec.get("blocks") or [], rec.get("synthetic_block_hits") or []):
+                        sh = a.setdefault("synthetic_block_hits", {})
+                        sh[b] = sh.get(b, 0) + int(n)
                     a["fingerprints"].update(rec.get("fingerprints", []))
                     if int(rec["calls"]):  # a run that never called it says nothing about it
                         a["leaf"].add(rec["leaf"])
@@ -543,8 +599,11 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
         return False, f"{len(problems)} problems with the results (WARNING lines): nothing promotes"
     if not a or a["calls"] == 0:
         return False, "never called by these scenarios"
-    if a["leaf"] - {"yes"}:
-        return False, f"not comparable as a leaf ({', '.join(sorted(a['reasons'])) or ', '.join(sorted(a['leaf']))})"
+    # "yes": a leaf; "calls": compared with its calls recorded and replayed (gc_oracle.cpp, "Calls").
+    if a["leaf"] - {"yes", "calls"}:
+        return False, f"not comparable ({', '.join(sorted(a['reasons'])) or ', '.join(sorted(a['leaf']))})"
+    if a.get("refused_switches"):
+        return False, f"{a['refused_switches']} thread switches refused during the original's nested run"
     if a["compared"] == 0:
         return False, "called but never compared"
     if a["not_compared"] > max_not_compared:
@@ -562,11 +621,16 @@ def verdict(a: dict | None, min_cases: int, saturation: int = 0, problems: list[
     if dead_run:
         return False, f"blocks the analysis calls unreachable ran: {', '.join(dead_run)}"
     if missed:
+        asserts = [b for b in missed if b in set(a.get("assert_blocks") or [])]
+        hint = (f"; assertion blocks among them ({', '.join(asserts)}): only a synthetic case reaches them, with its "
+                f"calls simulated (`call` lines)") if asserts else ""
         return False, (f"blocks of the original never compared: {', '.join(missed)} ({len(blocks) - len(missed)}/"
                        f"{len(blocks)} covered): add a synthetic case (games/<game>/decomp/oracle_cases) or a scenario "
-                       f"that reaches them")
+                       f"that reaches them{hint}")
     n = len(a["fingerprints"])
     cov = f"{len(blocks)}/{len(blocks)} blocks"
+    if a.get("assert_blocks"):
+        cov += f" ({len(a['assert_blocks'])} assertion blocks, by synthetic cases: listed for review)"
     if n < min_cases:
         # Fewer distinct states than asked: accepted only if the scenarios have saturated them (at least
         # `saturation` comparisons, all of them on these few states).
@@ -663,6 +727,14 @@ def cmd_report(args) -> int:
                 print(f"{'':44}blocks (compared calls + synthetic cases that ran each): {hits or '-'}")
                 if a.get("dead_blocks"):
                     print(f"{'':44}unreachable blocks: {', '.join(a['dead_blocks'])}")
+                if a.get("assert_blocks"):
+                    sh = a.get("synthetic_block_hits", {})
+                    listed = ", ".join(f"{b}:{sh.get(b, 0)} synthetic" for b in a["assert_blocks"])
+                    print(f"{'':44}assertion blocks (only lead to [decomp.no_return]; covered by synthetic cases, "
+                          f"to review): {listed}")
+                if a.get("recorded_calls"):
+                    print(f"{'':44}calls recorded and replayed: {a['recorded_calls']} (up to {a['max_calls']} per "
+                          f"comparison)")
                 print(f"{'':44}distinct results of the original (r3, r3:r4 or f1 bits): "
                       f"{', '.join(sorted(a['results'])[:12]) or '-'}{' ...' if len(a['results']) > 12 else ''}; "
                       f"distinct block sets per run: up to {a['path_count']}")
@@ -762,8 +834,12 @@ def write_status(game_cfg: dict, names: list[str], versions: list[str]) -> None:
 
 def case_lines(rec: dict) -> list[str]:
     """Case record (oracle jsonl) -> text form read by runtime/core/decomp/oracle_replay.cpp."""
+    # call_sites and original_entry_lr (the LR the original was entered with): the LR save word rule of
+    # gc_oracle_compare.h (0 for a case written before these fields existed: the word is then compared, the strict
+    # side).
     out = [f"case {rec['function']} {rec['address']} {rec['result_kind']} {rec.get('fingerprint', '-')} "
-           f"{rec.get('dead_stack', '00010000')}"]
+           f"{rec.get('dead_stack', '00010000')} {int(rec.get('call_sites', 0))} "
+           f"{rec.get('original_entry_lr', '00000000')}"]
     for key, tag in (("entry", "I"), ("original", "O")):
         r = rec[key]
         out.append(f"{tag}G " + " ".join(r["gpr"]))
@@ -784,6 +860,8 @@ def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, ex
         raise SystemExit("clang-cl not found (tools/doctor.py)")
     core = tc.ROOT / "runtime" / "core"
     src = sorted((tc.ROOT / "games" / game / "decomp" / "src").rglob("*.cpp"))
+    # Oracle test functions (disabled rows of the table, oracle builds only): their records are in the table too.
+    src += sorted((tc.ROOT / "games" / game / "decomp" / "oracle_tests").rglob("*.cpp"))
     if negative:
         src += sorted(negative.rglob("*.cpp"))
     src += extra
@@ -830,7 +908,7 @@ def cmd_replay(args) -> int:
     exe = build_replay(game, game_cfg, out, negative, [Path(p).resolve() for p in args.extra_source])
     records = build_negative_records(negative)
     text: list[str] = []
-    count = 0
+    count = skipped_calls = 0
     for path in files:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
@@ -839,13 +917,19 @@ def cmd_replay(args) -> int:
                 continue
             if rec.get("kind") not in ("case", "mismatch") or (rec.get("kind") == "mismatch" and not args.mismatches):
                 continue
+            if rec.get("calls"):
+                # A case of a non-leaf function holds the calls the original made: the offline replay does not replay
+                # calls yet (the in-game oracle does). Skipped, counted.
+                skipped_calls += 1
+                continue
             if negative and rec["function"] in records:
                 rec = dict(rec, function=records[rec["function"]])
             text += case_lines(rec)
             count += 1
     cases = out / "cases.txt"
     cases.write_text("\n".join(text) + "\n", encoding="utf-8")
-    print(f"== Replay of {count} cases from {len(files)} files ({exe.name})")
+    print(f"== Replay of {count} cases from {len(files)} files ({exe.name}); {skipped_calls} cases with calls "
+          f"skipped (not replayable offline yet)")
     r = subprocess.run([str(exe), str(cases)], capture_output=True, text=True)
     lines = r.stdout.splitlines()
     for line in lines:
@@ -868,6 +952,9 @@ def main() -> int:
     r.add_argument("--allow-env", action="store_true",
                    help="accept restricted GCRT_* variables (inherited or --env; see RESTRICTED_ENV_*): an experiment, "
                         "its results never promote")
+    r.add_argument("--play", metavar="NAME,...",
+                   help="also run these progression scenarios (scenarios/play/<ID>/<name>.scn, tools/run.py) on the "
+                        "oracle executable, in order, after the bench: more real starting states")
     r.add_argument("--no-synthetic", action="store_true",
                    help="do not run the synthetic cases (the report then refuses the promotion)")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")

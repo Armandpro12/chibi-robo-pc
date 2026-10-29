@@ -97,6 +97,16 @@ excluded = ["init", "library"]
 # modules have the same code (relocations masked) in GGTE01 and GGTP01.
 rel_excluded_names = ["__register_global_object", "__destroy_global_chain"]
 
+# Functions that never return (a failed assertion, a panic), by version: a basic block that only leads to one of them
+# is an "assertion block" (tools/decomp_functions.py assertion_blocks), listed apart in the oracle report; no scenario
+# reaches it without stopping the game, so synthetic cases, whose calls the oracle simulates, cover it. Verified: rows
+# of symbols/GGTE01-to-GGTP01.tsv (`unique`/`supplement`, identical code); __assert and HSD_Panic are named after
+# their behavior (__assert calls HSD_Panic, which calls OSPanic), names [hypothesis].
+[decomp.no_return]
+__assert = { GGTE01 = "801DD248", GGTP01 = "801DFB44" }
+HSD_Panic = { GGTE01 = "801DD2A4", GGTP01 = "801DFBA0" }
+OSPanic = { GGTE01 = "80163F80", GGTP01 = "80166830" }
+
 # Column of the table holding each version's address (other accepted spellings: see the header of
 # tools/decomp_progress.py). One [decomp] section only, and the columns always as this sub-table, never as an
 # inline "columns = { ... }" key (TOML refuses a table declared twice).

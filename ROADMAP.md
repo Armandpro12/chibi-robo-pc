@@ -180,6 +180,34 @@ once the gateway handled a call made while the unit is off; see "Follow-ups from
   next call reaches the decompiled version again. The oracle counts these calls apart: 13 (US) and 7 (PAL) over the
   reference scenarios, against 3.8 million (US) and 4.0 million (PAL) compared calls of the same two functions. Checked by local tests, including
   a gateway without this decline, which they reject.
+- **Functions that call others** (start of D2, oracle builds only): every call instruction of the original is hooked;
+  while the original runs under comparison, each call it makes is recorded (target, arguments, memory written so far)
+  and its callee runs once, as its original; the decompiled version's calls are not run but compared with the recorded
+  ones and replayed (callee stores and result registers). Register save/restore helpers run inline. Checked on three
+  real functions of the game used as tests only (not counted as progress), in US and PAL over two reference scenarios
+  and a progression scenario: a caller and its callee (2,238 and 2,232 comparisons per version, no difference) and a
+  function that calls itself and two others in a fixed order (9,100 in US, 9,210 in PAL, every block, up to 10 calls per
+  comparison, no difference). Deliberately wrong callers are reported on every compared call in both versions (missing
+  store, wrong argument, extra call, missing call, store before the call, wrong target), and calls in the wrong order on
+  every call where the order matters. The return-address save word of the caller's frame is left out of the comparison
+  only for a function that has call sites, and only when the original stored there the return address it was entered
+  with; any other store there is a difference (a deliberately wrong caller that stores another value there, and a
+  leaf that stores there, are both reported on every compared call in US and PAL).
+- **Known defect of the oracle executable** (production executables are not concerned: they never run a function
+  this way): a callee that waits for another thread or an interrupt never returns from the nested run the oracle
+  makes of it (budget of 200 million blocks), and the game stops there instead of the function being set aside as
+  not comparable. The same holds for the original of the compared function itself, which also runs nested. A thread
+  switch the oracle refuses is only seen once that nested run has returned, so the call in which it happened already
+  ran in altered conditions. Seen in US on a test function (left out of the builds); its PAL counterpart was not run.
+- **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
+  (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
+  yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show
+  as an argument difference, which no test exercises yet; a function whose first instruction is a call or a branch
+  (a thunk) makes the oracle build fail with a hook conflict. Never exercised on the game's code under comparison:
+  conditional calls (`bcl`), tail calls, indirect calls (`bctrl`), the refusal of a thread switch, and a tail branch
+  to a register restore helper (none of the last kind in the US or PAL main executable). How the oracle reads these
+  instructions is checked by local tests on hand-written instruction words, not in the game. The blocks that only lead
+  to a failed assertion are not yet covered by synthetic cases.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
   code): 14 verified (0.37 %; 592 bytes, 0.03 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the

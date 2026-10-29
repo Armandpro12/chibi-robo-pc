@@ -1,0 +1,10 @@
+# Synthetic case of the decompilation oracle for oracle_test_run_handler_if_ready (format: runtime/core/decomp/
+# gc_oracle.cpp, "Synthetic cases"). Invented values (no game data): the owner is not ready (the simulated test
+# returns 0), so neither the owner nor its handler is read. The ready path (fields 0x70 and 0xB10 of the owner,
+# 0xAA0 bytes apart, more than a scratch area holds) is left to the real calls.
+
+case oracle_test_run_handler_if_ready not_ready
+area 0x100
+r3 = S
+call r3 = 0
+end
