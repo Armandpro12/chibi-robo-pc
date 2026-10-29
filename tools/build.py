@@ -390,10 +390,11 @@ def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooke
     return out
 
 
-def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
-    """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
-    DOL and the RELs (same algorithm as the runtime scan), plus the game-specific addresses declared in
-    game.toml ([hle.hooks] <ID> = [...])."""
+def signature_scan(dol: Path, layout: list[dict]) -> dict:
+    """Signature scan of the DOL and the RELs (same algorithm as the runtime scan), shared by hle_hooks and the
+    check of the superset against a --hle-trace (tests/decomp/check_replaceable_superset.py, anomaly A12): "hooks"
+    {address: name} of the hooked catalog functions, "found" {name: addresses} for the whole catalog, "hooked" and
+    "every_copy" (names), "replaceable" (replaceable_copies)."""
     import sdksig  # noqa: E402  (generic tool of the repository)
     import symbols as sy  # noqa: E402
     # Native replacements of milestone 10: names listed in runtime/core/hle/native_hooks.txt (hook needed
@@ -427,6 +428,16 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
     hooked = {c[0] for c in catalog}
     replaceable = replaceable_copies(found, {c[0]: c[1] for c in full_catalog}, hooked, every_copy,
                                      libraries=runtime_libraries())
+    return {"hooks": hooks, "found": found, "hooked": hooked, "every_copy": every_copy, "replaceable": replaceable}
+
+
+def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
+    """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
+    DOL and the RELs (same algorithm as the runtime scan, signature_scan), plus the game-specific addresses declared
+    in game.toml ([hle.hooks] <ID> = [...])."""
+    scan = signature_scan(dol, layout)
+    hooks: dict[int, str] = scan["hooks"]
+    found, hooked, replaceable = scan["found"], scan["hooked"], scan["replaceable"]
     for a in game_cfg.get("hle", {}).get("hooks", {}).get(version, []):
         hooks.setdefault(parse_int(a), "game")
     # Decompiled functions enabled in the game's table (tools/decomp_functions.py, which refuses an address that is not
