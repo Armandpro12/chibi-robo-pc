@@ -286,8 +286,17 @@ static void install_force_args(GcrtCpu* g) {
                     item);
             continue;
         }
-        const unsigned i = s_force_count++;
-        gcrt_hle_register(g, s_force[i].address, "GCRT_FORCE_ARG", hle_force_arg);
+        const unsigned i = s_force_count;
+        /* gcrt_hle_register refuses an address that another function already holds (error line above): the item
+         * would never act, so it is neither kept nor announced as active. Several items at one address share the same
+         * hook (same function: accepted). */
+        if (!gcrt_hle_register(g, s_force[i].address, "GCRT_FORCE_ARG", hle_force_arg)) {
+            fprintf(stderr, "gcrt hle: GCRT_FORCE_ARG: ERROR: item \"%s\" NOT active: no hook at the entry %08X "
+                            "(refused by gcrt_hle_register, error above)\n",
+                    item, (unsigned)s_force[i].address);
+            continue;
+        }
+        s_force_count++;
         char what[48], when[80] = "";
         describe_force_target(i, what, sizeof(what));
         if (s_force[i].limit && s_force[i].caller)
