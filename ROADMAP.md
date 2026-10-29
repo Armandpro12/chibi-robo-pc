@@ -275,15 +275,16 @@ from D1" below).
   generated (`tools/decomp_path_cost.py`, never written by hand); the decompiled code marks the outcome of each of the
   original's branches (`gc::path::taken` / `falls_through`, `runtime/core/decomp/gc_path.h`), and the gateway walks the
   graph. The oracle checks the path cost against the original's cycles on every measured call (0 different on the five
-  scenarios, US and PAL, about 870,000 calls each), and a production run charges the same cycles as the original on
-  each call. With it, the 40 functions leave the cycle counter equal to the build without decompiled functions at
-  every host wait of the five scenarios, in US and PAL, and images, sound and saves match the references. The tool
+  scenarios, US and PAL, 170,000 to 900,000 calls per run), and a production run charges the same cycles as the
+  original on each call. With it, the 40 functions leave the cycle counter equal to the build without decompiled
+  functions at every host wait of the five scenarios, in US and PAL (except an open 4-tick scheduling offset at four
+  waits of the US intro, with equal cycles, issue 66), and images, sound and saves match the references. The tool
   also showed 14 more originals whose cost depends on their path but that took a single path in the scenarios (mostly
   null-pointer tests): they are marked too, so all 20 path-dependent functions are charged their original's exact
   cycles on every path, including the paths no scenario takes. The oracle now also checks the path cost on its
   hand-written synthetic cases, which force those paths: every feasible path of the 18 loop-free originals, and every
-  branch outcome of the two with a loop, is covered by a case, with 0 different in US and PAL (a test switch that skews the cost by one cycle makes every check fail by exactly
-  one). Removed with the cycle clock at D3.
+  branch outcome of the two with a loop, is covered by a case, with 0 different in US and PAL (a test switch that
+  skews the cost by one cycle makes every check fail by exactly one). Removed with the cycle clock at D3.
 - **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
   same instruction pattern in each DOL (the register offsets differ), and the runtime replaces only the copy it anchors (after `ARInit`). The build now treats the
   copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight
