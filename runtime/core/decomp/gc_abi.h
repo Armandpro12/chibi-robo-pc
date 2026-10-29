@@ -459,6 +459,14 @@ void oracle_bypassed_entry(u32 lr) noexcept;
 
 } // namespace detail
 
+// Thrown by call_no_return (below) once its call is made: unwinds the decompiled code to the gateway, the HLE entry
+// of the decompiled function the game called (entry) or the oracle's comparison (gc_oracle.cpp compare_call), which
+// catch it; it never crosses generated C code. Not an error of the decompiled code: its original never comes back from
+// that call either.
+struct no_return_reached {
+    u32 address; // the guest function that does not return
+};
+
 // HLE entry of the decompiled function Fn (recompiled -> decompiled).
 template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     if (address == detail::bypass_address) {
@@ -473,6 +481,7 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     const u32 return_address = *r.lr;
     if (detail::call_count<Fn>++ == 0)
         detail::first_call(address);
+    try {
 #if defined(GC_DECOMP_ORACLE)
     {
         using traits = detail::function_traits<Fn>;
@@ -502,6 +511,14 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
         }
         if (detail::guest_cost_enabled)
             detail::charge_guest_cost(g, detail::guest_cost<Fn>, path);
+    }
+    } catch (const no_return_reached&) {
+        // Fn called a guest function that does not return (call_no_return): the game is stopped (stop reason of that
+        // function's nested run, e.g. OSPanic, or set by stop_after_no_return). Back to the chassis, which stops; no
+        // guest cost is charged (the original would not have finished either). The unwinding has already closed the
+        // walk of Fn's path (path_scope restores the caller's walk), and those of the decompiled calls in between.
+        *r.pc = return_address;
+        return true;
     }
     *r.pc = return_address;
     return true;
@@ -559,6 +576,27 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
                                       static_cast<u8>(detail::is_fpr_v<R> ? 1 : 3)};
         return detail::read_value<R>(r, result);
     }
+}
+
+namespace detail {
+// Outside an oracle comparison: the guest function `address`, declared without return, came back to decompiled code
+// (its nested run returned): stops the game as a halt does (GCRT_STOP_GUEST_HALT), unless a stop reason is set
+// already (gc_abi.cpp).
+void stop_after_no_return(u32 address) noexcept;
+} // namespace detail
+
+// Calls the guest function at `address` that never returns (a failed assertion, a panic: [decomp] no_return of the
+// game's game.toml), arguments as for call_guest, and does not return either: the game stops in that function, and
+// the decompiled code that called it is unwound to the gateway (no_return_reached). The C++ after such a call is never
+// run, so the faithful code of a block that only leads to the call (an assertion block) ends at the call, where the
+// original went on (its compiler did not know): no read through the null pointer an assertion has just reported. In an
+// oracle comparison the call is compared and replayed like any other, then the comparison ends there on both sides
+// (gc_oracle.cpp, "Calls that do not return").
+template <class... A> [[noreturn]] void call_no_return(u32 address, A... args) {
+    call_guest<void, A...>(address, args...);
+    if (!detail::oracle_replaying())
+        detail::stop_after_no_return(address);
+    throw no_return_reached{address};
 }
 
 // Calls the function at a run-time `address` (pointer read from guest memory): the decompiled C++ function if one is

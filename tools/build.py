@@ -288,8 +288,41 @@ def library_prefix(name: str) -> str:
     return base[:n]
 
 
+def runtime_libraries(hle_dir: Path | None = None) -> dict[str, str]:
+    """The `library` argument the runtime itself passes for each name: gcrt_native_replace(g, "NAME", "LIB", ...) in
+    runtime/core/hle/*.c. A call whose name is not a literal (a table walked in a loop) gives its literal library to
+    the names of the file's tables of {"NAME", function...} entries, when the file has only one such library; a name
+    reached otherwise (e.g. through a wrapper) falls back to library_prefix. Names the runtime replaces
+    without a library argument (gcrt_hle_replace, every copy) are absent."""
+    hle_dir = hle_dir or HLE_CATALOG.parent
+    call = re.compile(r'gcrt_native_replace\(\s*\w+\s*,\s*("([^"]+)"|[^,]+?)\s*,\s*"([^"]*)"')
+    out: dict[str, str] = {}
+    table_libs: dict[Path, set[str]] = {}
+    for src in sorted(hle_dir.glob("*.c")):
+        text = src.read_text(encoding="utf-8")
+        for m in call.finditer(text):
+            if m.group(2):
+                out[m.group(2)] = m.group(3)
+            else:
+                table_libs.setdefault(src, set()).add(m.group(3))
+    for src, libs in table_libs.items():
+        if len(libs) == 1:
+            lib = next(iter(libs))
+            for name in re.findall(r'\{\s*"([A-Za-z_][A-Za-z0-9_@]*)"\s*,\s*[A-Za-z_]\w*\s*[,}]',
+                                   src.read_text(encoding="utf-8")):
+                out.setdefault(name, lib)
+    return out
+
+
+def in_library(name: str, prefix: str) -> bool:
+    """Same test as the runtime (runtime/core/hle/hle.c in_library): the name, leading underscores dropped, starts
+    with the prefix (so "AR" also holds ARQ...)."""
+    return name.lstrip("_").startswith(prefix)
+
+
 def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooked: set[str],
-                       every_copy: set[str], max_chain: int = 8) -> dict[str, set[int]]:
+                       every_copy: set[str], max_chain: int = 8,
+                       libraries: dict[str, str] | None = None) -> dict[str, set[int]]:
     """For each hooked catalog name, the copies the runtime MAY replace natively; the other copies of a shared signature
     are hook points without replacement, where a decompiled function can go.
 
@@ -300,8 +333,11 @@ def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooke
     arguments written in C. This is a superset of it, computed from the image alone: every copy for a "hook" name or a
     unique copy; otherwise every copy that ends a chain of at most `max_chain` contiguous catalog functions starting
     at a unique one, that starts such a chain ending at a unique one, or that lies within the range of the unique
-    functions of its library prefix (library_prefix). gcrt_hle_register refuses a second registration at an address
-    in any case (startup error), so a wrong guess here cannot go unnoticed."""
+    functions of its library. The library is the runtime's own argument (`libraries`, runtime_libraries), and the
+    range is computed as gcrt_hle_library_range does (in_library); library_prefix is only the fallback for a name the
+    runtime does not pass explicitly (anomaly A12: the guess differed from the argument for 11 names, e.g.
+    InsertAlarm "OS", __AISHandler "AI", TCIntrruptHandler "EXI"). gcrt_hle_register refuses a second registration at
+    an address in any case (startup error), so a wrong guess here cannot go unnoticed."""
     unique = {n for n, a in found.items() if len(a) == 1}
     by_end: dict[int, list[tuple[int, str]]] = {}
     by_start: dict[int, list[str]] = {}
@@ -309,12 +345,11 @@ def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooke
         for a in addrs:
             by_end.setdefault(a + sizes.get(n, 0), []).append((a, n))
             by_start.setdefault(a, []).append(n)
-    spans: dict[str, tuple[int, int]] = {}
-    for n in unique:
-        p = library_prefix(n)
-        a = found[n][0]
-        lo, hi = spans.get(p, (a, a + sizes.get(n, 0)))
-        spans[p] = (min(lo, a), max(hi, a + sizes.get(n, 0)))
+    libraries = libraries or {}
+
+    def library_range(prefix: str) -> tuple[int, int]:
+        ends = [(found[n][0], found[n][0] + sizes.get(n, 0)) for n in unique if in_library(n, prefix)]
+        return (min(a for a, _ in ends), max(e for _, e in ends)) if ends else (0, 0)
 
     def after_unique(start: int) -> bool:
         frontier = {start}
@@ -350,15 +385,16 @@ def replaceable_copies(found: dict[str, list[int]], sizes: dict[str, int], hooke
         if n in every_copy or len(addrs) <= 1:
             out[n] = set(addrs)
             continue
-        lo, hi = spans.get(library_prefix(n), (0, 0))
+        lo, hi = library_range(libraries.get(n) or library_prefix(n))
         out[n] = {a for a in addrs if after_unique(a) or before_unique(a, sizes.get(n, 0)) or lo <= a < hi}
     return out
 
 
-def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
-    """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
-    DOL and the RELs (same algorithm as the runtime scan), plus the game-specific addresses declared in
-    game.toml ([hle.hooks] <ID> = [...])."""
+def signature_scan(dol: Path, layout: list[dict]) -> dict:
+    """Signature scan of the DOL and the RELs (same algorithm as the runtime scan), shared by hle_hooks and the
+    check of the superset against a --hle-trace (tests/decomp/check_replaceable_superset.py, anomaly A12): "hooks"
+    {address: name} of the hooked catalog functions, "found" {name: addresses} for the whole catalog, "hooked" and
+    "every_copy" (names), "replaceable" (replaceable_copies)."""
     import sdksig  # noqa: E402  (generic tool of the repository)
     import symbols as sy  # noqa: E402
     # Native replacements of milestone 10: names listed in runtime/core/hle/native_hooks.txt (hook needed
@@ -390,7 +426,18 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         for name, addrs in sdksig.find_in_image(img, [c[:4] for c in full_catalog]).items():
             found.setdefault(name, []).extend(addrs)
     hooked = {c[0] for c in catalog}
-    replaceable = replaceable_copies(found, {c[0]: c[1] for c in full_catalog}, hooked, every_copy)
+    replaceable = replaceable_copies(found, {c[0]: c[1] for c in full_catalog}, hooked, every_copy,
+                                     libraries=runtime_libraries())
+    return {"hooks": hooks, "found": found, "hooked": hooked, "every_copy": every_copy, "replaceable": replaceable}
+
+
+def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
+    """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
+    DOL and the RELs (same algorithm as the runtime scan, signature_scan), plus the game-specific addresses declared
+    in game.toml ([hle.hooks] <ID> = [...])."""
+    scan = signature_scan(dol, layout)
+    hooks: dict[int, str] = scan["hooks"]
+    found, hooked, replaceable = scan["found"], scan["hooked"], scan["replaceable"]
     for a in game_cfg.get("hle", {}).get("hooks", {}).get(version, []):
         hooks.setdefault(parse_int(a), "game")
     # Decompiled functions enabled in the game's table (tools/decomp_functions.py, which refuses an address that is not
@@ -709,7 +756,11 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
                                                                              sources_hash=sources_hash, fpu=fpu,
                                                                              calls=calls, asserts=asserts,
                                                                              globals=globals_lines, costs=costs,
-                                                                             paths=paths, path_names=path_names))
+                                                                             paths=paths, path_names=path_names,
+                                                                             no_return=sorted(
+                                                                                 decomp_functions.no_return_addresses(
+                                                                                     game_cfg, version))
+                                                                             if oracle else None))
     print(f"== Decompiled functions: {len(entries)} registered for {version} ({path.name}), "
           f"{sum(1 for a, _ in entries if fpu.get(a))} with floating-point instructions")
     for line in unregistered_abi_calls(game, game_cfg, {f.name for _, f in entries}, oracle):
