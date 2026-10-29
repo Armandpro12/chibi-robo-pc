@@ -8,7 +8,7 @@ Legend: ✅ done · 🟡 in progress or partly done · ⬜ not started
 
 ## The plan at a glance
 
-The project moves through six stages, **strictly one after the other**. A stage starts only once the previous
+The project moves through seven stages, **strictly one after the other**. A stage starts only once the previous
 one has been validated.
 
 | # | Stage | Goal | State |
@@ -16,12 +16,12 @@ one has been validated.
 | 1 | Faithful native port | The original game running natively on PC, with no emulated hardware | 🟡 in progress |
 | 2 | Full decompilation (D1–D5) | The whole game rewritten as readable C++; first release of the C++ version | 🟡 in progress |
 | 3 | Multiplayer | Several players: over Tailscale, over the Internet without it, on a local network, or on the same screen | ⬜ |
-| 4a | Technical remaster | Unlimited frame rate, widescreen (16:9 and beyond), resolution, PC-style controls and saves, separate audio volumes. Comes right after multiplayer | ⬜ |
+| 4 | Technical remaster | Unlimited frame rate, widescreen (16:9 and beyond), resolution, PC-style controls and saves, separate audio volumes. Comes right after multiplayer | ⬜ |
 | 5 | Modding platform (M1–M8) | Every game file replaceable; levels, C++ plugins and Lua scripts. Comes after the technical remaster so that the next two stages benefit from it | ⬜ |
-| 3b | PS Vita port | Planned, after the modding platform, before the models and textures remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
-| 4b | Models and textures remaster | Remastered 3D models and textures, optional HD pack, built on the modding platform | ⬜ |
+| 6 | PS Vita port | Planned, after the modding platform, before the models and textures remaster ([tracking issue](https://github.com/Armandpro12/chibi-robo-pc/issues/43)) | ⬜ |
+| 7 | Models and textures remaster | Remastered 3D models and textures, optional HD pack, built on the modding platform | ⬜ |
 
-The stage numbers are historical (they match the GitHub milestones); the order is the order of the rows above.
+The stages are numbered in the order they are done. Some GitHub issues and milestones still carry the older numbering (for example "Stage 5: modding platform" is still stage 5, but the PS Vita port used to be 3b and the remaster stage 4); the rows above are the reference.
 
 From stage 3 onwards, every stage must keep multiplayer working (automated two-instance test).
 
@@ -306,7 +306,7 @@ D1 is validated; these items are carried over to the start of D2.
 5. Multiplayer balancing.
 6. Real test between two PCs.
 
-## Stage 4a — Technical remaster ⬜
+## Stage 4 — Technical remaster ⬜
 
 Right after multiplayer (project owner's decision, 2026-10-29). Every improvement can be switched off to get the faithful
 behaviour back.
@@ -336,7 +336,7 @@ reuse M1 to M3.
 | M7 | Lua scripts in a sandbox |
 | M8 | Documentation and example mods for modders |
 
-## Stage 3b — PS Vita port ⬜
+## Stage 6 — PS Vita port ⬜
 
 A faithful port to the console (same behavior as the PC version, no remaster features), started once the game is decompiled
 (from milestone D3 at the earliest) and kept after the modding platform, so that it benefits from it (loader and file
@@ -353,7 +353,7 @@ package, and no protection is bypassed.
 6. Validation: reference scenarios, frame rate measured on the console, the two-instance multiplayer test, and a real test on a
    PS Vita.
 
-## Stage 4b — Models and textures remaster ⬜
+## Stage 7 — Models and textures remaster ⬜
 
 After the PS Vita port, built on the modding platform (project owner's decision, 2026-10-29).
 
