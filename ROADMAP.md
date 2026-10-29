@@ -260,6 +260,15 @@ from D1" below).
   decompiled before ran about 12 million cycles uncharged without a visible shift, while the integrated work ran
   about 65.3 million (65,290,576 for the 40 functions; two new batches: 19.5 and 34 million) and shifted a load by
   a frame; which amount tips a scenario is not known, so there is no safe threshold. The coupling goes away with the cycle clock at D3.
+- **Cycle group charged twice after "FPU unavailable"** (D2, issue 63): the recompiled code charges the cycles of a
+  group of instructions at its first instruction. When that instruction is a floating-point one and the unit is off,
+  the exception leaves it unexecuted and execution resumes there, so the group was charged before the exception and
+  again on resumption (a fault inside a group charged nothing more). A new DolRecomp patch tests the unit before
+  charging such a group (12,435 groups in US, 12,486 in PAL; costs unchanged). With it, the 34 exact-cost functions
+  leave the cycle counter equal to the build without decompiled functions at every host wait of the five scenarios,
+  in US and PAL (it differed by -132 to +60 cycles), and images, sound and saves are unchanged; checked by a local
+  test that fails without the patch. The guest time of the recompiled code itself changes slightly (-528 to +684
+  cycles at the end of a scenario), so the bench references are to be recorded again.
 - **Shared SDK signatures** (D2): a small accessor such as `ARGetSize` (`lwz r3,d(r13); blr`) has 20 copies with the
   same instruction pattern in each DOL (the register offsets differ), and the runtime replaces only the copy it anchors (after `ARInit`). The build now treats the
   copies the runtime cannot replace as plain hook points, so a decompiled game function there is accepted (eight

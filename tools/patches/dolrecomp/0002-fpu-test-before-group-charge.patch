@@ -1,0 +1,85 @@
+diff --git a/src/backend/emitter.c b/src/backend/emitter.c
+index 6355f16..6d0871e 100644
+--- a/src/backend/emitter.c
++++ b/src/backend/emitter.c
+@@ -630,10 +630,28 @@ void emit_footer(FILE* out) {
+     fprintf(out, "\n#endif /* RECOMP_GENERATED_H */\n\n// end\n");
+ }
+ 
++// True if the instruction raises "FPU unavailable" while MSR[FP] = 0.
++static bool instruction_tests_fpu(const PPCInst* inst) {
++    return !inst->embedded_data && ppc_op_uses_fpu(inst->op);
++}
++
++// Cycle charge of the group that starts at `inst`. "FPU unavailable" leaves the faulting instruction unexecuted
++// (SRR0 = its address) and execution resumes there, at the same label: charged before the MSR[FP] test, the group
++// would be paid once before the exception and once more on resumption. So, when the head of the group uses the FPU,
++// the test comes first and the charge only once the instruction can run. Returns true if the test was emitted.
++static bool emit_group_charge(FILE* out, const PPCInst* inst, u32 cycles) {
++    bool fpu_tested = instruction_tests_fpu(inst);
++    if (fpu_tested)
++        fprintf(out, "    if (!ppc_fp_available_inline(ctx, 0x%08Xu)) return;\n", inst->address);
++    fprintf(out, "    ctx->downcount -= %u;\n", cycles);
++    return fpu_tested;
++}
++
+ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+                                         u32 func_start, u32 func_end,
+                                         bool direct_backedge,
+-                                        bool route_local_returns) {
++                                        bool route_local_returns,
++                                        bool fpu_tested) {
+     char disasm[64];
+     ppc_disasm(disasm, sizeof(disasm), inst);
+     fprintf(out, "    // %08X: %s\n", inst->address, disasm);
+@@ -643,7 +661,8 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+         return;
+     }
+ 
+-    if (ppc_op_uses_fpu(inst->op))
++    // fpu_tested: already tested before the charge of the group (emit_group_charge).
++    if (ppc_op_uses_fpu(inst->op) && !fpu_tested)
+         fprintf(out, "    if (!ppc_fp_available_inline(ctx, 0x%08Xu)) return;\n", inst->address);
+ 
+     switch (inst->op) {
+@@ -1900,7 +1919,7 @@ static void emit_instruction_with_range(FILE* out, const PPCInst* inst,
+ }
+ 
+ void emit_instruction(FILE* out, const PPCInst* inst) {
+-    emit_instruction_with_range(out, inst, 0, (u32)-1, false, false);
++    emit_instruction_with_range(out, inst, 0, (u32)-1, false, false, false);
+ }
+ 
+ static void emit_counted_loop(FILE* out, const PPCInst* insts,
+@@ -1911,12 +1930,13 @@ static void emit_counted_loop(FILE* out, const PPCInst* insts,
+ 
+     fprintf(out, "static void loop_%08X(CPUState* ctx) {\n", loop_address);
+     fprintf(out, "label_%08X:\n", loop_address);
+-    fprintf(out, "    ctx->downcount -= %u;\n", cfg->block_cycles[first]);
++    bool head_fpu_tested = emit_group_charge(out, &insts[first], cfg->block_cycles[first]);
+     for (u32 i = first; i <= last; ++i) {
+         if (cfg->materialize_pc[i])
+             fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
+         emit_instruction_with_range(out, &insts[i], function_address,
+-                                    function_end, i == last, false);
++                                    function_end, i == last, false,
++                                    i == first && head_fpu_tested);
+     }
+     fprintf(out, "    ctx->pc = 0x%08Xu;\n", continuation);
+     fprintf(out, "}\n\n");
+@@ -1970,12 +1990,13 @@ bool emit_function(FILE* out, const PPCInst* insts, u32 count, u32 func_addr) {
+         }
+         if (cfg.materialize_pc[i])
+             fprintf(out, "    ctx->pc = 0x%08Xu;\n", insts[i].address);
++        bool fpu_tested = false;
+         if (cfg.leaders[i] && cfg.block_cycles[i] != 0)
+-            fprintf(out, "    ctx->downcount -= %u;\n", cfg.block_cycles[i]);
++            fpu_tested = emit_group_charge(out, &insts[i], cfg.block_cycles[i]);
+         emit_instruction_with_range(
+             out, &insts[i], func_addr, func_end,
+             c_function_cfg_can_loop_directly(&cfg, insts, func_addr, i),
+-            has_local_returns);
++            has_local_returns, fpu_tested);
+     }
+ 
+     fprintf(out, "    ctx->pc = 0x%08Xu;\n", func_end);
