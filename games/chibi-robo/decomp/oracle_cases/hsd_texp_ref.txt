@@ -1,0 +1,70 @@
+# Synthetic cases of the decompilation oracle for hsd_texp_ref (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Node at S: type (32 bits) at +0; TEV node: colour count at +8, alpha count at +0x14; constant node: count (8 bits) at +0x10.
+
+case hsd_texp_ref null
+r3 = 0
+r4 = 1
+end
+
+case hsd_texp_ref texture_marker
+r3 = FFFFFFFF
+r4 = 1
+end
+
+case hsd_texp_ref raster_marker
+r3 = FFFFFFFE
+r4 = 0
+end
+
+case hsd_texp_ref tev_colour
+r3 = S
+r4 = 1
+mem S 4 1
+mem S+8 4 7FFFFFFF
+mem S+14 4 3
+end
+
+case hsd_texp_ref tev_colour_wide_select
+r3 = S
+r4 = FFFFFF01
+mem S 4 1
+mem S+8 4 2
+mem S+14 4 3
+end
+
+case hsd_texp_ref tev_alpha
+r3 = S
+r4 = 5
+mem S 4 1
+mem S+8 4 2
+mem S+14 4 FFFFFFFF
+end
+
+case hsd_texp_ref constant
+r3 = S
+r4 = 1
+mem S 4 4
+mem S+10 1 FF
+end
+
+case hsd_texp_ref immediate
+r3 = S
+r4 = 1
+mem S 4 5
+mem S+8 4 2
+mem S+10 1 2
+mem S+14 4 3
+end
+
+case hsd_texp_ref type_zero_node
+r3 = S
+r4 = 1
+mem S 4 0
+end
+
+case hsd_texp_ref negative_type
+r3 = S
+r4 = 1
+mem S 4 80000001
+end

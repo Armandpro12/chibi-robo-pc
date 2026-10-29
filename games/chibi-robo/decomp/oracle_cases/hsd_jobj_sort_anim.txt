@@ -1,0 +1,43 @@
+# Synthetic cases of the decompilation oracle for hsd_jobj_sort_anim (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Animation at S: first curve at +0x14. Curves at S+40, S+60, S+80, S+A0: next at +0, kind (8 bits) at +0x13.
+
+case hsd_jobj_sort_anim no_animation
+r3 = 0
+end
+
+case hsd_jobj_sort_anim no_curve
+r3 = S
+mem S+14 4 0
+end
+
+case hsd_jobj_sort_anim first_is_joint
+r3 = S
+mem S+14 4 S+40
+mem S+40 4 S+60
+mem S+53 1 C
+mem S+60 4 0
+mem S+73 1 1
+end
+
+case hsd_jobj_sort_anim third_is_joint
+r3 = S
+mem S+14 4 S+40
+mem S+40 4 S+60
+mem S+53 1 1
+mem S+60 4 S+80
+mem S+73 1 5
+mem S+80 4 S+A0
+mem S+93 1 C
+mem S+A0 4 0
+mem S+B3 1 C
+end
+
+case hsd_jobj_sort_anim none_is_joint
+r3 = S
+mem S+14 4 S+40
+mem S+40 4 S+60
+mem S+53 1 B
+mem S+60 4 0
+mem S+73 1 D
+end

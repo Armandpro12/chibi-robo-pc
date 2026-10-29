@@ -1,0 +1,30 @@
+# Synthetic cases of the decompilation oracle for hsd_texp_get_type (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Node at S: type (32 bits) at +0. FFFFFFFF and FFFFFFFE are the texture and raster markers.
+
+case hsd_texp_get_type null
+r3 = 0
+end
+
+case hsd_texp_get_type texture_marker
+r3 = FFFFFFFF
+end
+
+case hsd_texp_get_type raster_marker
+r3 = FFFFFFFE
+end
+
+case hsd_texp_get_type tev
+r3 = S
+mem S 4 1
+end
+
+case hsd_texp_get_type constant
+r3 = S
+mem S 4 4
+end
+
+case hsd_texp_get_type negative_type
+r3 = S
+mem S 4 FFFFFFF0
+end

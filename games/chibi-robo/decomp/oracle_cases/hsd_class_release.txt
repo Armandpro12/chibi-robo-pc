@@ -1,0 +1,7 @@
+# Synthetic cases of the decompilation oracle for hsd_class_release (format: runtime/core/decomp/gc_oracle.cpp,
+# "Synthetic cases"). Hand-written starting states with invented values (no game data).
+# Object at S (not read).
+
+case hsd_class_release object
+r3 = S
+end
