@@ -431,6 +431,46 @@ def signature_scan(dol: Path, layout: list[dict]) -> dict:
     return {"hooks": hooks, "found": found, "hooked": hooked, "every_copy": every_copy, "replaceable": replaceable}
 
 
+def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: dict[int, str],
+                           entries: list[tuple[int, str]]) -> None:
+    """Issue #65 (option A): refuses a decompiled function whose static closure of direct calls reaches a native
+    replacement that can switch threads (runtime/core/hle/thread_switching_natives.txt). Decompiled code calls
+    recompiled code in a nested run of the chassis with its own frame on the host stack (hle/native_irq.c
+    gcrt_guest_call_interruptible): a thread switch cannot happen there. Indirect calls are not followed (lower
+    bound, counted in the message); a call whose target is an unapplied REL relocation refuses the function, its
+    closure being unknown. Every version is built with this check, so the refusal holds in each of them."""
+    if not entries:
+        return
+    import decomp_functions  # noqa: E402
+    import symbols as sy  # noqa: E402
+    ranges = list(sy.Image.from_dol(dol).ranges)
+    rel_bases = set()
+    for m in layout:
+        for (_, addr, _, ex, blob) in m["sections"]:
+            if ex and blob:
+                ranges.append((addr, blob))
+                rel_bases.add(addr)
+    reach = decomp_functions.switching_reach(ranges, [a for a, _ in entries], hooks,
+                                             decomp_functions.thread_switching_natives(), rel_bases)
+    refused = []
+    indirect = 0
+    for a, name in entries:
+        r = reach[a]
+        indirect += r["indirect"]
+        if r["path"]:
+            refused.append(f"{name} at {a:08X} reaches {r['path'][-1]}: {' -> '.join(r['path'])}")
+        elif r["unresolved"]:
+            refused.append(f"{name} at {a:08X}: call(s) at {', '.join(f'{x:08X}' for x in r['unresolved'][:4])} "
+                           "with an unapplied REL relocation, closure unknown")
+    if refused:
+        raise SystemExit(f"Decompiled functions refused for {version}: a callee can switch threads or wait for "
+                         "another thread, which a call from decompiled code into guest code cannot do (issue #65, "
+                         "runtime/core/hle/thread_switching_natives.txt); keep these rows disabled:\n  "
+                         + "\n  ".join(refused))
+    print(f"   {version}: {len(entries)} decompiled functions, no thread-switching callee in their direct calls "
+          f"({indirect} indirect call(s) not followed)")
+
+
 def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:
     """Entry points to compile with an HLE hook: catalog functions marked "hook", found by signature in the
     DOL and the RELs (same algorithm as the runtime scan, signature_scan), plus the game-specific addresses declared
@@ -456,6 +496,7 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         oracle_build = bool(game_cfg.get("_oracle_build"))
         blocks: dict[int, tuple[list[int], list[int]]] = {}
         calls: dict[int, list[int]] = {}
+        decomp_entries: list[tuple[int, str]] = []
         for a, f in decomp_functions.resolve(game_cfg, version, dol.parent.parent, layout,
                                              blocks if oracle_build else None, calls=calls if oracle_build else None):
             if a in hooks:
@@ -466,6 +507,7 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
                 else:
                     clash.append(f"{f.name} at {a:08X}: already hooked as {hooks[a]}")
             hooks[a] = "decomp"
+            decomp_entries.append((a, f.name))
         if shared_ok:
             print(f"   {version}: decompiled functions at a hook point of a shared SDK signature (accepted):\n     "
                   + "\n     ".join(shared_ok))
@@ -493,6 +535,7 @@ def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> li
         if clash:
             raise SystemExit(f"Decompiled functions refused for {version} (address of a native HLE replacement or of "
                              f"a game.toml hook; disable the row or remove the other hook):\n  " + "\n  ".join(clash))
+        check_thread_switching(version, dol, layout, hooks, decomp_entries)
     # Measurements only (tools/build.py --extra-hooks): more entry points compiled with a hook, without replacement.
     for a in game_cfg.get("_extra_hooks", []):
         hooks.setdefault(a, "extra")

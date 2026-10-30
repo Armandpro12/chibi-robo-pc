@@ -262,6 +262,45 @@ static GcrtStopReason run_nested(GcrtCpu* g, u32 function) {
     }
 }
 
+/* Thread switch that the native OS could not make because a call of decompiled code into guest code
+ * (gcrt_guest_call_interruptible) was running: the host stack holds the decompiled caller's frame, so the thread
+ * cannot be suspended there. The switch stays requested (the guest's "reschedule wanted" flag stays set, as after any
+ * refused switch) and the run stops when the outermost nested call returns. Making the switch at that point instead
+ * would run the threads in another order than the game: a difference of behavior that must not pass unnoticed.
+ * Counted for every refusal while such a call runs. */
+static int s_interruptible_depth;
+static bool s_switch_deferred;
+static u32 s_deferred_thread;
+static u64 s_deferred_switches;
+
+bool gcrt_guest_call_note_refused_switch(u32 thread) {
+    if (s_interruptible_depth <= 0)
+        return false;
+    s_deferred_switches++;
+    if (!s_switch_deferred)
+        s_deferred_thread = thread;
+    s_switch_deferred = true;
+    GCRT_TIMELINE("thread switch deferred nested %08X", thread);
+    return true;
+}
+
+u64 gcrt_guest_call_deferred_switches(void) { return s_deferred_switches; }
+
+/* At the return of the outermost nested call (depth back to 0): explicit stop if a switch had to be deferred. The
+ * chassis sees the stop when the host call in progress (the decompiled function) returns to it. */
+static void check_deferred_switch(GcrtCpu* g, u32 function) {
+    if (s_guest_call_depth != 0 || !s_switch_deferred)
+        return;
+    s_switch_deferred = false;
+    fprintf(stderr,
+            "gcrt native: a thread switch was due (thread %08X) while decompiled code was calling guest code "
+            "(outermost call %08X); it cannot be made in the middle of a host call, and making it later would change "
+            "the order of the threads; %llu deferred switch(es) in all; stop\n",
+            s_deferred_thread, function, (unsigned long long)s_deferred_switches);
+    if (g->stop == GCRT_STOP_NONE)
+        g->stop = GCRT_STOP_DEFERRED_SWITCH;
+}
+
 bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, u32* result) {
     CPUState* c = &g->state;
     u32 gpr[32];
@@ -306,35 +345,43 @@ bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, 
                     gcrt_stop_reason_name(reason));
         g->stop = reason != GCRT_STOP_NONE ? reason : GCRT_STOP_REQUESTED;
     }
+    check_deferred_switch(g, function);
     if (result)
         *result = state.r3;
     return state.returned;
 }
 
-bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
+/* Common part of gcrt_guest_call_prepared and gcrt_guest_call_interruptible (gcrt_native.h). */
+static bool prepared_call(GcrtCpu* g, u32 function, bool interruptible) {
     CPUState* c = &g->state;
-    /* Same rules as gcrt_guest_call (MSR[EE] = 0, depth counted: no thread switch during the call, stop
-     * propagated), but the caller has set the argument registers and reads the results itself: only PC, LR, MSR[EE],
-     * SRR0/1 are restored; integer, floating-point and condition registers keep what the callee left (the caller of a
-     * function may not rely on the volatile ones; the callee preserves the others, as the PowerPC EABI requires). */
     const u32 pc = c->pc, lr = c->lr, msr = c->msr, srr0 = c->srr0, srr1 = c->srr1;
     const GcrtStopReason outer_stop = g->stop;
     CallState state = {false, 0};
     CallState* state_ptr = &state;
     c->lr = gcrt_hle_push_return(g, 0, call_returned, &state_ptr, sizeof(state_ptr));
     c->pc = function;
-    c->msr &= ~MSR_EE;
+    if (!interruptible)
+        c->msr &= ~MSR_EE;
     s_guest_calls++;
     if (s_guest_call_depth == 0)
         s_outer_ee = (msr & MSR_EE) != 0;
     s_guest_call_depth++;
+    s_interruptible_depth += interruptible ? 1 : 0;
+    GCRT_TIMELINE("nested begin %08X depth %d ee %d%s", function, s_guest_call_depth, (msr & MSR_EE) ? 1 : 0,
+                  interruptible ? " interruptible" : "");
     GcrtStopReason reason = run_nested(g, function);
+    GCRT_TIMELINE("nested end %08X depth %d", function, s_guest_call_depth);
+    s_interruptible_depth -= interruptible ? 1 : 0;
     s_guest_call_depth--;
     c->pc = pc;
     c->lr = lr;
-    c->msr = (c->msr & ~MSR_EE) | (msr & MSR_EE);
-    c->srr0 = srr0;
-    c->srr1 = srr1;
+    if (!interruptible) {
+        c->msr = (c->msr & ~MSR_EE) | (msr & MSR_EE);
+        c->srr0 = srr0;
+        c->srr1 = srr1;
+    }
+    /* Interruptible: MSR[EE], SRR0 and SRR1 keep what the callee and the interrupts delivered during it left, as
+     * after a plain call on the console (e.g. an OSDisableInterrupts called by decompiled code keeps its effect). */
     if (state.returned) {
         g->stop = outer_stop;
     } else {
@@ -344,7 +391,20 @@ bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
                     gcrt_stop_reason_name(reason));
         g->stop = reason != GCRT_STOP_NONE ? reason : GCRT_STOP_REQUESTED;
     }
+    check_deferred_switch(g, function);
     return state.returned;
+}
+
+bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
+    /* Same rules as gcrt_guest_call (MSR[EE] = 0, depth counted: no thread switch during the call, stop
+     * propagated), but the caller has set the argument registers and reads the results itself: only PC, LR, MSR[EE],
+     * SRR0/1 are restored; integer, floating-point and condition registers keep what the callee left (the caller of a
+     * function may not rely on the volatile ones; the callee preserves the others, as the PowerPC EABI requires). */
+    return prepared_call(g, function, false);
+}
+
+bool gcrt_guest_call_interruptible(GcrtCpu* g, u32 function) {
+    return prepared_call(g, function, true);
 }
 
 bool gcrt_guest_call_exception_context(GcrtCpu* g, u32 context, u32 function, const u32* args, unsigned count) {
@@ -603,9 +663,10 @@ void gcrt_nirq_report(FILE* out) {
             else
                 fprintf(out, " (#%u: %llu)", i, (unsigned long long)s_delivered_by_irq[i]);
         }
-    fprintf(out, ", %u pending; nested calls %llu (%llu failures); deferred reschedules %llu\n",
+    fprintf(out, ", %u pending; nested calls %llu (%llu failures); deferred reschedules %llu; deferred thread "
+                 "switches %llu\n",
             s_event_count, (unsigned long long)s_guest_calls, (unsigned long long)s_guest_call_failures,
-            (unsigned long long)s_deferred_reschedules);
+            (unsigned long long)s_deferred_reschedules, (unsigned long long)s_deferred_switches);
 }
 
 /* ---------------------------------------------------------------------------------------------

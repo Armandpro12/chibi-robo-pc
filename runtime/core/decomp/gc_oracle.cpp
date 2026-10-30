@@ -291,6 +291,14 @@ bool s_initialized = false;
 std::unordered_map<u32, u32> s_call_probes;
 std::vector<call_record> s_calls;    // calls of the current run of the original
 bool s_call_active = false;          // a recorded callee is running (nested run): hooks ignore what it does
+// MSR[EE] the game has in the compared original (issue #65, option B). The original's own blocks run with MSR[EE] = 0
+// (no interrupt handler may store into W1: the decompiled version would not do it and the comparison would fail),
+// but its callees run as production runs those of the decompiled version (run_guest, gcrt_guest_call_interruptible):
+// with this EE, the events due during them delivered at their block boundaries, and the EE they leave kept. Their
+// stores, those of the handlers included, are the callee's (callee_writes), replayed to the decompiled version: both
+// versions see the same memory after each call. Put into the original's results (R1) when it returns.
+bool s_original_ee = false;
+constexpr u32 k_msr_ee = 0x00008000u;
 u64 s_callee_cycles = 0;             // guest cycles of the recorded calls of the current game call (exclusive cost)
 bool s_replaying = false;            // the decompiled version runs: its calls are compared and replayed
 std::size_t s_replay_index = 0;      // next recorded call to replay
@@ -652,9 +660,21 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         // F that holds the call keeps its own downcount (see run_guest, gc_abi.cpp): without that, its cycles before
         // the call would be lost and the callee's last block charged twice, once by the nested run and once when F's
         // block returns to the chassis.
-        const s64 outer_downcount = c->downcount;
+        s64 outer_downcount = c->downcount;
+        // Issue #68 (measurement): cycles pending in F's block on the timeline; counter-test FLUSH_PENDING charges
+        // them before the callee instead of when F's block returns (same total).
+        GCRT_TIMELINE("nested pending call %08X %lld", static_cast<unsigned>(target),
+                      static_cast<long long>(-outer_downcount));
+        if (oracle_flush_pending() && outer_downcount < 0) {
+            gcrt_cpu_add_cycles(g, static_cast<u64>(-outer_downcount));
+            outer_downcount = 0;
+        }
         const u64 cycles_before = g->cycles;
-        gcrt_guest_call_prepared(g, target); // restores pc, lr (= return_to for a call) and MSR[EE]
+        // Restores pc and lr (= return_to for a call); the callee runs with the game's EE, which it may change.
+        c->msr = (c->msr & ~k_msr_ee) | (s_original_ee ? k_msr_ee : 0u);
+        gcrt_guest_call_interruptible(g, target);
+        s_original_ee = (c->msr & k_msr_ee) != 0;
+        c->msr &= ~k_msr_ee; // F's own blocks go on with MSR[EE] = 0
         s_callee_cycles += g->cycles - cycles_before;
         c->downcount = outer_downcount;
         f.refused_switches += gcrt_native_os_refused_nested() - refused;
@@ -1204,7 +1224,10 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_running = &f;
     s_in_original = true;
     bypass_address = f.address;
-    const bool returned = run_guest(g, f.address);
+    s_original_ee = (r0.msr & k_msr_ee) != 0;
+    const bool returned = run_guest_masked(g, f.address);
+    if (returned)
+        c->msr = (c->msr & ~k_msr_ee) | (s_original_ee ? k_msr_ee : 0u); // the EE F's callees left (R1)
     bypass_address = 0;
     s_entry_lr_wanted = false;
     s_in_original = false;
@@ -1222,7 +1245,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
             write_byte(b.address, b.before);
     };
     if (!returned) {
-        // Anomaly A3: the original (or one of its callees) waited for an interrupt or another thread inside the
+        // Issue #52: the original (or one of its callees) waited for an interrupt or another thread inside the
         // nested run, where neither can come; the held-interrupt limit set in gcrt_decomp_oracle_configure stopped it
         // instead of the 200 M-block budget. The run then stops (the original cannot be resumed half-way).
         if (g->stop == GCRT_STOP_HELD_INTERRUPT)
@@ -1728,6 +1751,14 @@ bool oracle_is_replaying() noexcept {
     return s_replaying;
 }
 
+bool oracle_flush_pending() noexcept {
+    static const bool on = [] {
+        const char* v = std::getenv("GCRT_DECOMP_ORACLE_FLUSH_PENDING");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+
 void oracle_bypassed_entry(u32 lr) noexcept {
     // The first declined entry after compare_call armed it is the compared original's own (its nested run starts at
     // its address); later ones are functions reached inside recorded callees.
@@ -1886,9 +1917,9 @@ extern "C" void gcrt_decomp_oracle_configure(GcrtCpu* g, const char* version, co
     using namespace gc::abi::detail;
     s_version = version;
     s_sources_hash = sources_hash ? sources_hash : "";
-    // Anomaly A3: a nested run (original of F, or a callee) that holds a due interrupt for more than 1 guest second
+    // Issue #52: a nested run (original of F, or a callee) that holds a due interrupt for more than 1 guest second
     // stops with GCRT_STOP_HELD_INTERRUPT (runtime/core/hle/native_irq.c) instead of exhausting its block budget;
-    // compare_call marks F not comparable. Oracle builds only: production keeps no limit.
+    // compare_call marks F not comparable. The production gateway sets the same limit (gc_abi.cpp, install).
     gcrt_guest_call_set_held_irq_limit(GCRT_TB_HZ);
     s_functions.clear();
     s_functions.resize(count);

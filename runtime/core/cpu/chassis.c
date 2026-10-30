@@ -35,7 +35,8 @@ const char* gcrt_stop_reason_name(GcrtStopReason reason) {
     case GCRT_STOP_UNHANDLED_IO: return "unhandled hardware access";
     case GCRT_STOP_REQUESTED: return "stop requested";
     case GCRT_STOP_GUEST_HALT: return "game halted (OSPanic or PPCHalt)";
-    case GCRT_STOP_HELD_INTERRUPT: return "interrupt held too long by a nested call (opt-in limit)";
+    case GCRT_STOP_HELD_INTERRUPT: return "interrupt held too long by a nested call";
+    case GCRT_STOP_DEFERRED_SWITCH: return "thread switch due during a call of decompiled code into guest code";
     }
     return "?";
 }
@@ -186,6 +187,62 @@ static void deliver_interrupts(GcrtCpu* g) {
     }
 }
 
+/* Diagnostic block window (measurement only, off by default): GCRT_BLOCK_WINDOW=A:B[,A:B...] (ticks) and
+ * GCRT_BLOCK_WINDOW_FILE=path write one line "pc cycles ticks ee blocks" per chassis iteration whose ticks, after the
+ * clock synchronization, fall in a window (before the interrupt delivery of that iteration). It only reads the CPU
+ * state: the run is unchanged. One test per iteration when it is off. */
+#define BLOCK_WINDOW_MAX 8
+static int s_window_state; /* 0: not read yet, 1: off, 2: on */
+static unsigned s_window_count;
+static u64 s_window_from[BLOCK_WINDOW_MAX], s_window_to[BLOCK_WINDOW_MAX];
+static FILE* s_window_file;
+
+static void block_window_open(void) {
+    s_window_state = 1;
+    const char* spec = getenv("GCRT_BLOCK_WINDOW");
+    const char* path = getenv("GCRT_BLOCK_WINDOW_FILE");
+    if (!spec || !path || !spec[0])
+        return;
+    while (*spec && s_window_count < BLOCK_WINDOW_MAX) {
+        char* end = NULL;
+        const u64 from = strtoull(spec, &end, 0);
+        if (!end || *end != ':')
+            break;
+        const u64 to = strtoull(end + 1, &end, 0);
+        s_window_from[s_window_count] = from;
+        s_window_to[s_window_count] = to;
+        s_window_count++;
+        if (!end || *end != ',')
+            break;
+        spec = end + 1;
+    }
+    s_window_file = s_window_count ? fopen(path, "w") : NULL;
+    if (s_window_file) {
+        setvbuf(s_window_file, NULL, _IOFBF, 1u << 20);
+        s_window_state = 2;
+    } else {
+        fprintf(stderr, "gcrt: GCRT_BLOCK_WINDOW ignored (bad windows or file %s not writable)\n", path);
+    }
+}
+
+static void block_window_line(const GcrtCpu* g) {
+    for (unsigned i = 0; i < s_window_count; i++) {
+        if (g->ticks >= s_window_from[i] && g->ticks <= s_window_to[i]) {
+            fprintf(s_window_file, "%08X %llu %llu %d %llu\n", g->state.pc, (unsigned long long)g->cycles,
+                    (unsigned long long)g->ticks, (g->state.msr & GCRT_MSR_EE) ? 1 : 0,
+                    (unsigned long long)g->blocks);
+            return;
+        }
+    }
+}
+
+static inline void block_window(const GcrtCpu* g) {
+    if (s_window_state == 2)
+        block_window_line(g);
+    else if (s_window_state == 0)
+        block_window_open();
+}
+
 /* One profile line for the elapsed window (guest time = ticks), as a % of the window's host time. */
 static void profile_window(GcrtCpu* g, u64 now) {
     double rate = gcrt_prof_ticks_per_second();
@@ -232,6 +289,7 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
             u64 t1 = gcrt_prof_now();
             g->prof[GCRT_PROF_SYNC] += (t1 - t0) - (g->prof[GCRT_PROF_TIMER] - timer0);
             g->prof_calls[GCRT_PROF_SYNC]++;
+            block_window(g);
             deliver_interrupts(g);
             pc = cpu->pc;
             u64 t2 = gcrt_prof_now();
@@ -240,6 +298,7 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
             g->prof_calls[GCRT_PROF_HLE] += hle_done;
         } else {
             gcrt_cpu_sync_time(g);
+            block_window(g);
             deliver_interrupts(g);
             pc = cpu->pc;
             hle_done = host_call_wanted(g, pc) && g->host_call(cpu, pc);
@@ -333,6 +392,8 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
     }
     if (g->trace)
         fflush(g->trace);
+    if (s_window_file)
+        fflush(s_window_file);
     return g->stop;
 }
 

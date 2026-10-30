@@ -94,6 +94,10 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     gc::init_guest_memory(g->state.ram, g->state.ram_size);
     gc::set_memory_fault_handler(&memory_fault);
     gc::set_guest_store_hook(&guest_store);
+    // Issue #52: a nested run that holds a due, unmasked interrupt for more than one guest second (a callee waiting
+    // for an event with MSR[EE] = 0) stops with GCRT_STOP_HELD_INTERRUPT and a message, instead of running until its
+    // block budget (hle/native_irq.c). Production and oracle builds alike.
+    gcrt_guest_call_set_held_irq_limit(GCRT_TB_HZ);
     s_entries.assign(count, entry_state{});
     std::size_t size = 16;
     while (size < 2u * count)
@@ -324,21 +328,46 @@ u32 address_of_function(void (*direct)()) noexcept {
     return 0;
 }
 
-bool run_guest(GcrtCpu* g, u32 address) noexcept {
-#if defined(GC_DECOMP_ORACLE)
-    guest_calls++; // the oracle tells its own runs of the original from guest calls made by decompiled code
-#endif
+namespace {
+// Nested run of the guest function at `address` for decompiled code. interruptible: the callee runs as plain guest
+// code (events delivered at its block boundaries with the caller's MSR[EE], the MSR[EE] it leaves kept): a call of
+// decompiled code into recompiled code (issue #65, option B). Otherwise MSR[EE] = 0 during the call and restored
+// afterwards: the oracle's run of an original under comparison, the cross-check's second run of an original.
+bool nested_guest_run(GcrtCpu* g, u32 address, bool interruptible) noexcept {
     // Cycles of the generated block that reached the gateway (DolRecomp: `downcount -= n` at the start of each block,
     // the chassis charges -downcount when the block returns). The nested run sets downcount for each of its own blocks
     // and charges them; without this, the outer block's cycles spent before the hook would be lost and the nested
     // run's last block charged a second time when the outer block returns.
     const s64 outer_downcount = g->state.downcount;
-    const bool returned = gcrt_guest_call_prepared(g, address);
+#if defined(GC_DECOMP_ORACLE)
+    // Measurement of issue #68 (oracle builds only): -downcount on the timeline. It is the cycles still pending in
+    // the outer block only when the gateway was reached by a hook inside generated code; reached from the chassis
+    // (host_call before a block), it is the previous block's value, already charged.
+    GCRT_TIMELINE("nested pending run %08X %lld", static_cast<unsigned>(address),
+                  static_cast<long long>(-outer_downcount));
+#endif
+    const bool returned =
+        interruptible ? gcrt_guest_call_interruptible(g, address) : gcrt_guest_call_prepared(g, address);
     g->state.downcount = outer_downcount;
     if (!returned)
         std::fprintf(stderr, "gc_abi: the guest function %08X called by decompiled code did not return\n",
                      static_cast<unsigned>(address));
     return returned;
+}
+} // namespace
+
+bool run_guest(GcrtCpu* g, u32 address) noexcept {
+#if defined(GC_DECOMP_ORACLE)
+    guest_calls++; // the oracle tells its own runs of the original from guest calls made by decompiled code
+#endif
+    return nested_guest_run(g, address, true);
+}
+
+bool run_guest_masked(GcrtCpu* g, u32 address) noexcept {
+#if defined(GC_DECOMP_ORACLE)
+    guest_calls++;
+#endif
+    return nested_guest_run(g, address, false);
 }
 
 void stop_after_no_return(u32 address) noexcept {
@@ -372,7 +401,7 @@ void crosscheck(GcrtCpu* g, u32 address, const u32* saved_gpr, const f64* saved_
         c->ps1[i] = saved_ps1[i];
     }
     bypass_address = address;
-    const bool returned = run_guest(g, address);
+    const bool returned = run_guest_masked(g, address); // second run of the original: no event delivered in it
     bypass_address = 0;
     if (!returned)
         return;

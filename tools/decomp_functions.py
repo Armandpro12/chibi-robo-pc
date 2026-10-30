@@ -687,6 +687,129 @@ ORACLE_HASHED_TOOLS = ["tools/decomp_functions.py", "tools/decomp_common.py", "t
                        "runtime/core/cmake/GcrtDecomp.cmake", "CMakeLists.txt"]
 
 
+THREAD_SWITCHING_NATIVES = tc.ROOT / "runtime" / "core" / "hle" / "thread_switching_natives.txt"
+
+
+def thread_switching_natives(path: Path = THREAD_SWITCHING_NATIVES) -> set[str]:
+    """Names of the native replacements that can switch threads (runtime/core/hle/thread_switching_natives.txt)."""
+    out = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.add(line)
+    return out
+
+
+def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]) -> tuple[set[int], int, list[int]]:
+    """Control flow of the code at `entry`, followed through its conditional and unconditional branches until every
+    path ends (blr, bctr, rfi, or an address outside the code): (targets of its direct calls and of its jumps that
+    may be tail calls, number of indirect calls, addresses of calls whose target is not resolved). A `b` is followed
+    as a jump and also reported as a callee (a tail call is a call). In a REL module (`rel_bases`: start of its code
+    sections) a branch whose displacement is 0 is an unapplied relocation: its target is not known here."""
+    seen: set[int] = set()
+    todo = [entry]
+    callees: set[int] = set()
+    indirect = 0
+    unresolved: list[int] = []
+    while todo:
+        at = todo.pop()
+        while at not in seen:
+            base, blob = _code_of(ranges, at)
+            if blob is None or at - base + 4 > len(blob):
+                break
+            seen.add(at)
+            w = _word(blob, at - base)
+            op, lk = w >> 26, w & 1
+            if op == 18:
+                if (w & 0x03FFFFFC) == 0 and not (w & 2) and base in rel_bases:
+                    unresolved.append(at)
+                    if not lk:
+                        break
+                    at += 4
+                    continue
+                t = _branch_target(w, at)
+                callees.add(t)
+                if lk:
+                    at += 4
+                    continue
+                todo.append(t)  # a jump inside the function, or a tail call (also a callee above)
+                break
+            if op == 16:
+                t = _branch_target(w, at)
+                bo = (w >> 21) & 0x1F
+                if lk:
+                    callees.add(t)
+                else:
+                    todo.append(t)
+                if not lk and (bo & 0x14) == 0x14:  # branch always
+                    break
+                at += 4
+                continue
+            if op == 19:
+                xo = (w >> 1) & 0x3FF
+                bo = (w >> 21) & 0x1F
+                if xo in (16, 528):  # bclr, bcctr
+                    if lk:
+                        indirect += 1  # bctrl, bclrl: indirect call
+                        at += 4
+                        continue
+                    if xo == 528:
+                        indirect += 1  # bctr: jump table or indirect tail call, its targets are not followed
+                    if (bo & 0x14) == 0x14:
+                        break
+                    at += 4
+                    continue
+                if xo == 50:  # rfi
+                    break
+            at += 4
+    return callees, indirect, unresolved
+
+
+def switching_reach(ranges: list[tuple[int, bytes]], entries: list[int], hooks: dict[int, str],
+                    switching: set[str], rel_bases: set[int] | None = None) -> dict[int, dict]:
+    """For each entry, the static closure of its direct calls (issue #65): {entry: {"path": [address, ...,
+    native name] to a thread-switching native or None, "indirect": indirect calls met, "unresolved": calls whose target
+    is unknown}}. A hooked address whose name is a native replacement (any name of `hooks` except "decomp", "game",
+    "oracle-block", "oracle-call", "extra") is a leaf: its guest body does not run; a decompiled function is followed
+    through its original (functional decompilation: the same calls). Indirect calls (bctrl, bclrl) and jump tables
+    are not followed: the closure is a lower bound."""
+    rel_bases = rel_bases or set()
+    followed = ("decomp", "game", "oracle-block", "oracle-call", "extra")
+    cache: dict[int, tuple[set[int], int, list[int]]] = {}
+    out: dict[int, dict] = {}
+    for entry in entries:
+        parent: dict[int, int | None] = {entry: None}
+        queue = [entry]
+        found = None
+        indirect = 0
+        unresolved: list[int] = []
+        while queue and found is None:
+            f = queue.pop(0)
+            name = hooks.get(f)
+            if f != entry and name is not None and name not in followed:
+                if name in switching:
+                    found = f
+                continue  # native: its guest body does not run
+            if f not in cache:
+                cache[f] = _local_scan(ranges, f, rel_bases)
+            callees, ind, unres = cache[f]
+            indirect += ind
+            unresolved += unres
+            for c in sorted(callees):
+                if c not in parent:
+                    parent[c] = f
+                    queue.append(c)
+        path = None
+        if found is not None:
+            path = [hooks[found]]
+            node = parent[found]
+            while node is not None:
+                path.insert(0, f"{node:08X}")
+                node = parent[node]
+        out[entry] = {"path": path, "indirect": indirect, "unresolved": unresolved}
+    return out
+
+
 def files_below(root: Path) -> list[Path]:
     """Every file below `root`, sorted by its relative path as a case-sensitive string (Path ordering is
     case-insensitive on Windows only: sorting by the string gives the same order, so the same hash, everywhere)."""
