@@ -12,6 +12,7 @@
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
 #include "decomp/gc_path.h"
+#include "decomp_globals.h"
 
 namespace hsd {
 
@@ -83,6 +84,16 @@ void HSD_CObjClearFlags(ptr<HSD_CObj> cobj, u32 mask) {
     cobj->flags &= ~mask;
 }
 
+// The static `current` of cobj.c (cbr_decomp, CC0): the camera being drawn [hypothesis on the meaning: from the
+// names].
+constexpr gc::global<ptr<HSD_CObj>, global_id::hsd_cobj_current> current_camera{};
+
+// The current camera (HSD_CObjGetCurrent: name from doldecomp/melee, names only, and cbr_decomp's cobj.c, which
+// returns `current`; [hypothesis on the identity]).
+ptr<HSD_CObj> HSD_CObjGetCurrent() {
+    return *current_camera;
+}
+
 } // namespace hsd
 
 GC_DECOMP_EXPORT(hsd_cobj_mtx_is_dirty, hsd::HSD_CObjMtxIsDirty, gc::abi::flag_reads_only | gc::abi::flag_path_marked);
@@ -91,3 +102,4 @@ GC_DECOMP_EXPORT(hsd_cobj_set_viewportf, hsd::HSD_CObjSetViewportf, gc::abi::fla
 GC_DECOMP_EXPORT(hsd_cobj_get_projection_type, hsd::HSD_CObjGetProjectionType, gc::abi::flag_reads_only);
 GC_DECOMP_EXPORT(hsd_cobj_set_flags, hsd::HSD_CObjSetFlags, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_cobj_clear_flags, hsd::HSD_CObjClearFlags, gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_cobj_get_current, hsd::HSD_CObjGetCurrent, gc::abi::flag_reads_only);

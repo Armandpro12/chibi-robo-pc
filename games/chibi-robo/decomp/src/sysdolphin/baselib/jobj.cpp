@@ -14,6 +14,7 @@
 #include "decomp/gc_abi.h"
 #include "decomp/gc_mem.h"
 #include "decomp/gc_path.h"
+#include "decomp_globals.h"
 
 namespace hsd {
 
@@ -58,8 +59,19 @@ ptr<HSD_DObj> HSD_JObjGetDObj(ptr<const HSD_JObj> jobj) {
     return jobj->u.dobj;
 }
 
+// current_jobj of jobj.c (cbr_decomp, CC0): the joint being drawn [hypothesis on the meaning: from the names; the
+// game stores it in HSD_JObjSetCurrent of the symbol supplement, US 801C784C].
+constexpr gc::global<ptr<HSD_JObj>, global_id::hsd_jobj_current> current_joint{};
+
+// The current joint (HSD_JObjGetCurrent: name from doldecomp/melee, names only, and cbr_decomp's jobj.c, which
+// returns current_jobj; [hypothesis on the identity]).
+ptr<HSD_JObj> HSD_JObjGetCurrent() {
+    return *current_joint;
+}
+
 } // namespace hsd
 
 GC_DECOMP_EXPORT(hsd_jobj_sort_anim, hsd::JObjSortAnim, gc::abi::flag_path_marked);
 GC_DECOMP_EXPORT(hsd_jobj_get_flags, hsd::HSD_JObjGetFlags, gc::abi::flag_reads_only);
 GC_DECOMP_EXPORT(hsd_jobj_get_dobj, hsd::HSD_JObjGetDObj, gc::abi::flag_reads_only | gc::abi::flag_path_marked);
+GC_DECOMP_EXPORT(hsd_jobj_get_current, hsd::HSD_JObjGetCurrent, gc::abi::flag_reads_only);

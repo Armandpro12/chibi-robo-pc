@@ -1,0 +1,12 @@
+# Synthetic cases of the decompilation oracle for hsd_dobj_set_current (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Display object in r3 (the global is put back after each case).
+
+case hsd_dobj_set_current object
+r3 = S
+end
+
+case hsd_dobj_set_current null
+r3 = 0
+end
+

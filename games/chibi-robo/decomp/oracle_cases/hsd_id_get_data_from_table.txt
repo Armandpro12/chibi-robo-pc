@@ -1,0 +1,97 @@
+# Synthetic cases of the decompilation oracle for hsd_id_get_data_from_table (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Table at S (101 list heads), entries at S+1A0 then S+1B0 in bucket 5 (ids 0x6A and 5); success word at S+1F0.
+
+case hsd_id_get_data_from_table found_second_with_success
+area 200
+r3 = S
+r4 = 5
+r5 = S+1F0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+end
+
+case hsd_id_get_data_from_table found_first_no_success
+area 200
+r3 = S
+r4 = 6A
+r5 = 0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+end
+
+case hsd_id_get_data_from_table missing_with_success
+area 200
+r3 = S
+r4 = CF
+r5 = S+1F0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+mem S+1F0 4 7
+end
+
+case hsd_id_get_data_from_table missing_no_success
+area 200
+r3 = S
+r4 = CF
+r5 = 0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+end
+
+case hsd_id_get_data_from_table empty_bucket_with_success
+area 200
+r3 = S
+r4 = 1
+r5 = S+1F0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+end
+
+# Null table: the game's default table (its state, not invented).
+case hsd_id_get_data_from_table default_table
+area 200
+r3 = 0
+r4 = 12345
+r5 = S+1F0
+end
+
+case hsd_id_get_data_from_table largest_id
+area 200
+r3 = S
+r4 = FFFFFFFF
+r5 = S+1F0
+mem S+14 4 S+1A0
+mem S+1A0 4 S+1B0
+mem S+1A4 4 6A
+mem S+1A8 4 AAAA0000
+mem S+1B0 4 0
+mem S+1B4 4 5
+mem S+1B8 4 BBBB0000
+end
+
