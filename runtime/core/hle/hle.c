@@ -195,6 +195,12 @@ static void miss_init(void) {
     fprintf(stderr, "gcrt hle: GCRT_HLE_MISS_COUNTS: misses per address written to %s at exit\n", s_miss_path);
 }
 
+static bool s_from_hook = false; /* gcrt_hle_dispatch_from_hook */
+
+bool gcrt_hle_dispatch_from_hook(void) {
+    return s_from_hook;
+}
+
 static bool dispatch(CPUState* cpu, u32 address, bool from_hook) {
     GcrtCpu* g = gcrt_from_state(cpu);
     s_dispatch_calls++;
@@ -211,7 +217,10 @@ static bool dispatch(CPUState* cpu, u32 address, bool from_hook) {
         return false;
     if (s_stack_fill_size)
         stack_fill(g);
+    const bool outer_from_hook = s_from_hook;
+    s_from_hook = from_hook;
     bool done = r->fn(g, address);
+    s_from_hook = outer_from_hook;
     r->calls++;
     r->hook_calls += from_hook;
     if (!done) {

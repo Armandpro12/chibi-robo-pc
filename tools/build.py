@@ -724,16 +724,43 @@ def guest_costs_for_build(version: str, names: list[str], all_costs: dict[str, d
     return costs
 
 
+PATH_MARKED_EXPORT = re.compile(r"GC_DECOMP_EXPORT\(\s*(\w+)\s*,\s*[\w:]+\s*,([^;]*)\);")
+
+
+def path_marked_functions(game_cfg: dict, oracle: dict | None) -> set[str]:
+    """Names of the decompiled functions exported with gc::abi::flag_path_marked (their code marks the outcome of
+    each of its original's conditional branches, gc_path.h), in the sources a build of this kind compiles."""
+    folders = [game_cfg["_dir"] / "decomp" / "src"]
+    if oracle:
+        folders.append(game_cfg["_dir"] / "decomp" / "oracle_tests")
+    out = set()
+    for folder in folders:
+        if folder.is_dir():
+            for f in sorted(folder.rglob("*.cpp")):
+                for m in PATH_MARKED_EXPORT.finditer(f.read_text(encoding="utf-8")):
+                    if "flag_path_marked" in m.group(2):
+                        out.add(m.group(1))
+    return out
+
+
 def path_costs_for_build(version: str, entries: list, words: dict[int, list[int]], recomp_dir: Path | None,
-                         costs: dict[str, int], oracle: bool) -> tuple[list[str], dict[int, str]]:
+                         costs: dict[str, int], oracle: bool,
+                         marked: set[str] | None = None) -> tuple[list[str], dict[int, str]]:
     """Cost by path (runtime/core/decomp/gc_path.h): the graph of each registered original whose cost depends on its
     path (tools/decomp_path_cost.py, from its instructions and the cost groups of the code DolRecomp generated in
     `recomp_dir`), as C++ lines of the registration table and {address: graph name}. A function whose original's cost
     is the same on every path keeps its table cost, which must then be that constant in a production build (a stale or
-    wrong cell is refused: it would charge other cycles than the original's)."""
+    wrong cell is refused: it would charge other cycles than the original's).
+    Calls before the end (issue #68): an original with call sites has its graph registered too, for the call table
+    that gives the cycles the gateway charges before a guest call (gc_abi.h "Calls into guest code"), when the walk
+    can follow it: no conditional branch, or the decompiled code marks them (`marked`: names exported with
+    flag_path_marked). A production build refuses a function whose original has call sites without such a graph (a
+    mean cost has no prefix: its cycles before a call would be charged after the callee, issue #68); an oracle build
+    only warns (its comparisons run the original)."""
     import decomp_path_cost  # noqa: E402
     if recomp_dir is None or not entries:
         return [], {}
+    marked = marked or set()
     errors: dict[int, str] = {}
     graphs = decomp_path_cost.graphs_for(recomp_dir, words, errors)
     for a, f in entries:
@@ -742,6 +769,33 @@ def path_costs_for_build(version: str, entries: list, words: dict[int, list[int]
             # charged its mean, which the gateway's install message counts.
             print(f"== WARNING: no path graph for {f.name} ({version}): {errors[a]}")
     dependent = [a for a, _ in entries if a in graphs and graphs[a].constant() is None]
+    # Originals with call sites (decomp_functions.call_sites; the graph's calls are those of its reachable code).
+    import decomp_functions  # noqa: E402
+    with_calls = []
+    no_prefix = []
+    for a, f in entries:
+        w = words.get(a)
+        has_calls = bool(w) and bool(decomp_functions.call_sites([(a, b"".join(x.to_bytes(4, "big") for x in w))],
+                                                                  a, 4 * len(w)))
+        if not has_calls:
+            continue
+        g = graphs.get(a)
+        if g is not None and (not g.nodes or f.name in marked):
+            with_calls.append(a)
+            for e in g.call_errors:
+                print(f"== WARNING: {f.name} ({version}): call site without a known prefix, {e}")
+        else:
+            why = errors.get(a) if g is None else "its original has conditional branches its code does not mark " \
+                                                  "(flag_path_marked, gc::path::taken / falls_through)"
+            no_prefix.append(f"{f.name} at {a:08X}: {why}")
+    if no_prefix:
+        message = (f"decompiled functions of {version} whose original has call sites, without the graph that gives the "
+                   f"cycles charged before each guest call (issue #68, gc_abi.h \"Calls into guest code\"):\n  "
+                   + "\n  ".join(no_prefix))
+        if not oracle:
+            raise SystemExit(f"== ERROR: {message}")
+        print(f"== WARNING (oracle build: the comparisons run the original): {message}")
+    dependent += [a for a in with_calls if a not in dependent]
     if not oracle:
         wrong = []
         for a, f in entries:
@@ -752,7 +806,8 @@ def path_costs_for_build(version: str, entries: list, words: dict[int, list[int]
             raise SystemExit(f"== ERROR: guest cost table cells of {version} differ from the constant cost of the "
                              f"original's code (tools/decomp_path_cost.py): {', '.join(wrong)}")
     lines, names = decomp_path_cost.registry_lines(graphs, dependent)
-    print(f"== Cost by path: {len(dependent)} of {len(entries)} functions of {version} have a path-dependent original "
+    print(f"== Cost by path: {len(dependent)} of {len(entries)} functions of {version} have a registered graph "
+          f"(path-dependent original, or call sites: {len(with_calls)}) "
           f"({', '.join(f.name for a, f in entries if a in names) or 'none'})")
     return lines, names
 
@@ -793,7 +848,8 @@ def decomp_registry(game: str, version: str, disc_root: Path, build_dir: Path, o
     # gateway charges to the cycle clock per call, as the original would have been (gc_abi.h registration::guest_cost).
     costs = guest_costs_for_build(version, [f.name for _, f in entries], decomp_functions.read_guest_costs(game_cfg),
                                   bool(oracle), allow_no_guest_cost)
-    paths, path_names = path_costs_for_build(version, entries, words, recomp_dir, costs, bool(oracle))
+    paths, path_names = path_costs_for_build(version, entries, words, recomp_dir, costs, bool(oracle),
+                                             path_marked_functions(game_cfg, oracle))
     decomp_functions.write_if_changed(path, decomp_functions.registry_source(version, entries, oracle=bool(oracle),
                                                                              records=records, blocks=blocks,
                                                                              sources_hash=sources_hash, fpu=fpu,

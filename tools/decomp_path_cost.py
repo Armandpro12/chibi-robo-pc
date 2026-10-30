@@ -20,6 +20,13 @@ Refused (ValueError): an indirect jump (bcctr without link), a conditional call,
 that runs off the end of the function, a function whose loops DolRecomp outlined (`loop_<address>`, not read here),
 an instruction absent from the generated code.
 
+Call sites (issue #68): the graph also lists the original's reachable call sites (bl, bcl, bcctrl, and the branches
+out of the function: tail calls), each with its target (0 for bcctrl), the cycles charged after it until the next
+conditional branch or the return (`after`, 0 for a tail call) and that branch (`next`). The gateway charges, before
+a guest call of the decompiled code, the walk's cycles minus `after`: the original's cycles up to the call instruction
+(runtime/core/decomp/gc_path.h). A call site whose continuation cannot be followed (it runs off the function: a call
+that does not return at its end) has no entry, and a call there has no known prefix.
+
 Usage (diagnostic): py -3 tools/decomp_path_cost.py <game> --version <ID> [--function NAME ...]
 prints, for each enabled function of the game's table, its constant cost or its graph (path-dependent).
 """
@@ -55,10 +62,20 @@ class Node:
 
 
 @dataclass
+class Call:
+    address: int
+    target: int  # 0: indirect (bcctrl)
+    after: int   # cycles charged after the call instruction until `next`
+    next: int    # node index or RETURN
+
+
+@dataclass
 class Graph:
     address: int
     entry: Edge
     nodes: list[Node] = field(default_factory=list)
+    calls: list[Call] = field(default_factory=list)
+    call_errors: list[str] = field(default_factory=list)  # call sites without entry (continuation not followed)
 
     def has_cycle(self) -> bool:
         state = [0] * len(self.nodes)  # 0 unseen, 1 on the stack, 2 done
@@ -105,6 +122,21 @@ class Graph:
             cycles += e.cycles
             node = e.next
         return cycles if node == RETURN else None
+
+    def prefix(self, outcomes: list[bool], call: int) -> int | None:
+        """Cycles charged before the guest call at the instruction `call`, the outcomes of the conditional branches
+        before it being `outcomes` (gc_abi.cpp call_prefix, for tests); None if no call site of the walk's edge."""
+        cycles, node = self.entry.cycles, self.entry.next
+        for taken in outcomes:
+            if node == RETURN:
+                return None
+            e = self.nodes[node].taken if taken else self.nodes[node].not_taken
+            cycles += e.cycles
+            node = e.next
+        for c in self.calls:
+            if c.address == call and c.next == node:
+                return cycles - c.after
+        return None
 
 
 def _signed(value: int, bits: int) -> int:
@@ -171,6 +203,7 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
     graph = Graph(address, Edge(0, RETURN))
     index: dict[int, int] = {}
     todo: list[int] = []
+    reached: set[int] = set()  # instructions on some path from the entry
 
     def node_of(i: int) -> int:
         if i not in index:
@@ -187,6 +220,7 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
             if i in seen:
                 raise ValueError(f"{address + 4 * i:08X}: loop without a conditional branch")
             seen.add(i)
+            reached.add(i)
             cycles += charges.get(address + 4 * i, 0)
             k = kinds[i]
             if k[0] == "go":
@@ -203,6 +237,36 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
         target = kinds[i][1]
         node.taken = follow(target) if target is not None else Edge(0, RETURN)
         node.not_taken = follow(i + 1)
+    # Call sites of the reachable code (module doc). Every instruction after a reachable call is reachable, and so is
+    # the conditional branch its continuation reaches: following it adds no node.
+    nodes_before = len(graph.nodes)
+    for i in sorted(reached):
+        w = words[i]
+        at = address + 4 * i
+        op, lk = w >> 26, w & 1
+        always = ((w >> 21) & 0x14) == 0x14
+        xo = (w >> 1) & 0x3FF
+        if op == 18 or op == 16:
+            t = _target(w, at)
+            if not lk and inside(t):
+                continue  # a branch inside the function
+            if not lk:
+                # A branch out of the function (tail call), conditional or not: the path ends there.
+                graph.calls.append(Call(at, t, 0, RETURN))
+                continue
+            target = t
+        elif op == 19 and xo == 528 and lk:
+            target = 0
+        else:
+            continue
+        try:
+            e = follow(i + 1)
+        except ValueError as exc:
+            graph.call_errors.append(f"{at:08X}: {exc}")
+            continue
+        graph.calls.append(Call(at, target, e.cycles, e.next))
+    if len(graph.nodes) != nodes_before:
+        raise ValueError(f"{address:08X}: a call's continuation reached an unknown conditional branch")
     return graph
 
 
@@ -300,19 +364,32 @@ def registry_lines(graphs: dict[int, Graph], wanted: list[int]) -> tuple[list[st
     for a in wanted:
         g = graphs[a]
         name = f"k_path_{a:08X}"
-        lines.append(f"const ::gc::abi::path_node {name}_nodes[] = {{")
-        for nd in g.nodes:
-            lines.append(f"    {{0x{nd.address:08X}u, {edge(nd.taken)}, {edge(nd.not_taken)}}},")
-        lines.append("};")
-        lines.append(f"const ::gc::abi::path_graph {name} = {{{edge(g.entry)}, {len(g.nodes)}u, {name}_nodes}};")
+        nodes = calls = "nullptr"  # no zero-length array in C++
+        if g.nodes:
+            lines.append(f"const ::gc::abi::path_node {name}_nodes[] = {{")
+            for nd in g.nodes:
+                lines.append(f"    {{0x{nd.address:08X}u, {edge(nd.taken)}, {edge(nd.not_taken)}}},")
+            lines.append("};")
+            nodes = f"{name}_nodes"
+        if g.calls:
+            lines.append(f"const ::gc::abi::path_call {name}_calls[] = {{")
+            for c in g.calls:
+                nxt = "::gc::abi::path_return" if c.next == RETURN else f"{c.next}u"
+                lines.append(f"    {{0x{c.address:08X}u, 0x{c.target:08X}u, {c.after}u, {nxt}}},")
+            lines.append("};")
+            calls = f"{name}_calls"
+        lines.append(f"const ::gc::abi::path_graph {name} = {{{edge(g.entry)}, {len(g.nodes)}u, {nodes}, "
+                     f"{len(g.calls)}u, {calls}}};")
         names[a] = name
     return lines, names
 
 
 def describe(name: str, g: Graph) -> str:
+    calls = "".join(f"\n  call {c.address:08X} -> {c.target:08X} after {c.after}->{'R' if c.next == RETURN else c.next}"
+                    for c in g.calls) + "".join(f"\n  call without prefix {e}" for e in g.call_errors)
     c = g.constant()
     if c is not None:
-        return f"{name} {g.address:08X} constant {c}"
+        return f"{name} {g.address:08X} constant {c}" + calls
     out = [f"{name} {g.address:08X} path-dependent{' (loop)' if g.has_cycle() else ''}"
            + ("" if g.has_cycle() else f" {min(g.totals())}..{max(g.totals())}")
            + f" entry {g.entry.cycles}->{'R' if g.entry.next == RETURN else g.entry.next}"]
@@ -320,7 +397,7 @@ def describe(name: str, g: Graph) -> str:
         def e(x: Edge) -> str:
             return f"{x.cycles}->{'R' if x.next == RETURN else x.next}"
         out.append(f"  {i}: {nd.address:08X} taken {e(nd.taken)} not {e(nd.not_taken)}")
-    return "\n".join(out)
+    return "\n".join(out) + calls
 
 
 def main() -> int:

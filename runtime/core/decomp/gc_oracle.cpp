@@ -170,6 +170,10 @@ struct call_record {
     u32 reserve_addr_after = 0;
     std::vector<byte_write> written_before; // bytes the function wrote before the call (current values), not the dead stack
     std::vector<byte_write> callee_writes;  // bytes the callee wrote (value before, value after)
+    // Exclusive cycles of the original from its entry up to this call instruction included (issue #68): the cycles of
+    // the run so far, less those of the calls before, plus those still pending in its block. Checked against the
+    // prefix the gateway charges before the decompiled version's call (oracle_replay_call).
+    u64 prefix = 0;
 };
 
 struct function_state {
@@ -233,6 +237,10 @@ struct function_state {
     u64 path_checked = 0, path_mismatches = 0;
     // The same check on the synthetic cases (run_synthetic): they force the paths the game's calls do not take.
     u64 synthetic_path_checked = 0, synthetic_path_mismatches = 0;
+    // Calls before the end (issue #68, gc_path.h): calls of the decompiled version whose prefix the gateway knows
+    // (its walk has a graph), and those whose prefix differs from the original's (call_record::prefix, 0 expected) or
+    // that match no call site of the original's graph (prefix unknown, counted as a mismatch).
+    u64 prefix_checked = 0, prefix_mismatches = 0;
 };
 
 const char* s_version = "?";
@@ -300,6 +308,7 @@ bool s_call_active = false;          // a recorded callee is running (nested run
 bool s_original_ee = false;
 constexpr u32 k_msr_ee = 0x00008000u;
 u64 s_callee_cycles = 0;             // guest cycles of the recorded calls of the current game call (exclusive cost)
+u64 s_cost_start = 0;                // g->cycles when the exclusive cost of the current call starts (call prefixes)
 bool s_replaying = false;            // the decompiled version runs: its calls are compared and replayed
 std::size_t s_replay_index = 0;      // next recorded call to replay
 const synthetic_case* s_synthetic_case = nullptr; // synthetic case being run (its calls are simulated)
@@ -641,6 +650,11 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         c->lr = address + 4u;
     rec.written_before = live_writes(s_original_writes);
     rec.before = take(c).regs;
+    {
+        const u64 pending = c->downcount < 0 ? static_cast<u64>(-c->downcount) : 0u;
+        const u64 run = g->cycles + pending - s_cost_start;
+        rec.prefix = run - std::min(run, s_callee_cycles);
+    }
     if (s_synthetic_case) {
         // Simulated: the callee never runs (a panic, an allocation... could not be undone).
         if (s_no_return.count(rec.target))
@@ -661,11 +675,13 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         // the call would be lost and the callee's last block charged twice, once by the nested run and once when F's
         // block returns to the chassis.
         s64 outer_downcount = c->downcount;
-        // Issue #68 (measurement): cycles pending in F's block on the timeline; counter-test FLUSH_PENDING charges
-        // them before the callee instead of when F's block returns (same total).
+        // Issue #68: the cycles pending in F's block (its code up to the call included) are charged before the callee,
+        // as the recompiled game charges them at the callee's first block boundary, instead of when F's block returns
+        // (same total, same block boundaries: the block ends at this hook). GCRT_DECOMP_TEST_LATE_CHARGE=1 (test only)
+        // keeps them pending, as before the fix.
         GCRT_TIMELINE("nested pending call %08X %lld", static_cast<unsigned>(target),
                       static_cast<long long>(-outer_downcount));
-        if (oracle_flush_pending() && outer_downcount < 0) {
+        if (!test_late_charge && outer_downcount < 0) {
             gcrt_cpu_add_cycles(g, static_cast<u64>(-outer_downcount));
             outer_downcount = 0;
         }
@@ -899,6 +915,10 @@ void report_at_exit() {
                          static_cast<unsigned long long>(f.path_mismatches),
                          static_cast<unsigned long long>(f.synthetic_path_checked),
                          static_cast<unsigned long long>(f.synthetic_path_mismatches));
+        if (f.prefix_checked || f.prefix_mismatches)
+            std::fprintf(stdout, "ORACLE-PREFIX %-32s %s %08X checked=%llu mismatches=%llu\n", f.name, s_version,
+                         static_cast<unsigned>(f.address), static_cast<unsigned long long>(f.prefix_checked),
+                         static_cast<unsigned long long>(f.prefix_mismatches));
         if (!s_out)
             continue;
         std::fprintf(s_out,
@@ -913,7 +933,8 @@ void report_at_exit() {
                      "\"cost_calls\":%llu,\"cost_cycles\":%llu,\"cost_min\":%llu,\"cost_max\":%llu,"
                      "\"cost_exclusive\":true,\"cost_callee_cycles\":%llu,\"cost_unmeasured\":%llu,"
                      "\"cost_nested_calls\":%llu,\"cost_nested_cycles\":%llu,\"path_checked\":%llu,"
-                     "\"path_mismatches\":%llu,\"synthetic_path_checked\":%llu,\"synthetic_path_mismatches\":%llu,",
+                     "\"path_mismatches\":%llu,\"synthetic_path_checked\":%llu,\"synthetic_path_mismatches\":%llu,"
+                     "\"prefix_checked\":%llu,\"prefix_mismatches\":%llu,",
                      f.name, s_version, static_cast<unsigned>(f.address), static_cast<unsigned>(f.size),
                      static_cast<unsigned long long>(f.calls), static_cast<unsigned long long>(f.compared),
                      static_cast<unsigned long long>(f.mismatches), f.fingerprints.size(), f.bad_fingerprints.size(),
@@ -938,7 +959,9 @@ void report_at_exit() {
                      static_cast<unsigned long long>(f.path_checked),
                      static_cast<unsigned long long>(f.path_mismatches),
                      static_cast<unsigned long long>(f.synthetic_path_checked),
-                     static_cast<unsigned long long>(f.synthetic_path_mismatches));
+                     static_cast<unsigned long long>(f.synthetic_path_mismatches),
+                     static_cast<unsigned long long>(f.prefix_checked),
+                     static_cast<unsigned long long>(f.prefix_mismatches));
         print_block_list(s_out, "blocks", f.blocks, nullptr);
         print_u64_list(s_out, "block_hits", f.block_hits);
         print_u64_list(s_out, "synthetic_block_hits", f.synthetic_block_hits);
@@ -1312,7 +1335,7 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     try {
         // The walk of the original's path (gc_path.h), as the gateway does it in production.
         const export_record* record = gc::abi::find(f.address);
-        const gc::abi::detail::path_scope path(record && record->cost ? *record->cost : s_no_cost);
+        const gc::abi::detail::path_scope path(record && record->cost ? *record->cost : s_no_cost, false);
         invoke(registers_of(g));
         if (path.walk.graph)
             s_path_last = path_result{true, gc::abi::detail::path_complete(path.walk),
@@ -1548,6 +1571,7 @@ void run_synthetic(GcrtCpu* g, function_state& f, void (*invoke)(const registers
         // game's calls (oracle_entry). One line per case, for the coverage of the original's paths.
         const u64 cycles_before = g->cycles;
         s_callee_cycles = 0;
+        s_cost_start = cycles_before;
         s_path_last = path_result{};
         const bool compared = compare_call(g, f, invoke, signature, sc.label.c_str(), synthetic_dead_stack);
         if (compared && s_path_last.walked) {
@@ -1647,6 +1671,21 @@ void initialize() {
 } // namespace
 
 bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), const oracle_signature& signature) {
+    // GCRT_DECOMP_ORACLE_TEST_PRODUCTION=1 (test only): nothing is compared, every decompiled function runs as in a
+    // production executable (its guest calls through run_guest_call, its cost charged by the gateway), in an oracle
+    // executable whose other hooks are those of the comparison: measures the production path of a test function
+    // (oracle_tests), which production builds never compile (issue #68).
+    static const bool test_production = [] {
+        const char* v = std::getenv("GCRT_DECOMP_ORACLE_TEST_PRODUCTION");
+        if (v && v[0] == '1') {
+            std::fprintf(stderr, "gc_oracle: GCRT_DECOMP_ORACLE_TEST_PRODUCTION=1 (test only): no comparison, the "
+                                 "decompiled functions run as in production\n");
+            return true;
+        }
+        return false;
+    }();
+    if (test_production)
+        return false;
     if (s_depth) {
         // Inside a recorded callee (its nested run): it runs as its ORIGINAL, as everything the oracle runs for the
         // game (returning false here would run the decompiled version for real: its errors would reach the game and
@@ -1704,6 +1743,7 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
     // only for a function without call sites; otherwise it is counted as unmeasured.
     const u64 cycles_before = g->cycles;
     s_callee_cycles = 0;
+    s_cost_start = cycles_before;
     auto note_cost = [&](bool calls_recorded) {
         if (!calls_recorded && !f->call_sites.empty()) {
             f->cost_unmeasured++;
@@ -1751,13 +1791,6 @@ bool oracle_is_replaying() noexcept {
     return s_replaying;
 }
 
-bool oracle_flush_pending() noexcept {
-    static const bool on = [] {
-        const char* v = std::getenv("GCRT_DECOMP_ORACLE_FLUSH_PENDING");
-        return v && v[0] == '1';
-    }();
-    return on;
-}
 
 void oracle_bypassed_entry(u32 lr) noexcept {
     // The first declined entry after compare_call armed it is the compared original's own (its nested run starts at
@@ -1788,6 +1821,22 @@ bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument
         std::snprintf(what, sizeof(what), "call%zu", index);
         s_call_diffs.push_back(difference{"", target, k.target, target});
         std::snprintf(s_call_diffs.back().what, sizeof(what), "%s", what);
+    }
+    // Calls before the end (issue #68): the prefix the gateway charges before this call in production (the walk of the
+    // decompiled version, compare_call) against the original's cycles up to its call instruction. Checked when the
+    // walk has a graph; reported as a summary line, not as a difference of the call (the results are not concerned).
+    if (gc::abi::detail::current_path && gc::abi::detail::current_path->graph) {
+        u64 prefix = 0;
+        const bool known = gc::abi::detail::call_prefix(*gc::abi::detail::current_path, address, prefix);
+        s_running->prefix_checked++;
+        if (!known || prefix != k.prefix) {
+            if (s_running->prefix_mismatches++ < 5)
+                std::fprintf(stderr, "gc_oracle: PREFIX MISMATCH %s call %zu to %08X (site %08X): original %llu cycles "
+                                     "before the call, gateway %s%llu\n", s_running->name, index,
+                             static_cast<unsigned>(target), static_cast<unsigned>(k.site),
+                             static_cast<unsigned long long>(k.prefix), known ? "" : "unknown (no call site matched) ",
+                             static_cast<unsigned long long>(prefix));
+        }
     }
     for (unsigned r = 3; r <= 10; r++)
         if ((argument_gprs >> r) & 1u && c->gpr[r] != k.before.gpr[r]) {

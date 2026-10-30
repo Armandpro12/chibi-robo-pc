@@ -24,6 +24,9 @@ struct entry_state {
     unsigned checks = 0;     // cross-checks done
     unsigned mismatches = 0; // cross-checks whose result differed
     u64 fpu_declined = 0;    // entries declined because MSR[FP] = 0 (registration_uses_fpu)
+    // Guest calls made while this function was on the C++ stack, its prefix unknown (no usable graph, or no call site
+    // of its original matched the call): its cycles before the call were left to the end of its call (issue #68).
+    u64 prefix_unknown = 0;
 };
 
 GcrtCpu* s_cpu = nullptr;
@@ -34,6 +37,19 @@ bool s_report_registered = false;
 u64 s_cost_charged_cycles = 0;  // guest cycles charged by charge_guest_cost (cycle clock)
 u64 s_cost_uncharged_calls = 0; // calls whose cost was not charged: real-time clock (GCRT_PACING=host)
 bool s_path_error_reported = false; // first path error printed (gc_path.h)
+// Calls into guest code (issue #68, gc_abi.h): cycles charged before nested guest runs, as the prefixes of the
+// decompiled functions on the C++ stack (also counted in s_cost_charged_cycles: same total) and as the pending cycles of
+// the generated block that reached the gateway (cycles of recompiled code, not a guest cost); guest calls made by
+// decompiled code, and frames whose prefix was unknown at one of them.
+u64 s_prefix_charged_cycles = 0;
+u64 s_pending_charged_cycles = 0;
+u64 s_guest_calls_from_decomp = 0;
+u64 s_prefix_unknown = 0;
+bool s_prefix_unknown_reported = false;
+// GCRT_DECOMP_TEST_LATE_CHARGE=1 (test only, read by install): the behaviour before issue #68 was fixed, every cycle
+// charged after the body (no pending cycles nor prefix charged before guest calls, nor in the oracle's call hooks),
+// so that a test can show what the fix changes.
+bool s_late_charge = false;
 
 u32 slot_hash(u32 address, std::size_t mask) {
     return static_cast<u32>(((address >> 2) * 2654435761u) & mask);
@@ -149,13 +165,24 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
         cost->registered = true;
         // Cost by path (gc_path.h): the graph of the original, unless the costs are off or the decompiled code does
         // not mark the original's branches (then the mean, a debt the message below counts).
-        cost->path = costs_off || !(table[i].record->flags & flag_path_marked) ? nullptr : table[i].path;
-        if (table[i].path && !(table[i].record->flags & flag_path_marked))
+        cost->address = table[i].address;
+        // A graph without conditional branch (a straight-line original with call sites: its call table gives the
+        // prefixes of its calls, issue #68) needs no marks: its walk is complete from the entry.
+        const bool marked = (table[i].record->flags & flag_path_marked) ||
+                            (table[i].path && table[i].path->node_count == 0);
+        cost->path = costs_off || !marked ? nullptr : table[i].path;
+        if (table[i].path && !marked)
             mean_only++;
         costed += wanted != 0 || cost->path != nullptr;
         with_path += cost->path != nullptr;
     }
     detail::guest_cost_enabled = costed != 0;
+    const char* late = std::getenv("GCRT_DECOMP_TEST_LATE_CHARGE");
+    s_late_charge = late && late[0] == '1';
+    detail::test_late_charge = s_late_charge;
+    if (s_late_charge)
+        std::fprintf(stderr, "gc_abi: GCRT_DECOMP_TEST_LATE_CHARGE=1 (test only): no cycles charged before guest calls "
+                             "(the behaviour before the fix of issue #68)\n");
     const char* cc = std::getenv("GCRT_DECOMP_CROSSCHECK");
     s_crosscheck_limit = cc && cc[0] ? static_cast<unsigned>(std::strtoul(cc, nullptr, 0)) : 0u;
     detail::crosscheck_enabled = s_crosscheck_limit != 0;
@@ -206,6 +233,8 @@ void report(std::FILE* out) {
         if (const guest_cost_state* c = e.reg->record->cost; c && c->path)
             std::fprintf(out, " path_walks=%llu path_errors=%llu", static_cast<unsigned long long>(c->path_walks),
                          static_cast<unsigned long long>(c->path_errors));
+        if (e.prefix_unknown)
+            std::fprintf(out, " prefix_unknown=%llu", static_cast<unsigned long long>(e.prefix_unknown));
         std::fputc('\n', out);
     }
     u64 dispatch_calls = 0, dispatch_misses = 0;
@@ -229,6 +258,15 @@ void report(std::FILE* out) {
     std::fprintf(out, "DECOMP path_cost functions=%llu walks=%llu errors=%llu\n",
                  static_cast<unsigned long long>(path_functions), static_cast<unsigned long long>(path_walks),
                  static_cast<unsigned long long>(path_errors));
+    // Calls into guest code (issue #68): guest calls made by decompiled code, cycles charged before them (prefixes of
+    // the decompiled callers, pending cycles of the generated block that reached the gateway), and frames whose
+    // prefix was unknown at such a call (0 expected; the build refuses a function without the graph it needs).
+    std::fprintf(out, "DECOMP guest_calls calls=%llu prefix_cycles=%llu pending_cycles=%llu prefix_unknown=%llu%s\n",
+                 static_cast<unsigned long long>(s_guest_calls_from_decomp),
+                 static_cast<unsigned long long>(s_prefix_charged_cycles),
+                 static_cast<unsigned long long>(s_pending_charged_cycles),
+                 static_cast<unsigned long long>(s_prefix_unknown),
+                 s_late_charge ? " (GCRT_DECOMP_TEST_LATE_CHARGE=1: nothing charged before the calls)" : "");
 }
 
 namespace detail {
@@ -236,19 +274,44 @@ namespace detail {
 u32 bypass_address = 0;
 bool crosscheck_enabled = false;
 bool guest_cost_enabled = false;
+bool test_late_charge = false;
 path_walk* current_path = nullptr;
+
+namespace {
+// charge_guest_cost of the mean, less `already` cycles charged before guest calls (a walk with a graph whose end was
+// a path error: the mean is charged, the part already charged taken out).
+void charge_mean_less(GcrtCpu* g, guest_cost_state& cost, u64 already) noexcept {
+    if (!already) {
+        charge_guest_cost(g, cost);
+        return;
+    }
+    if (!g || g->clock != GCRT_CLOCK_CYCLES)
+        return;
+    const u64 total = static_cast<u64>(cost.remainder_256ths) + cost.per_call_256ths;
+    cost.remainder_256ths = static_cast<u32>(total & 0xFFu);
+    const u64 whole = total >> 8;
+    if (whole > already) {
+        gcrt_cpu_add_cycles(g, whole - already);
+        s_cost_charged_cycles += whole - already;
+    }
+}
+} // namespace
 
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost, const path_scope& scope) noexcept {
     const path_walk& w = scope.walk;
     if (!w.graph || !g || g->clock != GCRT_CLOCK_CYCLES) {
-        charge_guest_cost(g, cost); // constant cost, or the real-time clock (nothing charged there)
+        // Constant cost, or the real-time clock (nothing charged there). Nothing was charged before guest calls: a
+        // walk without graph has no prefix, and none is charged off the cycle clock.
+        charge_guest_cost(g, cost);
         return;
     }
     if (path_complete(w)) {
         cost.path_walks++;
-        if (w.cycles)
-            gcrt_cpu_add_cycles(g, w.cycles);
-        s_cost_charged_cycles += w.cycles;
+        // The cycles of the path, less those already charged before guest calls (issue #68): same total.
+        const u64 rest = w.cycles > w.charged ? w.cycles - w.charged : 0;
+        if (rest)
+            gcrt_cpu_add_cycles(g, rest);
+        s_cost_charged_cycles += rest;
         return;
     }
     // The decompiled code marked fewer or more outcomes than the original's path has: its markers do not follow the
@@ -264,8 +327,108 @@ void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost, const path_scope& sco
                              "first error only, all counted in DECOMP path_cost)\n", name, w.steps,
                      w.error ? "had already reached a return" : "did not reach a return");
     }
-    charge_guest_cost(g, cost);
+    charge_mean_less(g, cost, w.charged);
 }
+
+void charge_pending_at_entry(GcrtCpu* g) noexcept {
+    if (s_late_charge || !g)
+        return;
+    if (gcrt_hle_dispatch_from_hook())
+        charge_pending_cycles(g);
+    else
+        g->state.downcount = 0; // the previous block's value, already charged by the chassis
+}
+
+void charge_pending_cycles(GcrtCpu* g) noexcept {
+    if (s_late_charge || !g)
+        return;
+    const s64 pending = g->state.downcount;
+    if (pending < 0) {
+        gcrt_cpu_add_cycles(g, static_cast<u64>(-pending));
+        s_pending_charged_cycles += static_cast<u64>(-pending);
+    }
+    g->state.downcount = 0;
+}
+
+bool match_call_site(path_walk& w, u32 target) noexcept {
+    w.call_site = path_no_call;
+    if (!w.graph)
+        return false;
+    u32 best = path_no_call;
+    for (u32 i = 0; i < w.graph->call_count; i++) {
+        const path_call& c = w.graph->calls[i];
+        if (c.next != w.node || (c.target != target && c.target != 0))
+            continue;
+        if (w.call_after != path_no_call && c.after >= w.call_after)
+            continue; // before the last call matched on this edge
+        if (best == path_no_call || c.after > w.graph->calls[best].after)
+            best = i;
+    }
+    if (best == path_no_call)
+        return false;
+    w.call_site = best;
+    w.call_after = w.graph->calls[best].after;
+    return true;
+}
+
+bool call_prefix(path_walk& w, u32 target, u64& prefix) noexcept {
+    if (!match_call_site(w, target))
+        return false;
+    const u32 after = w.graph->calls[w.call_site].after;
+    prefix = w.cycles >= after ? w.cycles - after : 0;
+    return true;
+}
+
+namespace {
+// Before a nested guest run from decompiled code (run_guest_call): the prefix of each decompiled function on the C++
+// stack, from the innermost (whose call site is the guest call to `target`) to the outermost (whose call site is the
+// plain C++ call matched when the next one started, path_scope), less what each already charged (gc_abi.h "Calls
+// into guest code"). Only on the cycle clock with guest costs on, as the end of each call charges.
+void charge_before_guest_call(GcrtCpu* g, u32 target) noexcept {
+    s_guest_calls_from_decomp++;
+    if (s_late_charge || !guest_cost_enabled || !g || g->clock != GCRT_CLOCK_CYCLES)
+        return;
+    u64 amount = 0;
+    u32 t = target;
+    for (path_walk* w = current_path; w; t = w->address, w = w->outer) {
+        u64 prefix = 0;
+        bool known;
+        if (w == current_path) {
+            known = call_prefix(*w, t, prefix);
+        } else {
+            known = w->graph && w->call_site != path_no_call;
+            if (known) {
+                const u32 after = w->graph->calls[w->call_site].after;
+                prefix = w->cycles >= after ? w->cycles - after : 0;
+            }
+        }
+        if (!known) {
+            s_prefix_unknown++;
+            entry_state* e = lookup(w->address);
+            if (e)
+                e->prefix_unknown++;
+            if (!s_prefix_unknown_reported) {
+                s_prefix_unknown_reported = true;
+                std::fprintf(stderr, "gc_abi: PREFIX UNKNOWN in %s (%08X) at its call to %08X: %s; its cycles before the "
+                                     "call are charged at its end (first one only, all counted in DECOMP guest_calls)\n",
+                             e ? e->reg->record->name : "?", static_cast<unsigned>(w->address),
+                             static_cast<unsigned>(t),
+                             w->graph ? "no call site of its original matches" : "no graph of its original");
+            }
+            continue;
+        }
+        if (prefix > w->charged) {
+            amount += prefix - w->charged;
+            w->charged = prefix;
+        }
+    }
+    if (amount) {
+        gcrt_cpu_add_cycles(g, amount);
+        s_cost_charged_cycles += amount;
+        s_prefix_charged_cycles += amount;
+    }
+}
+} // namespace
 
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept {
     // Real-time clock (GCRT_PACING=host): the cycle counter is not time, nothing to keep in step and nothing written.
@@ -317,7 +480,7 @@ bool oracle_replaying() noexcept {
 bool call_function(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept {
     if (oracle_replay_call(g, address, argument_gprs, argument_fprs))
         return true;
-    return run_guest(g, address);
+    return run_guest_call(g, address);
 }
 #endif
 
@@ -335,19 +498,28 @@ namespace {
 // afterwards: the oracle's run of an original under comparison, the cross-check's second run of an original.
 bool nested_guest_run(GcrtCpu* g, u32 address, bool interruptible) noexcept {
     // Cycles of the generated block that reached the gateway (DolRecomp: `downcount -= n` at the start of each block,
-    // the chassis charges -downcount when the block returns). The nested run sets downcount for each of its own blocks
-    // and charges them; without this, the outer block's cycles spent before the hook would be lost and the nested
-    // run's last block charged a second time when the outer block returns.
-    const s64 outer_downcount = g->state.downcount;
+    // the chassis charges -downcount when the block returns; charge_pending_at_entry left 0 or the real pending). The nested run sets downcount for each of
+    // its own blocks and charges them. The outer block's pending cycles are charged before the nested run (issue #68:
+    // the recompiled game charges them at the callee's first block boundary), so its downcount is 0 after it; under
+    // GCRT_DECOMP_TEST_LATE_CHARGE=1 they are kept pending and charged when the outer block returns, as before.
+    s64 outer_downcount = g->state.downcount;
 #if defined(GC_DECOMP_ORACLE)
-    // Measurement of issue #68 (oracle builds only): -downcount on the timeline. It is the cycles still pending in
-    // the outer block only when the gateway was reached by a hook inside generated code; reached from the chassis
-    // (host_call before a block), it is the previous block's value, already charged.
+    // Measurement of issue #68 (oracle builds only): the cycles still pending in the outer block (0 when the gateway
+    // was reached from the chassis, or after charge_pending_cycles at the entry of the decompiled function).
     GCRT_TIMELINE("nested pending run %08X %lld", static_cast<unsigned>(address),
                   static_cast<long long>(-outer_downcount));
 #endif
+    if (!s_late_charge) {
+        charge_pending_cycles(g);
+        outer_downcount = 0;
+    }
+    // The guest code starts a new chain of walks (gc_path.h): a decompiled function it reaches is not called by the
+    // decompiled functions on the C++ stack here, whose prefixes are charged already.
+    path_walk* const outer_walk = current_path;
+    current_path = nullptr;
     const bool returned =
         interruptible ? gcrt_guest_call_interruptible(g, address) : gcrt_guest_call_prepared(g, address);
+    current_path = outer_walk;
     g->state.downcount = outer_downcount;
     if (!returned)
         std::fprintf(stderr, "gc_abi: the guest function %08X called by decompiled code did not return\n",
@@ -361,6 +533,11 @@ bool run_guest(GcrtCpu* g, u32 address) noexcept {
     guest_calls++; // the oracle tells its own runs of the original from guest calls made by decompiled code
 #endif
     return nested_guest_run(g, address, true);
+}
+
+bool run_guest_call(GcrtCpu* g, u32 address) noexcept {
+    charge_before_guest_call(g, address);
+    return run_guest(g, address);
 }
 
 bool run_guest_masked(GcrtCpu* g, u32 address) noexcept {

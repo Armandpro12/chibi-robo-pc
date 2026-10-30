@@ -46,6 +46,14 @@
 // the original's conditional branches (registration::path, tools/decomp_path_cost.py) and the decompiled code marks
 // the outcome of each of them (gc::path::taken / falls_through): each call then charges the exact cycles of the
 // original's path instead of the table's mean (kept as the fallback of a path error, counted in the exit report).
+// Calls into guest code (issue #68): the original's cycles before a call are charged before the callee runs, as the
+// recompiled game charges them at the callee's first block boundary, so that the events due during the callee see the
+// same clock. Before each nested run of guest code from decompiled code, the gateway charges (1) the cycles still
+// pending in the generated block that reached the decompiled function (`downcount`, charged at its entry) and (2) for
+// each decompiled function on the C++ stack, its original's cycles from its entry up to the call instruction along the
+// path walked so far (gc_path.h "Calls made before the end"); the end of each call charges only the rest, so the total
+// is unchanged. The build refuses, in a production build, a function whose original has call sites without the graph
+// that gives these prefixes (tools/build.py): a mean cost has no prefix. To be removed with the cycle clock at D3.
 //
 // Rules (stage document, notes/decomp.md D1.1): decompiled code never names an address; the gateway is only built in
 // guest-memory mode and leaves the executable with the recompiled code (stage D3). No function with C linkage returns
@@ -104,6 +112,7 @@ using entry_fn = bool (*)(GcrtCpu* g, u32 address);
 // build would see a call to address 0: call<Fn> warns once per function (`unregistered_warned`).
 // `path`: graph of the original's conditional branches (registration::path; nullptr: constant cost, or costs off), and
 // the walks that did not end on a return of the original (`path_errors`: the mean `per_call_256ths` was charged).
+// `address`: the function's guest address in this version (install), which its callers' call sites target.
 struct guest_cost_state {
     u32 per_call_256ths = 0;
     u32 remainder_256ths = 0;
@@ -112,6 +121,7 @@ struct guest_cost_state {
     const path_graph* path = nullptr;
     u64 path_walks = 0;
     u64 path_errors = 0;
+    u32 address = 0;
 };
 
 // One decompiled function, defined next to it by GC_DECOMP_EXPORT.
@@ -373,21 +383,35 @@ inline void note_unregistered_call(guest_cost_state& cost, const char* name) noe
 // (GCRT_CLOCK_CYCLES: the default pacing of normal play and the bench, see "Guest time"); with the real-time clock
 // (GCRT_PACING=host) it does nothing.
 extern bool guest_cost_enabled;
+// GCRT_DECOMP_TEST_LATE_CHARGE=1 (test only, read by install): nothing charged before guest calls (issue #68), as before
+// the fix; the oracle's call hooks keep the pending cycles of the original's block too.
+extern bool test_late_charge;
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost) noexcept;
-// Walk of the graph of one call (gc_path.h), around the C++ function: starts the walk of `cost.path` (none if the
-// function has no graph: the markers of the code it runs are then not recorded) and restores the caller's walk.
+// Call site of `outer`'s original that a call to the guest address `target` is (gc_path.h): the one on the walk's
+// current edge (`next` = the walk's node) with the largest `after` below the last one matched on that edge, target
+// equal or indirect. Sets outer.call_site / call_after; false if none (gc_abi.cpp).
+bool match_call_site(path_walk& outer, u32 target) noexcept;
+// Walk of the graph of one call (gc_path.h), around the C++ function: starts the walk of `cost.path` (a walk without
+// graph if the function has none: the markers of the code it runs are then not recorded) and restores the caller's
+// walk. `from_decompiled`: a plain C++ call from the decompiled function whose walk is current (call<Fn>,
+// call_address): the walk is chained to it, and its call site to this function is matched (calls before the end);
+// otherwise (entry from guest code, the oracle's run) the walk starts a new chain.
 struct path_scope {
     path_walk walk;
     path_walk* const saved;
-    explicit path_scope(const guest_cost_state& cost) noexcept : saved(current_path) {
+    path_scope(const guest_cost_state& cost, bool from_decompiled) noexcept : saved(current_path) {
+        walk.address = cost.address;
+        if (from_decompiled && saved) {
+            walk.outer = saved;
+            if (saved->graph)
+                match_call_site(*saved, cost.address);
+        }
         if (cost.path) {
             walk.graph = cost.path;
             walk.node = cost.path->entry.next;
             walk.cycles = cost.path->entry.cycles;
-            current_path = &walk;
-        } else {
-            current_path = nullptr;
         }
+        current_path = &walk;
     }
     ~path_scope() { current_path = saved; }
     path_scope(const path_scope&) = delete;
@@ -398,8 +422,21 @@ inline bool path_complete(const path_walk& w) noexcept {
     return w.graph && !w.error && w.node == path_return;
 }
 // charge_guest_cost for a call whose path was walked (`scope`): the cycles of the walk when the function has a graph
-// and the walk is complete; otherwise as charge_guest_cost, and a path error is counted when there was a graph.
+// and the walk is complete; otherwise as charge_guest_cost, and a path error is counted when there was a graph. The
+// cycles already charged before guest calls (walk.charged) are taken out.
 void charge_guest_cost(GcrtCpu* g, guest_cost_state& cost, const path_scope& scope) noexcept;
+// Entry of a decompiled function that runs: when it was reached by a hook in generated code
+// (gcrt_hle_dispatch_from_hook), the cycles still pending in that block (-downcount) are charged now (same total,
+// charged before the function instead of when the block returns); downcount is cleared in every case (reached from
+// the chassis it only held the previous block's value, already charged, and the chassis does not read it again).
+// No effect under GCRT_DECOMP_TEST_LATE_CHARGE=1 (test only, gc_abi.cpp).
+void charge_pending_at_entry(GcrtCpu* g) noexcept;
+// Same before a nested guest run from decompiled code: downcount holds only cycles not charged yet there (cleared at
+// the entry, or set by a block hook of the oracle's run of an original).
+void charge_pending_cycles(GcrtCpu* g) noexcept;
+// Prefix of a guest call from the decompiled function whose walk is `w` to `target` (gc_path.h): matches its call
+// site, then the walk's cycles minus the site's `after`. False if the walk has no graph or no site matches.
+bool call_prefix(path_walk& w, u32 target, u64& prefix) noexcept;
 // True if the function registered at `address` has registration_uses_fpu (not counted).
 bool registered_uses_fpu(u32 address) noexcept;
 // True if the gateway is installed and MSR[FP] = 0.
@@ -413,6 +450,9 @@ void first_call(u32 address);
 // Nested run of guest code with the registers already set; events are delivered during the callee as during any
 // guest code (runtime/core/hle: gcrt_guest_call_interruptible).
 bool run_guest(GcrtCpu* g, u32 address) noexcept;
+// run_guest for a call of decompiled code into guest code (call_guest): first charges, on the cycle clock, the
+// pending cycles and the prefix of every decompiled function on the C++ stack (see "Calls into guest code").
+bool run_guest_call(GcrtCpu* g, u32 address) noexcept;
 // Same with MSR[EE] = 0 during the call (gcrt_guest_call_prepared): the oracle's run of an original under comparison
 // and the cross-check's second run of an original, whose stores must be F's alone.
 bool run_guest_masked(GcrtCpu* g, u32 address) noexcept;
@@ -453,10 +493,6 @@ extern u64 guest_calls;
 // no comparison runs (gc_oracle.cpp).
 bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
 bool oracle_is_replaying() noexcept;
-// Counter-test of issue #68 (measurement only): GCRT_DECOMP_ORACLE_FLUSH_PENDING=1, the cycles pending in the outer
-// generated block that reached a call hook of the compared original are charged before its callee runs (gc_oracle.cpp
-// call_hook) instead of when that block returns to the chassis (same total, same block boundaries).
-bool oracle_flush_pending() noexcept;
 // The entry of `address` declined because MSR[FP] = 0 (decline_without_fpu): counted apart by the oracle ("declined,
 // FPU off"), neither compared nor "not compared"; during another comparison it also makes that function not a leaf.
 void oracle_declined_fpu(u32 address) noexcept;
@@ -489,6 +525,9 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     const u32 return_address = *r.lr;
     if (detail::call_count<Fn>++ == 0)
         detail::first_call(address);
+    // The cycles still pending in the block that reached this entry (a hook in generated code) are charged now, before
+    // any guest code the function may call (issue #68).
+    detail::charge_pending_at_entry(g);
     try {
 #if defined(GC_DECOMP_ORACLE)
     {
@@ -502,7 +541,7 @@ template <auto Fn> bool entry(GcrtCpu* g, u32 address) {
     }
 #endif
     {
-        const detail::path_scope path(detail::guest_cost<Fn>); // the walk of the original's path (gc_path.h)
+        const detail::path_scope path(detail::guest_cost<Fn>, false); // the walk of the original's path (gc_path.h)
         if (detail::crosscheck_enabled) {
             u32 gpr[11];
             f64 fpr[9], ps1[9];
@@ -576,7 +615,7 @@ template <class R, class... A> R call_guest(u32 address, A... args) {
     }();
     detail::call_function(g, address, gprs, fprs);
 #else
-    detail::run_guest(g, address);
+    detail::run_guest_call(g, address);
 #endif
     if constexpr (!std::is_void_v<R>) {
         constexpr detail::slot result{detail::is_pair_v<R> ? detail::slot_pair
@@ -620,7 +659,7 @@ template <class R, class... A> R call_address(u32 address, A... args) {
         if (e->signature == &detail::signature_tag<pointer>::id) {
             // A plain C++ call: the callee's guest cost is charged here, its entry is not reached.
             static const guest_cost_state no_cost{};
-            const detail::path_scope path(e->cost ? *e->cost : no_cost); // the callee's own walk (gc_path.h)
+            const detail::path_scope path(e->cost ? *e->cost : no_cost, true); // the callee's own walk (gc_path.h)
             if constexpr (std::is_void_v<R>) {
                 reinterpret_cast<pointer>(e->direct)(args...);
                 if (detail::guest_cost_enabled && e->cost)
@@ -661,7 +700,7 @@ template <auto Fn, class... A> auto call(A... args) {
     // original callee). Fn must be registered in the build for that (its cost is set by install): warned otherwise.
     if (!detail::guest_cost<Fn>.registered)
         detail::note_unregistered_call(detail::guest_cost<Fn>, detail::export_name<Fn>);
-    const detail::path_scope path(detail::guest_cost<Fn>); // Fn's own walk (gc_path.h)
+    const detail::path_scope path(detail::guest_cost<Fn>, true); // Fn's own walk (gc_path.h)
     if constexpr (std::is_void_v<decltype(Fn(args...))>) {
         Fn(args...);
         if (detail::guest_cost_enabled)

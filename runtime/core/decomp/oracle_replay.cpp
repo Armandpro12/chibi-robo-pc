@@ -50,8 +50,17 @@ bool crosscheck_enabled = false;
 bool guest_cost_enabled = false;
 void charge_guest_cost(GcrtCpu*, guest_cost_state&) noexcept {}
 void charge_guest_cost(GcrtCpu*, guest_cost_state&, const path_scope&) noexcept {}
-// No walk of the original's path either (gc_path.h): the path marks of the decompiled code are plain conditions.
+// No walk of the original's path either (gc_path.h): the path marks of the decompiled code are plain conditions,
+// and no cycles are charged before guest calls (issue #68).
 path_walk* current_path = nullptr;
+void charge_pending_cycles(GcrtCpu*) noexcept {}
+void charge_pending_at_entry(GcrtCpu*) noexcept {}
+bool match_call_site(path_walk&, u32) noexcept {
+    return false;
+}
+bool call_prefix(path_walk&, u32, u64&) noexcept {
+    return false;
+}
 // No MSR here: the replayed cases are compared calls, all made with MSR[FP] = 1 (the gateway declines the others), so
 // the replay never declines.
 const u32* guest_msr = nullptr;
@@ -67,6 +76,9 @@ bool run_guest(GcrtCpu*, u32 address) noexcept {
     std::printf("ERROR the decompiled function called guest code at %08X: not a leaf, not replayable\n",
                 static_cast<unsigned>(address));
     return false;
+}
+bool run_guest_call(GcrtCpu* g, u32 address) noexcept {
+    return run_guest(g, address);
 }
 GcrtCpu* current_cpu() noexcept {
     return s_cpu;
