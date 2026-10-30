@@ -471,6 +471,7 @@ static void finish_select(GcrtCpu* g) {
     gcrt_os_set_current_context(g, next);
     if (prev != next)
         s_os.switches++;
+    GCRT_TIMELINE("thread %08X -> %08X", prev, next); /* diagnostic timeline only (A17 measurements) */
     reset_spin();
     GCRT_TRACE(GCRT_TRACE_OS, "thread %08X -> %08X (priority %u)", prev, next, prio);
     load_context(g, next);
@@ -489,6 +490,7 @@ static bool select_thread(GcrtCpu* g, bool yield, const Cont* cont) {
     if (gcrt_guest_call_depth() > 0) {
         /* Nested call by the host: impossible to switch threads in the middle (as with a suspended scheduler). */
         s_os.refused_nested++;
+        GCRT_TIMELINE("thread switch refused nested %08X", cur);
         GCRT_TRACE(GCRT_TRACE_OS, "thread switch refused during a nested call (thread %08X, pc %08X, lr %08X)", cur,
                    g->state.pc, g->state.lr);
         return false;

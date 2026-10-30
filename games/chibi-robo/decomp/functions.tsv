@@ -113,3 +113,4 @@ hsd_texp_assign_alpha_konst	dol	801D8318	801DAC14	0x164	verified	yes
 ps_setup_tev_invalid_state	dol	801E4F30	801E782C	0xC	verified	yes
 ps_alloc_particle	dol	801E5BEC	801E84E8	0x8C	disabled	-
 hsd_synth_is_stream_started	dol	801F28FC	801F52F0	0x14	verified	yes
+oracle_test_request_animation_all	dol	801C4A78	801C7374	0x24	disabled	-

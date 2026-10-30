@@ -328,7 +328,9 @@ bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function) {
     if (s_guest_call_depth == 0)
         s_outer_ee = (msr & MSR_EE) != 0;
     s_guest_call_depth++;
+    GCRT_TIMELINE("nested begin %08X depth %d ee %d", function, s_guest_call_depth, (msr & MSR_EE) ? 1 : 0);
     GcrtStopReason reason = run_nested(g, function);
+    GCRT_TIMELINE("nested end %08X depth %d", function, s_guest_call_depth);
     s_guest_call_depth--;
     c->pc = pc;
     c->lr = lr;
