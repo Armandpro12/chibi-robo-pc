@@ -453,6 +453,10 @@ extern u64 guest_calls;
 // no comparison runs (gc_oracle.cpp).
 bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
 bool oracle_is_replaying() noexcept;
+// Counter-test of anomaly A20 (measurement only): GCRT_DECOMP_ORACLE_FLUSH_PENDING=1, the cycles pending in the outer
+// generated block that reached a call hook of the compared original are charged before its callee runs (gc_oracle.cpp
+// call_hook) instead of when that block returns to the chassis (same total, same block boundaries).
+bool oracle_flush_pending() noexcept;
 // The entry of `address` declined because MSR[FP] = 0 (decline_without_fpu): counted apart by the oracle ("declined,
 // FPU off"), neither compared nor "not compared"; during another comparison it also makes that function not a leaf.
 void oracle_declined_fpu(u32 address) noexcept;

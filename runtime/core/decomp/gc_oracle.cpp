@@ -660,7 +660,15 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         // F that holds the call keeps its own downcount (see run_guest, gc_abi.cpp): without that, its cycles before
         // the call would be lost and the callee's last block charged twice, once by the nested run and once when F's
         // block returns to the chassis.
-        const s64 outer_downcount = c->downcount;
+        s64 outer_downcount = c->downcount;
+        // Anomaly A20 (measurement): cycles pending in F's block on the timeline; counter-test FLUSH_PENDING charges
+        // them before the callee instead of when F's block returns (same total).
+        GCRT_TIMELINE("nested pending call %08X %lld", static_cast<unsigned>(target),
+                      static_cast<long long>(-outer_downcount));
+        if (oracle_flush_pending() && outer_downcount < 0) {
+            gcrt_cpu_add_cycles(g, static_cast<u64>(-outer_downcount));
+            outer_downcount = 0;
+        }
         const u64 cycles_before = g->cycles;
         // Restores pc and lr (= return_to for a call); the callee runs with the game's EE, which it may change.
         c->msr = (c->msr & ~k_msr_ee) | (s_original_ee ? k_msr_ee : 0u);
@@ -1741,6 +1749,14 @@ bool oracle_entry(GcrtCpu* g, u32 address, void (*invoke)(const registers&), con
 
 bool oracle_is_replaying() noexcept {
     return s_replaying;
+}
+
+bool oracle_flush_pending() noexcept {
+    static const bool on = [] {
+        const char* v = std::getenv("GCRT_DECOMP_ORACLE_FLUSH_PENDING");
+        return v && v[0] == '1';
+    }();
+    return on;
 }
 
 void oracle_bypassed_entry(u32 lr) noexcept {

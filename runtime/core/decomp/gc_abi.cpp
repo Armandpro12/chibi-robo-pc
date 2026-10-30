@@ -339,6 +339,13 @@ bool nested_guest_run(GcrtCpu* g, u32 address, bool interruptible) noexcept {
     // and charges them; without this, the outer block's cycles spent before the hook would be lost and the nested
     // run's last block charged a second time when the outer block returns.
     const s64 outer_downcount = g->state.downcount;
+#if defined(GC_DECOMP_ORACLE)
+    // Measurement of anomaly A20 (oracle builds only): -downcount on the timeline. It is the cycles still pending in
+    // the outer block only when the gateway was reached by a hook inside generated code; reached from the chassis
+    // (host_call before a block), it is the previous block's value, already charged.
+    GCRT_TIMELINE("nested pending run %08X %lld", static_cast<unsigned>(address),
+                  static_cast<long long>(-outer_downcount));
+#endif
     const bool returned =
         interruptible ? gcrt_guest_call_interruptible(g, address) : gcrt_guest_call_prepared(g, address);
     g->state.downcount = outer_downcount;
