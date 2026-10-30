@@ -132,18 +132,24 @@ and assets are read from the player's files.
 | # | Milestone | State | Notes |
 |---|---|---|---|
 | D1 | Tooling | ✅ | Validated 2026-10-28. Mixed executable (decompiled and recompiled functions side by side), oracle, progress tracking; 12 leaf functions replace their recompiled versions and are verified in US and PAL. Follow-ups below. |
-| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions): 23 without game globals and 3 that write one (per-version globals table); floating-point unit off handled by the gateway; oracle for functions that call others. 40 functions verified in all (1.06 % of 3,772), on both US and PAL. |
+| D2 | Batches | 🟡 | Started 2026-10-28. Decompile batch by batch (by unit or REL), each one checked by the oracle in US and PAL. First batch (sysdolphin leaf functions): 23 without game globals, then 27 that read or write them (per-version globals table); floating-point unit off handled by the gateway; oracle for functions that call others. 64 functions verified in all (1.69 % of 3,772), on both US and PAL, plus one replaced but not yet verified. |
 | D3 | No recompiled code, no virtual CPU | ⬜ | 100 % decompiled; DolRecomp no longer needed; the game runs on the PC clock (until then, normal play runs on a guest cycle clock paced on real time, see "Guest time of decompiled functions" below). **First release of the C++ version**: the installer ships the decompiled executable instead of the recompiled one. The decompiled code is meant to handle both US and PAL, so the US version stays playable. |
 | D4 | Native memory | ⬜ | Native types, pointers and byte order; the 24 MB guest RAM disappears. |
 | D5 | No GameCube GPU commands | ⬜ | Models converted to native geometry; no GX command stream decoded at run time. |
 
-Progress: 40 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below), 1,532
-bytes of code (1.06 % of the 3,772 functions). Among them: 23 leaf functions of the sysdolphin (HSD) library (flags and
-fields of materials, polygons, cameras, lights, joints and world objects, reference-object lookup, TEV expression nodes
-and particle helpers, with shared structure headers); three HSD functions that write game globals through the
-per-version globals table (below); and two that use the floating-point unit (`hsd_hermite_interpolate` and
+Progress: 64 functions decompiled and verified by the oracle, on both US and PAL ("verified" as defined below), 3,388
+bytes of code (1.69 % of the 3,772 functions), and one more that replaces its original but is not verified yet. Among
+them: 23 leaf functions of the sysdolphin (HSD) library (flags and fields of materials, polygons, cameras, lights,
+joints and world objects, reference-object lookup, TEV expression nodes and particle helpers, with shared structure
+headers); 27 HSD leaf functions that read or write game globals through the per-version globals table (below): the
+current camera, joint, display object, material and rendering pass, TEV state resets, light masks and active lights,
+texture lookup by coordinate source, the identifier table, colour product, constant-to-register assignment of TEV
+expressions (their lookup tables are read from the game's memory, never copied), animation end counters, reset-switch
+request, sound-stream and particle state; and two that use the floating-point unit (`hsd_hermite_interpolate` and
 `hsd_mtx_get_translation`, enabled again once the gateway handled a call made while the unit is off; see "Follow-ups
-from D1" below).
+from D1" below). The particle allocation (`ps_alloc_particle`) replaces its original but stays unverified: one block
+(no free particle) depends only on a global that synthetic oracle cases cannot set yet. `HSD_Index2LightID` was left
+out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do not follow yet.
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the

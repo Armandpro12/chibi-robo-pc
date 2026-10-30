@@ -1749,3 +1749,45 @@ code, taken from cbr_decomp (CC0) and the Melee decompilation (names only); they
 
 The code of each pair is identical in US and PAL once addresses are masked. Only the layout facts in the table are
 checked (offsets and sizes of the fields these functions use); the rest of each structure is not.
+
+## Appendix I. sysdolphin (HSD) leaf functions that use globals, checked by the decompilation oracle on 2026-10-30
+
+Twenty-four more leaf functions of the game's HSD library, each reading or writing a game global (fixed address per
+version, below as US / PAL), were rewritten in C++ and checked by the same oracle in both versions. **Method:** as
+in appendix H, on seven runs per version (the five reference scenarios plus two longer play scenarios), with
+hand-written cases for the branches the runs do not reach (including null pointers and overlapping colours for
+`HSD_MulColor`). Result: 0 differences on every compared call (from 1,425 calls of `AssignAlphaKonst` to about 46.9
+million of the texture lookup, US) and on every hand-written case, every basic block of each original compared, and
+the cycles of each call equal to the original's path. Names in the right column are labels (cbr_decomp, CC0, and the
+Melee decompilation, names only, or this project's), not verified facts; "global" below means the word at the address
+given.
+
+| US | PAL | size | behaviour | code name |
+|---|---|---|---|---|
+| `0x801B10A4` | `0x801B39A0` | `0x3C` | from the word at +8 of r3 (or global `0x8065B8F4` / `0x80662794` if r3 is null), follows the links at +8 and returns the first node whose low 4 bits at +0x4C equal r4, else 0 | `HSD_TObjGetCurrentByType` |
+| `0x801B7988` | `0x801BA284` | `0x8` | stores r3 in global `0x8065B974` / `0x80662814` | `HSD_DObjSetCurrent` |
+| `0x801B8754` | `0x801BB050` | `0x8` | returns global `0x8065B990` / `0x80662830` | `HSD_StateGetNumTevStages` |
+| `0x801B8E1C` | `0x801BB718` | `0xC` | clears that same global | `_HSD_StateInvalidateTevStage` |
+| `0x801B8E28` | `0x801BB724` | `0x20` | clears the words at +8, +0x14, +0x20, +0x2C of `0x80259320` / `0x8025FE40` | `_HSD_StateInvalidateTevRegister` |
+| `0x801B8E48` | `0x801BB744` | `0xC` | clears global `0x8065B978` / `0x80662818` | `_HSD_StateInvalidateTexCoordGen` |
+| `0x801BA82C` | `0x801BD128` | `0x10` | clears `0x8065B9B0` then `0x8065B9AC` (PAL `0x80662850`, `0x8066284C`) | `HSD_AObjInitEndCallBack` |
+| `0x801BD058`, `0x801BD068`, `0x801BD070`, `0x801BD078` | `0x801BF954`, `0x801BF964`, `0x801BF96C`, `0x801BF974` | `0x8` each | return globals `0x8065B9C4`, `0x8065B9D0`, `0x8065B9C8`, `0x8065B9C0` (PAL `0x80662864`, `0x80662870`, `0x80662868`, `0x80662860`) | `HSD_LObjGetLightMaskDiffuse`, `…Alpha`, `…Specular`, `HSD_LObjGetNbActive` |
+| `0x801BD0C8` | `0x801BF9C4` | `0x2C` | for a signed r3 from 0 to 7, returns word r3 of `0x8064AE78` / `0x80651CF8`, else 0 | `HSD_LObjGetActiveByIndex` |
+| `0x801C1764` | `0x801C4060` | `0x8` | returns global `0x8065B9DC` / `0x8066287C` | `HSD_CObjGetCurrent` |
+| `0x801C79DC` | `0x801CA2D8` | `0x8` | returns global `0x8065B9F4` / `0x80662894` | `HSD_JObjGetCurrent` |
+| `0x801CAF18` | `0x801CD814` | `0x8` | returns global `0x8065BA44` / `0x806628E4` | `HSD_GetCurrentRenderPass` |
+| `0x801CAFC4` | `0x801CD8C0` | `0x10` | ORs r3 into global `0x8065BA40` / `0x806628E0` | `HSD_RequestGXInvalidate` |
+| `0x801CC0DC` | `0x801CE9D8` | `0x1C` | returns 1 if the byte at `0x8064C54B` / `0x806533CB` is not 0, else 0 | `HSD_VIIsResetRequested` |
+| `0x801D04B8` | `0x801D2DB4` | `0x6C` | for each of the 4 bytes in order: byte i at r5 = byte i at r3 × byte i at r4 / 255 (rounded down), both read before the write | `HSD_MulColor` |
+| `0x801D2E80` | `0x801D577C` | `0x88` | in the table at r3 (or `0x8064C884` / `0x80653704` if null), list number r4 mod 101 (link at +0): returns the word at +8 of the first node whose word at +4 is r4, else 0; if r5 is not null, stores 1 or 0 there | `HSD_IDGetDataFromTable` |
+| `0x801D7F74` | `0x801DA870` | `0x178` | constant-to-register assignment of a TEV stage's colour input (registers 4-7; lookup tables at `0x8025AEC4`, `0x8025AED4` / `0x802619E4`, `0x802619F4`) | `AssignColorReg` |
+| `0x801D80EC` | `0x801DA9E8` | `0x22C` | same for a constant colour selection (registers 0-3; tables `0x8025AEF4`, `0x8025AF34` / `0x80261A14`, `0x80261A54`); writes the selection byte at +0x20 of the stage | `AssignColorKonst` |
+| `0x801D8318` | `0x801DAC14` | `0x164` | same for a constant alpha selection (table `0x8025AF44` / `0x80261A64`); writes the byte at +0x21 of the stage | `AssignAlphaKonst` |
+| `0x801E4F30` | `0x801E782C` | `0xC` | stores -1 in global `0x8065BAB8` / `0x80662958` | `psSetupTevInvalidState` |
+| `0x801F28FC` | `0x801F52F0` | `0x14` | returns 1 if global `0x8065BBC4` / `0x80662A64` is not 0, else 0 | `HSD_SynthIsStreamStarted` |
+
+Layout facts checked by the oracle on these functions: in this game's TEV stage node the constant colour and alpha
+selections are the bytes at +0x20 and +0x21, the four colour inputs start at +0x24 and the four alpha inputs at
++0x44, 8 bytes each (kind at +0, GX argument at +2, source node at +4); the constant node holds its component, register
+and component index as bytes at +0xC, +0xE and +0xF; the compilation state has two bytes per register (colour
+components used, alpha used) from +0xC. The code of each pair is identical in US and PAL once addresses are masked.
