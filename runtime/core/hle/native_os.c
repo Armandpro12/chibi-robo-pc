@@ -489,7 +489,10 @@ static bool select_thread(GcrtCpu* g, bool yield, const Cont* cont) {
         return false;
     if (gcrt_guest_call_depth() > 0) {
         /* Nested call by the host: impossible to switch threads in the middle (as with a suspended scheduler). */
+        /* During a call of decompiled code into guest code, the refusal is a deferred switch: the run stops when
+         * the outermost nested call returns (native_irq.c, gcrt_guest_call_note_refused_switch). */
         s_os.refused_nested++;
+        gcrt_guest_call_note_refused_switch(cur);
         GCRT_TIMELINE("thread switch refused nested %08X", cur);
         GCRT_TRACE(GCRT_TRACE_OS, "thread switch refused during a nested call (thread %08X, pc %08X, lr %08X)", cur,
                    g->state.pc, g->state.lr);

@@ -410,8 +410,12 @@ inline bool fpu_off() noexcept {
 extern bool crosscheck_enabled;
 void crosscheck(GcrtCpu* g, u32 address, const u32* saved_gpr, const f64* saved_fpr, const f64* saved_ps1);
 void first_call(u32 address);
-// Nested run of guest code with the registers already set (runtime/core/hle: gcrt_guest_call_prepared).
+// Nested run of guest code with the registers already set; events are delivered during the callee as during any
+// guest code (runtime/core/hle: gcrt_guest_call_interruptible).
 bool run_guest(GcrtCpu* g, u32 address) noexcept;
+// Same with MSR[EE] = 0 during the call (gcrt_guest_call_prepared): the oracle's run of an original under comparison
+// and the cross-check's second run of an original, whose stores must be F's alone.
+bool run_guest_masked(GcrtCpu* g, u32 address) noexcept;
 #if defined(GC_DECOMP_ORACLE)
 // Oracle builds: a call of decompiled code to the function at `address` (call_guest, call_address, call): run_guest,
 // except while the caller is being compared, where the oracle compares it with the original's call and replays it

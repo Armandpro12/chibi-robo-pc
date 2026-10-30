@@ -90,7 +90,9 @@ typedef enum GcrtStopReason {
     GCRT_STOP_REQUESTED,
     GCRT_STOP_GUEST_HALT,    /* the game halted itself (OSPanic, PPCHalt): see the printed message */
     GCRT_STOP_HELD_INTERRUPT, /* a nested call held a due interrupt longer than its opt-in limit (hle/native_irq.c,
-                               * gcrt_guest_call_set_held_irq_limit; never set by default) */
+                               * gcrt_guest_call_set_held_irq_limit; set by the decompiled-code gateway) */
+    GCRT_STOP_DEFERRED_SWITCH, /* a thread switch fell due while decompiled code was calling guest code
+                                * (hle/native_irq.c, gcrt_guest_call_interruptible) */
 } GcrtStopReason;
 
 typedef struct GcrtRunLimits {

@@ -35,7 +35,8 @@ const char* gcrt_stop_reason_name(GcrtStopReason reason) {
     case GCRT_STOP_UNHANDLED_IO: return "unhandled hardware access";
     case GCRT_STOP_REQUESTED: return "stop requested";
     case GCRT_STOP_GUEST_HALT: return "game halted (OSPanic or PPCHalt)";
-    case GCRT_STOP_HELD_INTERRUPT: return "interrupt held too long by a nested call (opt-in limit)";
+    case GCRT_STOP_HELD_INTERRUPT: return "interrupt held too long by a nested call";
+    case GCRT_STOP_DEFERRED_SWITCH: return "thread switch due during a call of decompiled code into guest code";
     }
     return "?";
 }

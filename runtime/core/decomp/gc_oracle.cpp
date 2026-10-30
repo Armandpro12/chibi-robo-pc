@@ -291,6 +291,14 @@ bool s_initialized = false;
 std::unordered_map<u32, u32> s_call_probes;
 std::vector<call_record> s_calls;    // calls of the current run of the original
 bool s_call_active = false;          // a recorded callee is running (nested run): hooks ignore what it does
+// MSR[EE] the game has in the compared original (anomaly A17, option B). The original's own blocks run with MSR[EE] = 0
+// (no interrupt handler may store into W1: the decompiled version would not do it and the comparison would fail),
+// but its callees run as production runs those of the decompiled version (run_guest, gcrt_guest_call_interruptible):
+// with this EE, the events due during them delivered at their block boundaries, and the EE they leave kept. Their
+// stores, those of the handlers included, are the callee's (callee_writes), replayed to the decompiled version: both
+// versions see the same memory after each call. Put into the original's results (R1) when it returns.
+bool s_original_ee = false;
+constexpr u32 k_msr_ee = 0x00008000u;
 u64 s_callee_cycles = 0;             // guest cycles of the recorded calls of the current game call (exclusive cost)
 bool s_replaying = false;            // the decompiled version runs: its calls are compared and replayed
 std::size_t s_replay_index = 0;      // next recorded call to replay
@@ -654,7 +662,11 @@ bool call_hook(GcrtCpu* g, u32 address, function_state& f) {
         // block returns to the chassis.
         const s64 outer_downcount = c->downcount;
         const u64 cycles_before = g->cycles;
-        gcrt_guest_call_prepared(g, target); // restores pc, lr (= return_to for a call) and MSR[EE]
+        // Restores pc and lr (= return_to for a call); the callee runs with the game's EE, which it may change.
+        c->msr = (c->msr & ~k_msr_ee) | (s_original_ee ? k_msr_ee : 0u);
+        gcrt_guest_call_interruptible(g, target);
+        s_original_ee = (c->msr & k_msr_ee) != 0;
+        c->msr &= ~k_msr_ee; // F's own blocks go on with MSR[EE] = 0
         s_callee_cycles += g->cycles - cycles_before;
         c->downcount = outer_downcount;
         f.refused_switches += gcrt_native_os_refused_nested() - refused;
@@ -1204,7 +1216,10 @@ bool compare_call(GcrtCpu* g, function_state& f, void (*invoke)(const registers&
     s_running = &f;
     s_in_original = true;
     bypass_address = f.address;
-    const bool returned = run_guest(g, f.address);
+    s_original_ee = (r0.msr & k_msr_ee) != 0;
+    const bool returned = run_guest_masked(g, f.address);
+    if (returned)
+        c->msr = (c->msr & ~k_msr_ee) | (s_original_ee ? k_msr_ee : 0u); // the EE F's callees left (R1)
     bypass_address = 0;
     s_entry_lr_wanted = false;
     s_in_original = false;

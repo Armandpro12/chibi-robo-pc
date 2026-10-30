@@ -1,0 +1,32 @@
+# Native SDK replacements that can switch threads (or wait for another thread), read by tools/build.py: a
+# decompiled function is refused when its static closure of direct calls (US and PAL code alike) reaches one of
+# them. Reason: decompiled code calls recompiled code in a nested run of the chassis (hle/native_irq.c,
+# gcrt_guest_call_interruptible), with the decompiled caller's frame on the host stack; a thread switch cannot happen
+# there, so a callee that sleeps, yields or wakes a higher-priority thread would not behave as in the game (the run
+# stops when one falls due). Recompiled SDK functions that wait (VIWaitForRetrace, DVDRead, OSJoinThread,
+# OSLockMutex, OSWaitCond...) all end in one of these natives, which the closure finds through them.
+# One name per line (catalog names, runtime/core/hle/sdk_signatures.tsv); # starts a comment.
+#
+# Switch directly: their replacement in hle/native_os.c calls select_thread, __OSReschedule (reschedule),
+# sleep_core, wakeup_core, end_thread or load_context (read in native_os.c, every entry point listed in
+# gcrt_native_os_install that reaches one of them).
+__OSReschedule
+SelectThread
+OSYieldThread
+OSSleepThread
+OSWakeupThread
+OSResumeThread
+OSSuspendThread
+OSExitThread
+OSCancelThread
+OSLoadContext
+OSSendMessage
+OSReceiveMessage
+__OSUnlockAllMutex
+# Run a guest callback outside an interrupt with the scheduler held (gcrt_native_callback), then make the held
+# rescheduling when they return (gcrt_native_return -> gcrt_os_reschedule_return -> select_thread): hle/native_dvd.c
+# cancel_async and cancel_all_async, hle/native_os_sys.c hle_exi_unlock (every gcrt_native_callback of hle/ outside
+# an interrupt handler, read on 2026-10-30).
+DVDCancelAsync
+DVDCancelAllAsync
+EXIUnlock

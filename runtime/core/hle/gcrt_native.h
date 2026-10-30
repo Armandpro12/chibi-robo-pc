@@ -112,6 +112,18 @@ bool gcrt_guest_call(GcrtCpu* g, u32 function, const u32* args, unsigned count, 
  * results (r3, r4, f1...): only PC, LR, MSR[EE], SRR0/1 are restored afterwards (decompiled code calling recompiled
  * code, runtime/core/decomp/gc_abi.h). Returns true if the function returned. */
 bool gcrt_guest_call_prepared(GcrtCpu* g, u32 function);
+/* Call of decompiled code into guest code (runtime/core/decomp/gc_abi.cpp run_guest): like
+ * gcrt_guest_call_prepared, but the callee runs with the caller's MSR[EE] and the chassis delivers the due events at
+ * its block boundaries, as for any guest code; MSR[EE], SRR0 and SRR1 keep what the callee (and the interrupts
+ * delivered during it) left, as after a plain call. A thread switch that falls due during the call cannot be made
+ * (the host stack holds the decompiled caller): it is counted, and the run stops with GCRT_STOP_DEFERRED_SWITCH when
+ * the outermost nested call returns. Returns true if the function returned. */
+bool gcrt_guest_call_interruptible(GcrtCpu* g, u32 function);
+/* Native OS (native_os.c): a thread switch to `thread` was refused because a nested call runs. True if an
+ * interruptible call (above) runs, the switch then counts as deferred. */
+bool gcrt_guest_call_note_refused_switch(u32 thread);
+/* Thread switches deferred so far (see gcrt_guest_call_interruptible; expected 0). */
+u64 gcrt_guest_call_deferred_switches(void);
 /* Depth of the nested calls in progress (0: normal execution of the game). No thread switch is allowed during a
  * nested call. */
 int gcrt_guest_call_depth(void);
@@ -119,8 +131,9 @@ int gcrt_guest_call_depth(void);
  * as one run of the chassis with its block budget). A nested call runs with MSR[EE] = 0, so a callee that waits for
  * an interrupt (busy loop on a flag set by its handler) never sees it and only stops at the block budget. With a
  * limit, the call runs in slices; if the outermost nested call started with MSR[EE] = 1 and an unmasked interrupt has
- * been due for more than `ticks`, the run stops with GCRT_STOP_HELD_INTERRUPT and a message naming the interrupt. For
- * tools (decompilation oracle); production keeps 0. */
+ * been due for more than `ticks`, the run stops with GCRT_STOP_HELD_INTERRUPT and a message naming the interrupt. Set
+ * to one guest second by the decompiled-code gateway (runtime/core/decomp/gc_abi.cpp install), in production and in
+ * the oracle: a callee that waits for an event it masked stops with a clear message instead of a block budget. */
 void gcrt_guest_call_set_held_irq_limit(u64 ticks);
 /* Thread switches the native OS refused because a nested call was running (diagnostic, decompilation oracle). */
 u64 gcrt_native_os_refused_nested(void);

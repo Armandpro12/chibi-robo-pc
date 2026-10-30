@@ -223,6 +223,18 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   not comparable. The same holds for the original of the compared function itself, which also runs nested. A thread
   switch the oracle refuses is only seen once that nested run has returned, so the call in which it happened already
   ran in altered conditions. Seen in US on a test function (left out of the builds); its PAL counterpart was not run.
+- **Calls from decompiled code into recompiled code (anomaly A17, issue #65)**: the callee now runs as any guest
+  code does: the events that fall due during it are delivered at its block boundaries, with the caller's interrupt
+  state, and the interrupt state it leaves is kept. Before, they waited for the end of the call (measured on a test
+  function with a long recompiled callee: an interrupt 8 ticks late in PAL, an alarm 110 ticks late in US); with the
+  change, both are delivered within one tick of the fully recompiled run, in US and PAL, and the oracle still finds
+  no difference on that function (18 calls in PAL, 176 in US). A thread switch cannot happen during such a call (the
+  decompiled caller is on the host stack): one that falls due is counted and the game stops with a clear message
+  (none in these runs). The build refuses a decompiled function whose direct calls lead to an SDK function that can
+  switch threads (list in `runtime/core/hle/thread_switching_natives.txt`; indirect calls are not followed), and a
+  nested call that keeps an interrupt waiting for more than one guest second stops with a message, in production
+  too. Production executables are unchanged today: none of the 64 enabled functions calls recompiled code (same HLE
+  hooks, title boot identical with the same guest cycle count, US and PAL).
 - **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
   (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
   yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show
