@@ -471,7 +471,7 @@ static void finish_select(GcrtCpu* g) {
     gcrt_os_set_current_context(g, next);
     if (prev != next)
         s_os.switches++;
-    GCRT_TIMELINE("thread %08X -> %08X", prev, next); /* diagnostic timeline only (A17 measurements) */
+    GCRT_TIMELINE("thread %08X -> %08X", prev, next); /* diagnostic timeline only (issue #65 measurements) */
     reset_spin();
     GCRT_TRACE(GCRT_TRACE_OS, "thread %08X -> %08X (priority %u)", prev, next, prio);
     load_context(g, next);

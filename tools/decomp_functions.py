@@ -767,7 +767,7 @@ def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]
 
 def switching_reach(ranges: list[tuple[int, bytes]], entries: list[int], hooks: dict[int, str],
                     switching: set[str], rel_bases: set[int] | None = None) -> dict[int, dict]:
-    """For each entry, the static closure of its direct calls (anomaly A17): {entry: {"path": [address, ...,
+    """For each entry, the static closure of its direct calls (issue #65): {entry: {"path": [address, ...,
     native name] to a thread-switching native or None, "indirect": indirect calls met, "unresolved": calls whose target
     is unknown}}. A hooked address whose name is a native replacement (any name of `hooks` except "decomp", "game",
     "oracle-block", "oracle-call", "extra") is a leaf: its guest body does not run; a decompiled function is followed

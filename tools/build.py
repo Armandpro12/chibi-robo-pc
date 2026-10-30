@@ -433,7 +433,7 @@ def signature_scan(dol: Path, layout: list[dict]) -> dict:
 
 def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: dict[int, str],
                            entries: list[tuple[int, str]]) -> None:
-    """Anomaly A17 (option A): refuses a decompiled function whose static closure of direct calls reaches a native
+    """Issue #65 (option A): refuses a decompiled function whose static closure of direct calls reaches a native
     replacement that can switch threads (runtime/core/hle/thread_switching_natives.txt). Decompiled code calls
     recompiled code in a nested run of the chassis with its own frame on the host stack (hle/native_irq.c
     gcrt_guest_call_interruptible): a thread switch cannot happen there. Indirect calls are not followed (lower
@@ -464,7 +464,7 @@ def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: d
                            "with an unapplied REL relocation, closure unknown")
     if refused:
         raise SystemExit(f"Decompiled functions refused for {version}: a callee can switch threads or wait for "
-                         "another thread, which a call from decompiled code into guest code cannot do (anomaly A17, "
+                         "another thread, which a call from decompiled code into guest code cannot do (issue #65, "
                          "runtime/core/hle/thread_switching_natives.txt); keep these rows disabled:\n  "
                          + "\n  ".join(refused))
     print(f"   {version}: {len(entries)} decompiled functions, no thread-switching callee in their direct calls "

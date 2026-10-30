@@ -5,7 +5,8 @@
 # there, so a callee that sleeps, yields or wakes a higher-priority thread would not behave as in the game (the run
 # stops when one falls due). Recompiled SDK functions that wait (VIWaitForRetrace, DVDRead, OSJoinThread,
 # OSLockMutex, OSWaitCond...) all end in one of these natives, which the closure finds through them.
-# One name per line (catalog names, runtime/core/hle/sdk_signatures.tsv); # starts a comment.
+# One name per line (the names of runtime/core/hle/sdk_signatures.tsv, or of hle/native_hooks.txt for a native that
+# the catalog does not sign, such as DVDCancelAllAsync: an entry no hook carries is harmless); # starts a comment.
 #
 # Switch directly: their replacement in hle/native_os.c calls select_thread, __OSReschedule (reschedule),
 # sleep_core, wakeup_core, end_thread or load_context (read in native_os.c, every entry point listed in

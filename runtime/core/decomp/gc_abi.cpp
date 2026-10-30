@@ -94,7 +94,7 @@ void install(GcrtCpu* g, const registration* table, unsigned count) {
     gc::init_guest_memory(g->state.ram, g->state.ram_size);
     gc::set_memory_fault_handler(&memory_fault);
     gc::set_guest_store_hook(&guest_store);
-    // Anomaly A3: a nested run that holds a due, unmasked interrupt for more than one guest second (a callee waiting
+    // Issue #52: a nested run that holds a due, unmasked interrupt for more than one guest second (a callee waiting
     // for an event with MSR[EE] = 0) stops with GCRT_STOP_HELD_INTERRUPT and a message, instead of running until its
     // block budget (hle/native_irq.c). Production and oracle builds alike.
     gcrt_guest_call_set_held_irq_limit(GCRT_TB_HZ);
@@ -331,7 +331,7 @@ u32 address_of_function(void (*direct)()) noexcept {
 namespace {
 // Nested run of the guest function at `address` for decompiled code. interruptible: the callee runs as plain guest
 // code (events delivered at its block boundaries with the caller's MSR[EE], the MSR[EE] it leaves kept): a call of
-// decompiled code into recompiled code (anomaly A17, option B). Otherwise MSR[EE] = 0 during the call and restored
+// decompiled code into recompiled code (issue #65, option B). Otherwise MSR[EE] = 0 during the call and restored
 // afterwards: the oracle's run of an original under comparison, the cross-check's second run of an original.
 bool nested_guest_run(GcrtCpu* g, u32 address, bool interruptible) noexcept {
     // Cycles of the generated block that reached the gateway (DolRecomp: `downcount -= n` at the start of each block,
@@ -340,7 +340,7 @@ bool nested_guest_run(GcrtCpu* g, u32 address, bool interruptible) noexcept {
     // run's last block charged a second time when the outer block returns.
     const s64 outer_downcount = g->state.downcount;
 #if defined(GC_DECOMP_ORACLE)
-    // Measurement of anomaly A20 (oracle builds only): -downcount on the timeline. It is the cycles still pending in
+    // Measurement of issue #68 (oracle builds only): -downcount on the timeline. It is the cycles still pending in
     // the outer block only when the gateway was reached by a hook inside generated code; reached from the chassis
     // (host_call before a block), it is the previous block's value, already charged.
     GCRT_TIMELINE("nested pending run %08X %lld", static_cast<unsigned>(address),

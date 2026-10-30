@@ -453,7 +453,7 @@ extern u64 guest_calls;
 // no comparison runs (gc_oracle.cpp).
 bool oracle_replay_call(GcrtCpu* g, u32 address, u32 argument_gprs, u32 argument_fprs) noexcept;
 bool oracle_is_replaying() noexcept;
-// Counter-test of anomaly A20 (measurement only): GCRT_DECOMP_ORACLE_FLUSH_PENDING=1, the cycles pending in the outer
+// Counter-test of issue #68 (measurement only): GCRT_DECOMP_ORACLE_FLUSH_PENDING=1, the cycles pending in the outer
 // generated block that reached a call hook of the compared original are charged before its callee runs (gc_oracle.cpp
 // call_hook) instead of when that block returns to the chassis (same total, same block boundaries).
 bool oracle_flush_pending() noexcept;
