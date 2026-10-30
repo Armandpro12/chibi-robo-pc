@@ -1,0 +1,110 @@
+# Synthetic cases of the decompilation oracle for hsd_texp_assign_alpha_konst (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Stage at S, constant node at S+80, allocation state at S+C0 (layout in the file).
+
+case hsd_texp_assign_alpha_konst assigned
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 1
+mem S+8F 1 2
+end
+
+case hsd_texp_assign_alpha_konst assigned_colour_register
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 1
+mem S+8E 1 6
+mem S+8F 1 0
+end
+
+case hsd_texp_assign_alpha_konst assigned_zero
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 1
+mem S+8E 1 0
+mem S+8F 1 0
+end
+
+case hsd_texp_assign_alpha_konst free_alpha_first
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 1
+mem S+8E 1 FF
+mem S+8F 1 0
+end
+
+case hsd_texp_assign_alpha_konst free_alpha_second
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CE 1 0
+mem S+CF 1 1
+end
+
+case hsd_texp_assign_alpha_konst colour_component_third
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CE 1 0
+mem S+CF 1 1
+mem S+D0 1 0
+mem S+D1 1 1
+mem S+D2 1 0
+mem S+D3 1 1
+mem S+CC 1 3
+mem S+CD 1 0
+mem S+CE 1 3
+mem S+CF 1 1
+mem S+D0 1 0
+mem S+D1 1 1
+end
+
+case hsd_texp_assign_alpha_konst nothing_free
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CC 1 3
+mem S+CD 1 1
+mem S+CE 1 3
+mem S+CF 1 1
+mem S+D0 1 3
+mem S+D1 1 1
+mem S+D2 1 3
+mem S+D3 1 1
+end
+
+case hsd_texp_assign_alpha_konst first_input
+r3 = S
+r4 = 0
+r5 = S+C0
+mem S+48 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CE 1 0
+mem S+CF 1 1
+mem S+D0 1 0
+mem S+D1 1 0
+end
+

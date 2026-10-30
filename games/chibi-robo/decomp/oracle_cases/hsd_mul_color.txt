@@ -1,0 +1,54 @@
+# Synthetic cases of the decompilation oracle for hsd_mul_color (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Colours a (r3), b (r4), result (r5); overlap cases put the result on an operand or one byte off it.
+
+case hsd_mul_color separate
+r3 = S
+r4 = S+4
+r5 = S+8
+mem S 4 FF80017F
+mem S+4 4 FFFF02FE
+end
+
+case hsd_mul_color result_is_a
+r3 = S
+r4 = S+4
+r5 = S
+mem S 4 C0408020
+mem S+4 4 80FF40FF
+end
+
+case hsd_mul_color result_is_b
+r3 = S
+r4 = S+4
+r5 = S+4
+mem S 4 C0408020
+mem S+4 4 80FF40FF
+end
+
+case hsd_mul_color overlap_before
+r3 = S
+r4 = S+10
+r5 = S+1
+mem S 4 F0E0D0C0
+mem S+4 4 B0000000
+mem S+10 4 FFFFFFFF
+end
+
+case hsd_mul_color overlap_after
+r3 = S+1
+r4 = S+10
+r5 = S
+mem S 4 F0E0D0C0
+mem S+4 4 B0000000
+mem S+10 4 FFFFFFFF
+end
+
+case hsd_mul_color zero_and_full
+r3 = S
+r4 = S+4
+r5 = S+8
+mem S 4 00FF00FF
+mem S+4 4 FFFF0000
+end
+

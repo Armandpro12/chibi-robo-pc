@@ -1,0 +1,28 @@
+# Synthetic cases of the decompilation oracle for hsd_lobj_get_active_by_index (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Index outside and inside the eight slots (the slots are the game's own global).
+
+case hsd_lobj_get_active_by_index negative
+r3 = FFFFFFFF
+end
+
+case hsd_lobj_get_active_by_index most_negative
+r3 = 80000000
+end
+
+case hsd_lobj_get_active_by_index eight
+r3 = 8
+end
+
+case hsd_lobj_get_active_by_index large
+r3 = 7FFFFFFF
+end
+
+case hsd_lobj_get_active_by_index zero
+r3 = 0
+end
+
+case hsd_lobj_get_active_by_index seven
+r3 = 7
+end
+

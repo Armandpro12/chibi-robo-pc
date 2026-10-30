@@ -1,0 +1,38 @@
+# Synthetic cases of the decompilation oracle for hsd_tobj_get_current_by_type (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Textures at S, S+50, S+A0: next at +8, flags at +4C (bits 0-3 coordinate source).
+
+case hsd_tobj_get_current_by_type second_matches
+area 100
+r3 = S
+r4 = 3
+mem S+8 4 S+50
+mem S+58 4 S+A0
+mem S+9C 4 FFFFFFF2
+mem S+A8 4 0
+mem S+EC 4 13
+end
+
+case hsd_tobj_get_current_by_type none_matches
+area 100
+r3 = S
+r4 = 7
+mem S+8 4 S+50
+mem S+58 4 0
+mem S+9C 4 6
+end
+
+case hsd_tobj_get_current_by_type no_next
+r3 = S
+r4 = 0
+mem S+8 4 0
+end
+
+case hsd_tobj_get_current_by_type first_after_matches_high_bits
+r3 = S
+r4 = 5
+mem S+8 4 S+50
+mem S+58 4 0
+mem S+9C 4 FFFFFFF5
+end
+

@@ -7,12 +7,12 @@
 # it makes, charged where they run); a whole number when every call costs the same, otherwise the mean to 4 decimals
 # (the gateway charges it in 1/256 cycle and carries the remainder: a mean is off by at most 1/512 cycle per call).
 # Numbers about the game's code only, like the size column of functions.tsv. Path-dependent originals (least and most
-# of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: d23-o1.
+# of one call differ) are listed below the table: their charge is a mean, exact only on average. Measured on: b1-o1.
 name	GGTP01	GGTE01
 mode_owner_is_mode_in_effect	9	9
-state_cell_is_state_active	6	6
+state_cell_is_state_active	6.0280	6.0318
 hsd_archive_get_public	12	12
-hsd_cobj_mtx_is_dirty	14.4341	14.2584
+hsd_cobj_mtx_is_dirty	14.2927	14.1122
 hsd_hermite_interpolate	24	24
 flag_set_test	5	5
 table_entry_at	6	6
@@ -37,28 +37,67 @@ hsd_cobj_set_viewportf	11	11
 hsd_cobj_get_projection_type	4	4
 hsd_cobj_set_flags	6	6
 hsd_cobj_clear_flags	6	6
-hsd_jobj_sort_anim	19.9114	19.9569
+hsd_jobj_sort_anim	18.7645	18.7245
 hsd_jobj_get_dobj	9	9
 hsd_end_render	1	1
-hsd_robj_get_by_type	8.9298	8.9170
+hsd_robj_get_by_type	8.9010	8.8917
 hsd_wobj_set_position	17	17
 hsd_class_init	2	2
 hsd_class_release	1	1
-hsd_texp_get_type	6.6029	6.6029
-hsd_texp_ref	14.3326	14.3326
-ps_read_count	6.1315	6.1345
+hsd_texp_get_type	6.6100	6.6100
+hsd_texp_ref	14.3160	14.3160
+ps_read_count	6.1765	6.1780
 ps_get_next_particle	2	2
 ps_attach_particle_app_srt	13	13
+hsd_tobj_get_current_by_type	13.6143	13.6274
+hsd_dobj_set_current	2	2
+hsd_state_get_num_tev_stages	2	2
+hsd_state_invalidate_tev_stage	3	3
+hsd_state_invalidate_tev_register	8	8
+hsd_state_invalidate_tex_coord_gen	3	3
+hsd_aobj_init_end_callback	4	4
+hsd_lobj_get_light_mask_diffuse	2	2
+hsd_lobj_get_light_mask_alpha	2	2
+hsd_lobj_get_light_mask_specular	2	2
+hsd_lobj_get_nb_active	2	2
+hsd_lobj_get_active_by_index	9	9
+hsd_cobj_get_current	2	2
+hsd_jobj_get_current	2	2
+hsd_get_current_render_pass	2	2
+hsd_request_gx_invalidate	4	4
+hsd_vi_is_reset_requested	7	7
+hsd_mul_color	59	59
+hsd_id_get_data_from_table	48.1961	48.3257
+hsd_texp_assign_color_reg	35.9226	35.9226
+hsd_texp_assign_color_konst	39.9371	39.9371
+hsd_texp_assign_alpha_konst	28.8632	28.8632
+ps_setup_tev_invalid_state	3	3
+ps_alloc_particle	29.0162	29.0153
+hsd_synth_is_stream_started	5	5
 # Path-dependent originals (charge exact only on average):
-#   hsd_cobj_mtx_is_dirty GGTP01: 7..18 cycles per call, mean 14.4341 over 29880 calls
-#   hsd_cobj_mtx_is_dirty GGTE01: 7..18 cycles per call, mean 14.2584 over 26951 calls
-#   hsd_jobj_sort_anim GGTP01: 2..74 cycles per call, mean 19.9114 over 8045 calls
-#   hsd_jobj_sort_anim GGTE01: 2..74 cycles per call, mean 19.9569 over 7979 calls
-#   hsd_robj_get_by_type GGTP01: 4..12 cycles per call, mean 8.9298 over 218970 calls
-#   hsd_robj_get_by_type GGTE01: 4..12 cycles per call, mean 8.9170 over 233338 calls
-#   hsd_texp_get_type GGTP01: 4..9 cycles per call, mean 6.6029 over 4168857 calls
-#   hsd_texp_get_type GGTE01: 4..9 cycles per call, mean 6.6029 over 4168857 calls
-#   hsd_texp_ref GGTP01: 9..20 cycles per call, mean 14.3326 over 187476 calls
-#   hsd_texp_ref GGTE01: 9..20 cycles per call, mean 14.3326 over 187476 calls
-#   ps_read_count GGTP01: 6..12 cycles per call, mean 6.1315 over 387918 calls
-#   ps_read_count GGTE01: 6..12 cycles per call, mean 6.1345 over 408609 calls
+#   state_cell_is_state_active GGTP01: 6..9 cycles per call, mean 6.0280 over 424065 calls
+#   state_cell_is_state_active GGTE01: 6..9 cycles per call, mean 6.0318 over 387629 calls
+#   hsd_cobj_mtx_is_dirty GGTP01: 7..18 cycles per call, mean 14.2927 over 39023 calls
+#   hsd_cobj_mtx_is_dirty GGTE01: 7..18 cycles per call, mean 14.1122 over 35201 calls
+#   hsd_jobj_sort_anim GGTP01: 2..75 cycles per call, mean 18.7645 over 15606 calls
+#   hsd_jobj_sort_anim GGTE01: 2..75 cycles per call, mean 18.7245 over 15712 calls
+#   hsd_robj_get_by_type GGTP01: 4..12 cycles per call, mean 8.9010 over 282368 calls
+#   hsd_robj_get_by_type GGTE01: 4..12 cycles per call, mean 8.8917 over 298546 calls
+#   hsd_texp_get_type GGTP01: 4..9 cycles per call, mean 6.6100 over 6658480 calls
+#   hsd_texp_get_type GGTE01: 4..9 cycles per call, mean 6.6100 over 6658480 calls
+#   hsd_texp_ref GGTP01: 9..20 cycles per call, mean 14.3160 over 303302 calls
+#   hsd_texp_ref GGTE01: 9..20 cycles per call, mean 14.3160 over 303302 calls
+#   ps_read_count GGTP01: 6..12 cycles per call, mean 6.1765 over 494131 calls
+#   ps_read_count GGTE01: 6..12 cycles per call, mean 6.1780 over 515638 calls
+#   hsd_tobj_get_current_by_type GGTP01: 8..22 cycles per call, mean 13.6143 over 45702620 calls
+#   hsd_tobj_get_current_by_type GGTE01: 8..22 cycles per call, mean 13.6274 over 46922726 calls
+#   hsd_id_get_data_from_table GGTP01: 28..124 cycles per call, mean 48.1961 over 6941 calls
+#   hsd_id_get_data_from_table GGTE01: 31..124 cycles per call, mean 48.3257 over 6941 calls
+#   hsd_texp_assign_color_reg GGTP01: 35..41 cycles per call, mean 35.9226 over 48651 calls
+#   hsd_texp_assign_color_reg GGTE01: 35..41 cycles per call, mean 35.9226 over 48651 calls
+#   hsd_texp_assign_color_konst GGTP01: 26..49 cycles per call, mean 39.9371 over 98430 calls
+#   hsd_texp_assign_color_konst GGTE01: 26..49 cycles per call, mean 39.9371 over 98430 calls
+#   hsd_texp_assign_alpha_konst GGTP01: 21..36 cycles per call, mean 28.8632 over 1425 calls
+#   hsd_texp_assign_alpha_konst GGTE01: 21..36 cycles per call, mean 28.8632 over 1425 calls
+#   ps_alloc_particle GGTP01: 29..30 cycles per call, mean 29.0162 over 80498 calls
+#   ps_alloc_particle GGTE01: 29..30 cycles per call, mean 29.0153 over 84095 calls

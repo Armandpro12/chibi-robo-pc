@@ -1,0 +1,15 @@
+# Synthetic cases of the decompilation oracle for ps_alloc_particle (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Previous particle at S (next at +0, pointing to S+40); bank in r4. The free list is the game's own global (a case takes the path its state gives).
+
+case ps_alloc_particle after_particle
+r3 = S
+r4 = 3
+mem S 4 S+40
+end
+
+case ps_alloc_particle head_of_bank
+r3 = 0
+r4 = F
+end
+

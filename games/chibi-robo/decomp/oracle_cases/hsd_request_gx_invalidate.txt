@@ -1,0 +1,16 @@
+# Synthetic cases of the decompilation oracle for hsd_request_gx_invalidate (format: runtime/core/decomp/gc_oracle.cpp, "Synthetic
+# cases"). Hand-written starting states with invented values (no game data).
+# Mask in r3 (the pending word is the game's own global, put back after each case).
+
+case hsd_request_gx_invalidate vertex_cache
+r3 = 1
+end
+
+case hsd_request_gx_invalidate textures
+r3 = 2
+end
+
+case hsd_request_gx_invalidate none
+r3 = 0
+end
+
