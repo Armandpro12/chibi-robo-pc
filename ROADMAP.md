@@ -236,11 +236,21 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   in production builds too). Production executables are unchanged today: none of the 64 enabled functions calls
   recompiled code (same HLE hooks; the five bench scenarios identical with the same guest cycle and tick counts, US
   and PAL). Not yet exercised in production, for the same reason: the nested delivery, the deferred-switch stop and
-  the one-second limit have only run in oracle builds. A residual of at most one tick (events one tick early, never
-  late) is explained in oracle builds: the caller's cycles before the call are charged after the callee (issue #68,
-  checked by charging them first, which gives the recompiled run's timeline exactly). That production has the same
-  shift is a hypothesis from reading the code; it may exceed one tick for larger callers, and a fix is planned
-  before the next batch.
+  the one-second limit have only run in oracle builds.
+- **Cycles charged before a call into recompiled code (issue #68)**: the recompiled game charges a function's cycles
+  before a call when the callee reaches its first block boundary; a decompiled function was charged after its body, so
+  during a recompiled callee the guest clock was a few cycles behind (5 on the test function: events up to one tick
+  early). Before each such call the gateway now charges the cycles still pending in the generated block that reached
+  the decompiled function, and, for each decompiled function on the C++ stack, its original's cycles from its entry up
+  to the call instruction along the path taken (call sites added to the path graph by `tools/decomp_path_cost.py`);
+  the end of the call charges only the rest, so the total is unchanged. On the test function (US and PAL) the oracle
+  build gives the recompiled run's timeline exactly, and so does the production path of that function (a test switch
+  of oracle builds, compared with the same build without it, on three scenarios); the oracle now also checks each
+  call's prefix against the original's cycles (0 different on 18 and 176 calls). A production build refuses a
+  function whose original makes calls without the graph that gives these prefixes. Production executables are
+  unchanged today (none of the 64 enabled functions makes a call): same HLE hooks, and the title-boot scenario ends at
+  the reference's exact cycle and tick counts in US and PAL. Not yet exercised in a production build, for the same
+  reason. Removed with the cycle clock at D3.
 - **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
   (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
   yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show

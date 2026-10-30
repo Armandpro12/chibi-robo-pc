@@ -22,6 +22,14 @@
 // table's mean cost is charged instead). The oracle compares the cost of the walk with the exclusive cycles the
 // original really spent, on every compared call (gc_oracle.cpp, path_checked / path_mismatches).
 //
+// Calls made before the end (issue #68): the original charges the cycles of its code before a call when its block
+// reaches the callee's first block boundary, so the callee's events see them; the gateway charges a decompiled
+// function after its body. When the decompiled code calls guest code (a nested run), the gateway therefore charges
+// first, for each decompiled function on the C++ stack, the cycles of its original from its entry up to the call
+// instruction along the path walked so far: the graph lists the original's call sites (`calls`), each with the cycles
+// charged after it until the next conditional branch (`after`) and that branch (`next`), so the prefix is the walk's
+// cycles minus `after` (gc_abi.cpp, charge_before_guest_call); the end of the call charges only the rest.
+//
 // Outside of a walk the markers record nothing: in a function without a graph (constant cost), or without the gateway
 // (native memory, D4; tests), they are plain conditions. They go at D3 with the cycle clock coupling: they then become
 // identity functions and can be removed by a script, the conditions stay as they are.
@@ -45,22 +53,43 @@ struct path_node {
     path_edge taken;
     path_edge not_taken;
 };
+// A call site of the original (bl, bcl, bcctrl, or a branch out of the function: a tail call).
+struct path_call {
+    std::uint32_t address; // guest address of the call instruction (messages only)
+    std::uint32_t target;  // guest address it calls; 0 for an indirect call (bcctrl), which matches any target
+    std::uint32_t after;   // cycles charged after the call instruction until `next` (0 for a tail call)
+    std::uint32_t next;    // the conditional branch every path from the call reaches next (index), or path_return
+};
 struct path_graph {
     path_edge entry;
     std::uint32_t node_count;
     const path_node* nodes;
+    std::uint32_t call_count = 0;
+    const path_call* calls = nullptr;
 };
 
 namespace detail {
 
 // Walk of the graph of the function that runs (one per call, on the C++ stack of the gateway; nested calls of other
 // decompiled functions have their own and restore this one). `steps` counts the outcomes recorded.
+// Calls before the end (see above): `outer` is the walk of the decompiled function that called this one by a plain C++
+// call (nullptr: called from guest code, or outermost); `address` is this function's guest address (its caller's call
+// site targets it); `charged` the cycles of the walk already charged before a guest call; `call_after` the `after` of
+// the call site last matched since the last outcome (call sites on one edge are matched in decreasing `after`, i.e. in
+// the original's order), `call_site` its index (path_no_call: none). A walk without graph (`graph` nullptr) is kept in
+// the chain: its function's prefix is unknown (counted by the gateway).
+inline constexpr std::uint32_t path_no_call = 0xFFFFFFFFu;
 struct path_walk {
     const path_graph* graph = nullptr;
     std::uint32_t node = path_return;
     std::uint64_t cycles = 0;
     std::uint32_t steps = 0;
     bool error = false; // an outcome came after the walk had reached a return
+    path_walk* outer = nullptr;
+    std::uint32_t address = 0;
+    std::uint64_t charged = 0;
+    std::uint32_t call_after = path_no_call;
+    std::uint32_t call_site = path_no_call;
 };
 #if !defined(GC_NATIVE_MEMORY)
 extern path_walk* current_path; // nullptr: no walk (function without a graph, or outside the gateway)
@@ -69,9 +98,11 @@ extern path_walk* current_path; // nullptr: no walk (function without a graph, o
 inline void path_step(bool branch_taken) noexcept {
 #if !defined(GC_NATIVE_MEMORY)
     path_walk* w = current_path;
-    if (!w)
+    if (!w || !w->graph)
         return;
     w->steps++;
+    w->call_after = path_no_call; // a new edge: its call sites are matched from its first one
+    w->call_site = path_no_call;
     if (w->node == path_return) {
         w->error = true;
         return;

@@ -65,6 +65,10 @@ void gcrt_hle_dispatch_counts(u64* calls, u64* misses);
  * at the entry of the function (direct calls) rather than from the chassis (indirect calls, returns).
  * Misses per address: GCRT_HLE_MISS_COUNTS=<file> (written at exit). */
 bool gcrt_hle_calls_at(u32 address, u64* calls, u64* hook_calls);
+/* True while the replacement that runs was reached by a hook compiled in generated code (its block's cycles not yet
+ * charged are then pending in downcount), false when reached from the chassis (downcount then holds the previous
+ * block's value, already charged) or outside any replacement. Nested dispatches save and restore it. */
+bool gcrt_hle_dispatch_from_hook(void);
 
 /* Replacement by address (game); `name` is used in the log. Refused (false, error on stderr) if another function is
  * already registered at `address`: the first registration stays. Registering the same function again is allowed. */
