@@ -1786,7 +1786,8 @@ given.
 | `0x801E4F30` | `0x801E782C` | `0xC` | stores -1 in global `0x8065BAB8` / `0x80662958` | `psSetupTevInvalidState` |
 | `0x801F28FC` | `0x801F52F0` | `0x14` | returns 1 if global `0x8065BBC4` / `0x80662A64` is not 0, else 0 | `HSD_SynthIsStreamStarted` |
 
-Layout facts checked by the oracle on these functions: in this game's TEV stage node the constant colour and alpha
+Layout facts checked by the oracle on these functions (offsets and sizes verified; the meaning given to each field is
+a label): in this game's TEV stage node the constant colour and alpha
 selections are the bytes at +0x20 and +0x21, the four colour inputs start at +0x24 and the four alpha inputs at
 +0x44, 8 bytes each (kind at +0, GX argument at +2, source node at +4); the constant node holds its component, register
 and component index as bytes at +0xC, +0xE and +0xF; the compilation state has two bytes per register (colour

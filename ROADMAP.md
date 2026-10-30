@@ -253,10 +253,11 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   `games/chibi-robo/decomp/guest_cost.tsv`, and the gateway charges it on each call, in 1/256 cycle with the
   remainder carried from call to call (no per-call rounding loss; a mean cost, quantized to 1/256 cycle, is off by at
   most 1/512 cycle per call), and only on that cycle clock. The cost, measured on the five reference scenarios and a
-  progression scenario, is exact for 34 of
-  the 40 functions, whose original always costs the same, and a mean for the other 6. A production build refuses an
+  progression scenario, was exact for 34 of
+  the first 40 functions, whose original always costs the same, and a mean for the other 6 (with batch 1B: exact for
+  52 of the 65 measured functions, a mean for 13). A production build refuses an
   enabled function without a measured cost. `tools/cycle_parity.py` compares the final cycle counter of each bench
-  scenario with the reference: with the costs charged, the ten bench runs (five scenarios, US and PAL) end 1,750 to 6,310
+  scenario with the reference: at that time, with the costs charged, the ten bench runs (five scenarios, US and PAL) ended 1,750 to 6,310
   cycles below it, well inside the 50,000-cycle tolerance but not at zero; the cause is not established (a hypothesis is
   the six mean costs). On that bench the images, the sound and the saves of the production executables match the
   references exactly in all five scenarios, in US and PAL. Normal play uses that cycle clock by default, so the
@@ -274,7 +275,9 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   leave the cycle counter equal to the build without decompiled functions at every host wait of the five scenarios,
   in US and PAL (it differed by -132 to +60 cycles), and images, sound and saves are unchanged; checked by a local
   test that fails without the patch. The guest time of the recompiled code itself changes slightly (-528 to +684
-  cycles at the end of a scenario), so the bench references are to be recorded again.
+  cycles at the end of a scenario), so the bench references were recorded again (2026-10-30, from a build without
+  decompiled functions): the production build with the 64 decompiled functions now ends every bench scenario at exactly
+  the reference's cycle and tick counts, in US and PAL.
 - **Cost by path** (D2, issue 59): the six functions whose original's cost depends on the path it takes are now
   charged, call by call, the exact cycles of that path instead of a mean. The build reads a graph of the original's
   conditional branches, with the cycles charged along each edge, from its instructions and from the code DolRecomp
@@ -290,7 +293,8 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   cycles on every path, including the paths no scenario takes. The oracle now also checks the path cost on its
   hand-written synthetic cases, which force those paths: every feasible path of the 18 loop-free originals, and every
   branch outcome of the two with a loop, is covered by a case, with 0 different in US and PAL (a test switch that
-  skews the cost by one cycle makes every check fail by exactly one). Removed with the cycle clock at D3.
+  skews the cost by one cycle makes every check fail by exactly one). With batch 1B, 26 of the 64 enabled functions
+  are charged by path, checked the same way. Removed with the cycle clock at D3.
 - **Overlapping structure copies** (D2, issue 67): a structure copy in the decompiled code copied field by field
   (load, store, load, store), while four originals load a whole block before storing it (camera scissor box, camera
   viewport, light colour, world object position). When the source starts before the destination and overlaps it,
@@ -312,7 +316,7 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   otherwise refuse at startup; a refused forced item is reported as not active.
 - **Measure**: `tools/decomp_progress.py` (per version and per module; partition in the `[decomp]` section of
   `games/chibi-robo/game.toml`) counts 3,772 functions to decompile (DOL 3,297 and 16 RELs 475; 1,910,996 bytes of
-  code): 40 verified (1.06 %; 1,532 bytes, 0.08 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
+  code): 64 verified (1.69 %; 3,388 bytes, 0.17 %; DOL 64 of 3,297, 1.94 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
