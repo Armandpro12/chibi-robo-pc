@@ -1506,7 +1506,8 @@ def main() -> int:
     if ns.require_fresh:
         stale = sum(c[dp.STALE_UNIT] for c in out["proof"]["versions"].values())
         rest = sum(c[dp.STALE_SHARED] + c[dp.UNKNOWN] for c in out["proof"]["versions"].values())
-        print(f"--require-fresh: {stale} stale-unit (refused); {rest} stale-shared or unknown (reported only)",
+        print(f"--require-fresh: {stale} stale-unit (refused); {rest} stale-shared or unknown (reported only); "
+              f"exit 0 is not a proof of freshness",
               file=sys.stderr)
         return 1 if stale else 0
     return 0

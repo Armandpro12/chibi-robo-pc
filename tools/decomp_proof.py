@@ -83,6 +83,7 @@ PARITY_IGNORES = [
     "indexed accesses (lwzx and the like): the offset is in a register",
     ".rodata loaded through `lis`, and any address or integer constant built from `lis`: its halves are hidden",
     "a field offset added to the low half of an address: it is hidden with it",
+    "a register that holds a high half on one path only: it stays hidden after the join",
 ]
 PROOF_LIMITS = [
     "fresh does not cover callees in other units, the cases of the oracle, or a proof revoked since",

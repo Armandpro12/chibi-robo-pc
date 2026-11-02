@@ -416,7 +416,7 @@ a batch.
   game. Over the 3,708 functions still to decompile, 449 differ between US and PAL (12.1 %, and 42.4 % of their code
   bytes: 809,236 of 1,907,608), 3,249 are the same and 10 cannot be compared; game code 438 of 2,549, HSD 0 of 684, RELs
   11 of 475. Both shares are a floor: `same` ignores callees and taken addresses, writable data, indexed accesses, values
-  reached through a `lis`, and a field offset folded into the low half of an address, and a wrong address on a function
+  reached through a `lis` on any path, and a field offset folded into the low half of an address, and a wrong address on a function
   with the same compared code reads `same` too. 42 of the 449 differ in size, which the table of functions cannot state
   with its single size column: enabling them takes a change of format as well as version conditions. The decision on
   keeping the US version at D3 rests on these figures. `--proof` tells a verified row
