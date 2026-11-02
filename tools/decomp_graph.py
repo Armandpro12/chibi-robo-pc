@@ -514,7 +514,8 @@ COV_HASH = 2654435761      # the probe's first slot for an address: ((address >>
 COV_LAST_SLOT_ODDS = 1e-6  # below this chance of seeing such a gap at the end of the table in a whole file: it was cut
 
 # Share of the function entries of a run that must be in the probe list of its version. Measured on 16 real runs, 8 by
-# version: 85.2 to 91.4 % in its own list, 0.9 to 1.1 % in the other version's list.
+# version: 85.2 to 91.4 % in its own list, 0.9 to 1.1 % in the other version's list. The thresholds are a hypothesis:
+# those runs are spent mostly in the DOL, and a run spent mostly in the RELs may lower the share (a loud refusal).
 PROBE_SHARE_REFUSED = 50.0
 PROBE_SHARE_WARNED = 80.0
 

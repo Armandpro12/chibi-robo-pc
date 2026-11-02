@@ -124,7 +124,8 @@ that version's own code, with the REL relocations applied.
   known to have run is a lower bound (tools/decomp_graph.py covered_blocks), so the true decision can be further along.
   Route status and flag:
     found / exhaustive             no shorter way exists on the evidence: no function that could shorten the path has
-                                   its address taken or is not measured, the function itself included
+                                   its address taken or is not measured, the function itself included (limit: callers in code
+                                   outside this version's inventory are not in the graph)
     found / incomplete frontier    a route, but an indirect call or a function not measured may give a shorter one
                                    (reasons listed), or the block sits behind a jump that is not followed
     pointer / incomplete frontier  no direct path, but a path with at least one step through an address reference: a
@@ -134,11 +135,14 @@ that version's own code, with the REL relocations applied.
     unknown / incomplete frontier  none of those, but the function or one of its callers has its address taken or is
                                    not measured: the absence is not established
     not-found / exhaustive         no direct path, and no address reference on any of its callers: dead on static
-                                   evidence (limit: an address computed in another way, tools/decomp_graph.py)
+                                   evidence (limits: an address computed in another way, tools/decomp_graph.py; callers in code
+                                   outside this version's inventory are not in the graph)
   Inputs (not in Git): the coverage probe's files, [decomp] coverage_hooks and [decomp.coverage_runs] of game.toml,
   paths relative to --root, {slug} and {id} replaced. Refused (code 2), never read as "nothing reached": a run of
-  another version (under half of its entries in the probe list of its version; under 80 %: a warning), a file that is
-  cut (limit: tools/decomp_graph.py, read_cov), an empty probe list. A function entry with 0 calls is not reached.
+  another version (under half of its entries in the probe list of its version; under 80 %: a warning; both thresholds
+  are a hypothesis, set on 16 runs spent mostly in the DOL), a file that is cut (limit: tools/decomp_graph.py, read_cov),
+  an empty probe list. A function entry with 0 calls is not reached. --closure alone ignores a faulty configured
+  coverage, which only adds a column; give --cov to have it checked.
 
 Closure (--closure): what decompiled code still depends on. Each function of a version is decompiled, replaced (in the
 build, oracle not passed), native (tools/build.py signature_scan: a superset of what the runtime replaces, see
