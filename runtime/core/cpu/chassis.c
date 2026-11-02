@@ -331,6 +331,7 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
                 if (g->trace && g->blocks < g->trace_limit)
                     fprintf(g->trace, "%08X %08X %08X\n", pc, cpu->lr, cpu->gpr[1]);
                 cpu->downcount = 0;
+                const u64 cycles_before = g->cycles;
                 if (profile) {
                     u64 t0 = gcrt_prof_now();
                     g->prof_in_code = 1;
@@ -355,7 +356,10 @@ GcrtStopReason gcrt_cpu_run(GcrtCpu* g, const GcrtRunLimits* limits) {
                 if (used > 0)
                     gcrt_cpu_add_cycles(g, (u64)used);
                 g->blocks++;
-                if (!cpu->exception && cpu->pc == pc && used <= 0 && g->stop == GCRT_STOP_NONE) {
+                /* Nothing ran: same pc and no cycle counted, neither left in downcount nor charged during the block. A
+                 * downcount of 0 is not enough: a replacement reached by a compiled hook charges the block's pending
+                 * cycles itself and may come back to the block's own entry (a loop around a call inside the range). */
+                if (!cpu->exception && cpu->pc == pc && g->cycles == cycles_before && g->stop == GCRT_STOP_NONE) {
                     g->stop = GCRT_STOP_NO_PROGRESS;
                     break;
                 }

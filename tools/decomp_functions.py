@@ -624,13 +624,15 @@ def _gpr_written(word: int) -> tuple[int, ...] | None:
 
 
 def _writes_cr(word: int) -> bool:
-    """True if `word` may change a CR field: compares, the record forms, CR logical instructions, mtcrf."""
+    """True if `word` may change a CR field: compares, the record forms, CR logical instructions, mcrf, mcrfs (63/64),
+    mcrxr (31/512), mtcrf, stwcx. (31/150, whatever its Rc bit). Checked against the instruction list of Dolphin's
+    PPCTables.cpp (tests/decomp/test_jump_tables.py)."""
     op, xo = word >> 26, (word >> 1) & 0x3FF
     if op in (10, 11, 13, 28, 29) or (op == 19 and xo in _CR_LOGICAL):
         return True
     if op in (20, 21, 23, 59, 63, 4):
-        return bool(word & 1) or (op == 63 and xo in (0, 32)) or (op == 4 and xo in (0, 32, 64, 96))
-    return op == 31 and (bool(word & 1) or xo in (0, 32, 144))
+        return bool(word & 1) or (op == 63 and xo in (0, 32, 64)) or (op == 4 and xo in (0, 32, 64, 96))
+    return op == 31 and (bool(word & 1) or xo in (0, 32, 144, 150, 512))
 
 
 def _is_branch(word: int) -> bool:
