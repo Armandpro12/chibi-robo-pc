@@ -281,7 +281,7 @@ exe_name = "chibi-robo.exe"
 
 [rea]
 # tools/rea.py (optional): REA (Reverse Engineer Anything, https://github.com/morluto/rea, MIT License) on the
-# main executable, converted to an ELF by tools/dol2elf.py. REA 6.8.0 also admits a DOL by
+# main executable and the REL modules, converted to an ELF by tools/dol2elf.py. REA 6.8.0 also admits a DOL by
 # `--target-format gamecube-dol`; our ELF route is kept because it has the symbols, r13/r2 and the Gekko language.
 # Ghidra language passed as REA_GHIDRA_LANGUAGE_ID: the Gekko/Broadway language of the GameCubeLoader extension
 # (Ghidra/Extensions/GameCubeLoader, installed by tools/bootstrap.py), which decodes the paired-single instructions.
@@ -292,6 +292,9 @@ language = "PowerPC:BE:32:Gekko_Broadway"
 # executable of both versions it leaves the functions, their ranges and their calls unchanged; only the stack
 # variables differ: decompiler names (auStack_28 for local_28), and no stack references or locals in `function`.
 disabled_analyzers = ["Stack"]
+# The REL modules of [code] rel_dir go in the ELF too, at the addresses of a recompiled build ([recomp] rel_base):
+# `--no-rels` of tools/rea.py leaves them out.
+rels = true
 # Small-data bases (r13, r2) given to Ghidra through the ELF: "auto" scans them from the entry point and its
 # first calls (found: GGTE01 r13 = 0x80661EC0, r2 = 0x80663D40; GGTP01 r13 = 0x80668D40, r2 = 0x8066ABE0),
 # "none" leaves them unset, "0x...,0x..." gives r13,r2 by hand. See tools/dol2elf.py.

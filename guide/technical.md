@@ -197,7 +197,10 @@ the small-data registers, and by default without paired singles. The ELF route h
 
 - `tools/dol2elf.py` converts the extracted DOL (plus the version's symbol map) into such an ELF, byte for byte,
   under `generated/<game>/<ID>/rea/` (derived from your copy of the game: never committed). It checks the result
-  against the DOL, and with `llvm-readelf` when available;
+  against the DOL, and with `llvm-readelf` when available. The REL modules go in as well, relocated, from
+  `0x81800000` as in a recompiled build (`--no-rels` of `tools/rea.py` leaves them out): they differ from their files
+  only at the relocated words, and their functions are named `<module>.<name>`, for example
+  `ahk.__destroy_global_chain`;
 - `tools/rea.py` runs REA in a Linux container (Docker), with the Ghidra of `external/ghidra` mounted read-only.
   The container has no network, no Linux capabilities and runs as a non-root user. The image is built from
   `tools/rea/Dockerfile` (REA 6.8.0, Node.js 22, JDK 21): the base image, Node.js and REA are pinned; REA's
@@ -233,6 +236,6 @@ took 2.5 to 6 minutes depending on the load, almost all of it the import, and th
 The output folder must not exist yet, or pass `--resume`. Pseudo-C helps reading; the assembly remains the reference.
 
 Limits: each command-line call imports the program again (about 2 minutes); the MCP server keeps it open between
-questions. The export covers what Ghidra sees as a function: 301 of the 4,506 known functions of GGTE01 have no
-file, 0.63% of the code, most of them small functions only reached through pointers. Only the main executable is
-converted, not the REL modules.
+questions. The export covers what Ghidra sees as a function: 295 of the 4,506 known functions of the GGTE01 main
+executable have no file, 0.61% of its code, most of them small functions only reached through pointers, and
+10 of the 495 functions of the REL modules, 276 bytes.
