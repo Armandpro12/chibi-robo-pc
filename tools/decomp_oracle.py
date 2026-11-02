@@ -21,7 +21,18 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
   py -3 tools/decomp_oracle.py replay --cases FILE.jsonl [...]      (replay of any case file)
   py -3 tools/decomp_oracle.py mutate --label L [--versions ...] [--functions a,b] [--operators ...]
         [--prediction NOTE] [--drop-synthetic LABEL,...] [--list]   (mutants, tools/decomp_mutants.py)
+  py -3 tools/decomp_oracle.py cases --grid [--versions ...] [--functions a,b] [--out build/oracle-grid] [--list]
+                                                                    (value grids, tools/decomp_grid.py)
+  py -3 tools/decomp_oracle.py run --exe ... --label G --grid build/oracle-grid --scenarios new-game
+  py -3 tools/decomp_oracle.py report --label L --grid-label G
   py -3 tools/decomp_oracle.py hash                                 (hashes the results are tied to)
+  py -3 tools/decomp_oracle.py labels [--grid DIR]                  (labels that fit the current hashes, newest first)
+
+`run --grid DIR` gives the executable the generated cases of DIR/<ID> instead of the hand-written ones: such a label has
+its own hash of the cases, so it never promotes; `report --grid-label G` reads it apart (differences by function and
+kind), and its cases count for the required kinds. An open difference refuses that function and only that one, and the
+exit code is 3; a sorted difference refuses nothing; a grid is not required. The report warns about a required kind no
+stored case shows (tools/decomp_grid.py); a warning, never a refused promotion.
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
 next to the results: executable and its SHA-1, hash of the sources and of the synthetic cases, scenarios, bench
@@ -155,20 +166,20 @@ def synthetic_dir(game_cfg: dict) -> Path:
     return game_cfg["_dir"] / "decomp" / "oracle_cases"
 
 
-def synthetic_hash(game_cfg: dict) -> str:
-    """SHA-1 of the synthetic cases (every .txt of games/<game>/decomp/oracle_cases, line ends normalized)."""
+def synthetic_hash(game_cfg: dict, folder: Path | None = None) -> str:
+    """SHA-1 of the synthetic cases (every .txt of games/<game>/decomp/oracle_cases, or of `folder`, line ends
+    normalized)."""
     import hashlib
     h = hashlib.sha1()
-    folder = synthetic_dir(game_cfg)
-    for path in synthetic_files(game_cfg):
+    for path in synthetic_files(game_cfg, folder):
         h.update(path.name.encode() + b"\0" + path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
     return h.hexdigest()
 
 
-def synthetic_files(game_cfg: dict) -> list[Path]:
+def synthetic_files(game_cfg: dict, folder: Path | None = None) -> list[Path]:
     """The .txt files of the synthetic cases, sorted by name as a case-sensitive string (the order of the oracle
     executable's std::sort, the same on Windows and POSIX)."""
-    folder = synthetic_dir(game_cfg)
+    folder = folder or synthetic_dir(game_cfg)
     return sorted(folder.glob("*.txt"), key=lambda p: p.name) if folder.is_dir() else []
 
 
@@ -235,11 +246,15 @@ def cmd_run(args) -> int:
             raise SystemExit(f"{out} already holds results: one label per run (results of several builds or runs "
                              f"would be added up); choose another --label")
         exes[version] = exe
-    synth = synthetic_dir(game_cfg)
     code = 0
     for version in versions:
         exe = exes[version]
         out = oracle_dir(bench, game, args.label, version)
+        synth = synthetic_dir(game_cfg)
+        if args.grid:
+            synth = Path(args.grid).resolve() / version
+            if not any(synth.glob("grid_*.txt")):
+                raise SystemExit(f"--grid: no generated case in {synth} (tools/decomp_oracle.py cases --grid)")
         out.mkdir(parents=True, exist_ok=True)
         own = {"GCRT_DECOMP_ORACLE_OUT": str(out)}
         if not args.no_synthetic and synth.is_dir():
@@ -259,7 +274,8 @@ def cmd_run(args) -> int:
         info = {"version": version, "exe": str(exe), "exe_sha1": sha1_file(exe), "scenarios": scenarios,
                 "bench_returncode": rc, "sources": df.oracle_sources_hash(game_cfg),
                 "dolrecomp": df.dolrecomp_state(),
-                "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg),
+                "synthetic": None if args.no_synthetic or not synth.is_dir() else synthetic_hash(game_cfg, synth),
+                "grid": bool(args.grid),
                 # GCRT_* variables passed to tools/ab.py (inherited, then this tool's, then --env: ab.py merges them
                 # in this order over its own environment); tools/run.py adds its own (GCRT_USER_DIR, ...) below.
                 "gcrt_env": {k: v for k, v in {**env_inherited, **own, **env_cli}.items()
@@ -690,6 +706,61 @@ def same_folders(bench: Path, game: str, labels: list[str], versions: list[str])
     return out
 
 
+def fitting_labels(bench: Path, game: str, game_cfg: dict, versions: list[str], synthetic: str) -> list[str]:
+    """Labels whose results fit the current code and these cases, newest first. Chosen on what went IN, never on what
+    came out: results of another hash stay out, but a fitting run with a difference stays in, so that a regression is
+    not skipped for an older label. Fit means no problem for read_results, the rule of `report`."""
+    root = oracle_dir(bench, game, "x", "x").parent.parent
+    sources = df.oracle_sources_hash(game_cfg)
+    current = {"sources": sources, "synthetic": synthetic}
+    found: list[tuple[float, str]] = []
+    for folder in root.iterdir() if root.is_dir() else ():
+        infos = [folder / v / f"run-{v}.json" for v in versions]
+        if not all(p.exists() for p in infos):
+            continue
+        read = [json.loads(p.read_text(encoding="utf-8")) for p in infos]
+        if all(i.get("sources") == sources and i.get("synthetic") == synthetic for i in read):
+            found.append((max(p.stat().st_mtime for p in infos), folder.name))
+    functions = df.read_table(game_cfg)
+    kinds = {f.name: f.kind for f in functions}
+    out = []
+    for _, label in sorted(found, reverse=True):
+        seen = new_seen()
+        clean = True
+        for v in versions:
+            addresses = {f.name: f.addresses[v] for f in functions if f.module == "dol" and
+                         f.addresses.get(v) is not None}
+            clean &= not read_results(bench, game, [label], v, current, seen, addresses, kinds)[1]
+        if clean:
+            out.append(label)
+    return out
+
+
+def cmd_labels(args) -> int:
+    game = game_name(args.game)
+    game_cfg = tc.load_game(game)
+    bench = Path(args.bench_root).resolve() if args.bench_root else main_checkout()
+    versions = versions_of(game_cfg, args.versions)
+    if args.grid:
+        hashes = {synthetic_hash(game_cfg, Path(args.grid).resolve() / v) for v in versions}
+        if len(hashes) != 1:
+            raise SystemExit(f"{args.grid}: the versions have different grids: no label can fit them all")
+        synthetic = hashes.pop()
+    else:
+        synthetic = synthetic_hash(game_cfg)
+    labels = fitting_labels(bench, game, game_cfg, versions, synthetic)
+    for label in labels:
+        print(label)
+    if not labels:
+        print(f"no oracle result fits sources {df.oracle_sources_hash(game_cfg)} and synthetic {synthetic} in every "
+              f"version of {', '.join(versions)}: build with tools/build.py --oracle --tag <T>, then run "
+              f"tools/decomp_oracle.py run", file=sys.stderr)
+    return 0
+
+
+EXIT_GRID_OPEN = 3  # `report --grid-label`: a grid difference is open, or the grid was not read in full
+
+
 def cmd_report(args) -> int:
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
@@ -779,6 +850,19 @@ def cmd_report(args) -> int:
             ok_all = False
             reasons.append("not every version was read (--versions)")
         proposed[f.name] = (ok_all, reasons)
+    import decomp_grid
+    grid_labels = [x for x in args.grid_label.split(",") if x]
+    grid = None
+    if grid_labels:
+        # A grid given here can only refuse: an open difference refuses its function, and only that one (a difference
+        # the triage table sorts refuses nothing). Read before the status lines, so that they tell the truth.
+        triage = Path(args.grid_triage) if args.grid_triage else game_cfg["_dir"] / "decomp" / "grid_triage.tsv"
+        grid = decomp_grid.report_grid(sys.modules[__name__], bench, game, grid_labels, versions,
+                                       decomp_grid.read_triage(triage), current["sources"])
+        for (version, name), count in sorted(grid.open_differences.items()):
+            if name in proposed:
+                proposed[name] = (False, [*proposed[name][1], f"{version}: {count} open grid differences"])
+    exit_code = EXIT_GRID_OPEN if grid and (grid.open_differences or grid.unread) else 0
     print()
     for f in functions:
         ok, reasons = proposed[f.name]
@@ -795,10 +879,16 @@ def cmd_report(args) -> int:
         print(f"{f.name}: {state}")
     for p in problems:
         print(f"WARNING: {p}")
+    # Required kinds: information only, printed whatever the promotion says.
+    if not args.no_kinds:
+        decomp_grid.report_kinds(sys.modules[__name__], game_cfg, bench, game, labels + grid_labels, versions)
     if not args.promote:
-        return 0
+        return exit_code
     if problems:
         print(f"--promote refused: {len(problems)} problems with the results (WARNING lines above)")
+        return 2
+    if grid and grid.unread:
+        print(f"--promote refused: the grid was not read in full: {'; '.join(grid.unread)}")
         return 2
     promote = [f.name for f in functions if f.kind != "listed" and proposed[f.name][0]]
     if not promote:
@@ -808,10 +898,10 @@ def cmd_report(args) -> int:
             f"{args.max_not_compared}, labels {', '.join(labels)}")
     if args.dry_run:
         print(f"--promote --dry-run: would set {', '.join(promote)} to verified (nothing written; {rule})")
-        return 0
+        return exit_code
     write_status(game_cfg, promote, versions)
     print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
-    return 0
+    return exit_code
 
 
 def weaker_thresholds(args) -> list[str]:
@@ -1030,6 +1120,11 @@ def cmd_mutate(args) -> int:
     return decomp_mutants.run(args, sys.modules[__name__])
 
 
+def cmd_cases(args) -> int:
+    import decomp_grid
+    return decomp_grid.cases_command(args, sys.modules[__name__])
+
+
 # --- cost ------------------------------------------------------------------------------------------------------------
 
 GUEST_COST_HEADER = """\
@@ -1219,6 +1314,8 @@ def main() -> int:
                         "oracle executable, in order, after the bench: more real starting states")
     r.add_argument("--no-synthetic", action="store_true",
                    help="do not run the synthetic cases (the report then refuses the promotion)")
+    r.add_argument("--grid", metavar="DIR", help="run the generated cases of DIR/<ID> (cases --grid) instead of the "
+                                                 "hand-written ones: results for report --grid-label, never promoted")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
     k.add_argument("--label", required=True, help="one or more labels, comma-separated (results are added up)")
     k.add_argument("--versions")
@@ -1231,7 +1328,27 @@ def main() -> int:
     k.add_argument("--promote", action="store_true",
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
+    k.add_argument("--grid-label", default="", metavar="L,...",
+                   help="labels of grid runs (run --grid): an open difference refuses its function (exit code 3), a "
+                        "sorted one nothing; reported apart, their cases count for the required kinds, "
+                        "they never promote")
+    k.add_argument("--grid-triage", metavar="FILE",
+                   help="sorted differences of the grid (default games/<game>/decomp/grid_triage.tsv): "
+                        "<function> <label regular expression> <class> <registers> <writes> <reason>")
+    k.add_argument("--no-kinds", action="store_true", help="skip the required-kinds warnings (they read the disc)")
+    g = sub.add_parser("cases", help="generate value grids for the leaves of the table (tools/decomp_grid.py)")
+    g.add_argument("--grid", action="store_true", help="required: edge values by function shape")
+    g.add_argument("--versions")
+    g.add_argument("--functions", help="comma-separated table names (default: every row of --status)")
+    g.add_argument("--status", default="verified", help="status of the rows (default %(default)s)")
+    g.add_argument("--out", help="folder under build/ (default build/oracle-grid); files <out>/<ID>/grid_<function>.txt")
+    g.add_argument("--list", action="store_true", help="print the counts, write nothing")
+    g.add_argument("--verbose", action="store_true")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
+    b = sub.add_parser("labels", help="labels whose results fit the current sources and cases, newest first (chosen on "
+                                      "the hashes, never on the outcome); none: a message on stderr")
+    b.add_argument("--versions")
+    b.add_argument("--grid", metavar="DIR", help="fit the generated cases of DIR/<ID> instead of the hand-written ones")
     c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
     c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
     c.add_argument("--versions")
@@ -1273,7 +1390,7 @@ def main() -> int:
     m.add_argument("--keep", action="store_true", help="keep each mutant's folder")
     args = p.parse_args()
     return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash,
-            "cost": cmd_cost, "mutate": cmd_mutate}[args.cmd](args)
+            "cost": cmd_cost, "mutate": cmd_mutate, "cases": cmd_cases, "labels": cmd_labels}[args.cmd](args)
 
 
 if __name__ == "__main__":

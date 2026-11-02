@@ -211,6 +211,31 @@ a batch.
   bug, and that bug was a read after a write, which the oracle's final bytes do not show as an order of stores. The
   operator for that shape was defined after the failure, so its results on that bug prove nothing. Each batch of the
   trial writes a figure before the run; two batches in a row with no real gap and the tool is dropped.
+- **Value grids** (`tools/decomp_oracle.py cases --grid`, `tools/decomp_grid.py`; never in a build, generated under
+  `build/`, never tracked): the machine code of each original gives the shape of a leaf function, and the shape gives
+  the kinds of case it requires: null for a pointer tested first, N-1, N and N+1 for a compare with N, plus or minus
+  zero, denormals, infinities and quiet and signaling NaNs for a float, and overlap before and after for two pointers
+  with a store. The values are invented or come from the compare instructions, on top of the hand-written cases. The
+  grid applies to 35 of the 64 verified functions, with the same 7,741 cases in US and PAL. No difference from the
+  originals on any value a single-precision load can give, nor on any overlap, bound or null. The only 36 differences
+  are NaNs that only a double can hold, in one function whose three direct callers load those arguments with single
+  precision: an impossible state, listed apart with its evidence (`games/chibi-robo/decomp/grid_triage.tsv`). A line of
+  that table names what may differ (here two registers and their low 29 bits, on a NaN in both versions, nothing
+  written), so anything else on the same case is reported as a real difference; a difference planted in a real
+  executable on those cases was. The report also counts the real calls left uncompared, not only the cases. With the
+  hand-written overlap cases removed, the grid alone kills the 12 mutants those cases killed, chosen without reading
+  the list of mutants; with them, it kills none of the 67 survivors: 43 are equivalent, and the 24 open ones are not
+  proven out of its reach. The prediction written before the measure was wrong on two figures: about 2,000 cases and
+  4 survivors killed were expected, 7,741 and 0 were measured. `report` warns about a required kind that no case
+  shows: 3 functions today, for states a generated case does not reach (earlier registers already taken). A warning
+  only: refusing a promotion for that would change what "verified" means, and that is the owner's call. A grid run
+  takes no time that can be told from the noise of one scenario (about 90 s in US), and adds about 30 MB of local
+  results per scenario. Grids run under their own label, so they never change the hash of the cases and never promote,
+  but a grid given to `report` can refuse: an open difference refuses a promotion of that function, and only that one,
+  and the exit code is non-zero; a sorted difference refuses nothing. It blocks a new promotion but does not demote a
+  function already verified. A grid is not required, so a report without one
+  checks none of this: making it mandatory is the owner's call too. Paired singles have a shape, but no paired-single
+  function has run on a grid yet.
 - **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
