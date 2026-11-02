@@ -10,13 +10,13 @@
 #
 # Pinned: base image by digest (Eclipse Temurin JDK 21 on Ubuntu 24.04, Ghidra 12.1.4
 # requires a Java 21 JDK, GettingStarted.md "Minimum Requirements"), Node.js by version and SHA-256 (values from
-# https://nodejs.org/dist/v22.23.3/SHASUMS256.txt; rea-agents 6.7.0 declares
-# "engines": {"node": "^22.19.0 || ^24.11.0 || >=26.0.0"}), REA by exact version.
+# https://nodejs.org/dist/v22.23.4/SHASUMS256.txt; rea-agents 6.8.0 declares
+# "engines": {"node": "^22.23.4 || ^24.22.1 || >=26.12.1"}), REA by exact version.
 # Not pinned: the transitive npm dependencies of rea-agents are resolved by `npm install -g` at build time from
 # the version ranges their packages declare (no lockfile is used), and the apt packages of the build stage come
 # from the Ubuntu archive of the day. So two builds can differ: the image is not bit-reproducible.
 #
-# Supply chain: `npm install --ignore-scripts` runs no install script of any package. In rea-agents 6.7.0 the
+# Supply chain: `npm install --ignore-scripts` runs no install script of any package. In rea-agents 6.8.0 the
 # only one is that of the optional `frida` package (dynamic instrumentation, not used by the Ghidra lane), which
 # is therefore left without its native binding. Two stages: Node.js is downloaded and REA installed in a build
 # stage (curl, xz-utils); the final stage only copies /opt/node, and removes the base image's own download tools
@@ -33,10 +33,10 @@ ARG BASE=eclipse-temurin:21-jdk-noble@sha256:107215954359f1ab0be058a247d7c64ed6e
 
 FROM ${BASE} AS build
 
-ARG REA_VERSION=6.7.0
-ARG NODE_VERSION=22.23.3
-ARG NODE_SHA256_X64=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de
-ARG NODE_SHA256_ARM64=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f
+ARG REA_VERSION=6.8.0
+ARG NODE_VERSION=22.23.4
+ARG NODE_SHA256_X64=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce
+ARG NODE_SHA256_ARM64=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
 ARG TARGETARCH=amd64
 
 RUN apt-get update \

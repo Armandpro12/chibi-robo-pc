@@ -108,3 +108,72 @@ mem S+D0 1 0
 mem S+D1 1 0
 end
 
+
+# Mutants of AssignAlphaKonst found by tools/decomp_oracle.py mutate. The two bounds of the assigned register:
+# .relational.f618a30e, .constant.ec802505, .constant.c96737bb.
+case hsd_texp_assign_alpha_konst assigned_first_colour_register
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 1
+mem S+8E 1 4
+mem S+8F 1 0
+end
+
+case hsd_texp_assign_alpha_konst assigned_last_konst_register
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 1
+mem S+8E 1 3
+mem S+8F 1 1
+end
+
+# .constant.7e17b63e: only the alpha of register 3 is free.
+case hsd_texp_assign_alpha_konst free_alpha_last
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CF 1 1
+mem S+D1 1 1
+end
+
+# .constant.d6bd992e, .constant.c70bb1fb, .swapped_writes.8c7f5b23: register 0 with its last colour component free and
+# register 1 with a free one: the first turn takes component 2, which differs from the node's old idx.
+case hsd_texp_assign_alpha_konst colour_component_last_of_first_register
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CC 1 2
+mem S+CF 1 1
+mem S+D1 1 1
+mem S+D3 1 1
+end
+
+# .constant.fde1565d: only register 3 has a free colour component.
+case hsd_texp_assign_alpha_konst colour_component_last_register
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+50 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+CC 1 3
+mem S+CE 1 3
+mem S+CF 1 1
+mem S+D0 1 3
+mem S+D1 1 1
+mem S+D2 1 1
+mem S+D3 1 1
+end

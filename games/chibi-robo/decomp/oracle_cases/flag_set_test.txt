@@ -10,3 +10,14 @@ r6 = 0F0F0F0F
 mem S+228 4 FFFF0000
 mem S+22C 4 0000FFFF
 end
+
+# Mutant flag_set_test.constant.9691cf8b (high word shifted one bit too far): "high_and_low" cannot tell it, its masked
+# bits repeat. One bit of the high word, the whole high mask.
+case flag_set_test high_single_bit
+area 240
+r3 = S
+r5 = FFFFFFFF
+r6 = 0
+mem S+228 4 00010000
+mem S+22C 4 0
+end
