@@ -465,12 +465,9 @@ def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: d
     reach = closure_reach(dol, layout, hooks, [a for a, _ in entries])
     refused = []
     partial = []
-    indirect = 0
-    tables = 0
+    tables = 0  # bctr followed by the complete functions, the ones the last line speaks of (a table counts per function)
     for a, name in entries:
         r = reach[a]
-        indirect += r["indirect"]
-        tables += r["tables"]
         if r["path"]:
             refused.append(f"{name} at {a:08X} reaches {r['path'][-1]}: {' -> '.join(r['path'])}")
         elif r["unresolved"]:
@@ -479,20 +476,22 @@ def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: d
         elif r["closure"] != "complete":
             partial.append(f"{name} at {a:08X}: {r['closure']}, unknown at "
                            f"{', '.join(f'{x:08X}' for x in r['sites'][:4])}{' ...' if len(r['sites']) > 4 else ''}")
+        else:
+            tables += r["tables"]
     if refused:
         raise SystemExit(f"Decompiled functions refused for {version}: a callee can switch threads or wait for "
                          "another thread, which a call from decompiled code into guest code cannot do (issue #65, "
                          "runtime/core/hle/thread_switching_natives.txt); keep these rows disabled:\n  "
                          + "\n  ".join(refused))
-    followed = f", {tables} jump table(s) followed" if tables else ""
+    followed = f", {tables} jump table(s) followed, counted per function" if tables else ""
     if partial:
         print(f"   WARNING: {version}: {len(partial)} of {len(entries)} decompiled functions have a partial closure: "
               f"whether a callee waits is unknown past these sites (not refused):\n     " + "\n     ".join(partial))
         print(f"   {version}: the other {len(entries) - len(partial)} decompiled functions: complete closure, no "
               f"thread-switching callee{followed}")
     else:
-        print(f"   {version}: {len(entries)} decompiled functions, no thread-switching callee in their direct calls "
-              f"({indirect} indirect call(s) not followed){followed}")
+        print(f"   {version}: {len(entries)} decompiled functions: complete closure, no thread-switching "
+              f"callee{followed}")
 
 
 def closure_report(game: str, game_cfg: dict, version: str, observed: dict[int, set[int]]) -> list[str]:

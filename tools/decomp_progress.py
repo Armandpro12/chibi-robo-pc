@@ -19,7 +19,8 @@ Usage:
                       module of game.toml: --version and --module only filter what is printed.
   --routes            planning view, per version (section "Routes" below). Printed instead of the progress table;
                       with --json the view is added to the report. Needs the coverage of that version.
-  --closure           planning view, per version (section "Closure" below). Same printing rule.
+  --closure           planning view, per version (section "Closure" below). Same printing rule. Not
+                      decomp_oracle.py report --closure, which says of each enabled function whether a callee can wait.
   --function          limit the rows of --routes to these functions (name, reference address, or address in a
                       version); the figures stay those of the whole game
   --top               length of the rankings of --routes and --closure (default 20)
@@ -1374,7 +1375,8 @@ def main() -> int:
     ap.add_argument("--map-dir", type=Path, help="folder of the symbol maps (<ID>.map, <ID>-rel.tsv) to read instead")
     ap.add_argument("--require-complete", action="store_true", help="exit 1 unless everything is decompiled")
     ap.add_argument("--routes", action="store_true", help="routes to the functions no run reached")
-    ap.add_argument("--closure", action="store_true", help="what decompiled code still depends on")
+    ap.add_argument("--closure", action="store_true", help="what decompiled code still depends on (not "
+                    "decomp_oracle.py report --closure: whether a callee of an enabled function can wait)")
     ap.add_argument("--function", help="comma-separated: limit the rows of --routes (name or address)")
     ap.add_argument("--top", type=int, default=20, help="length of the rankings (default 20)")
     ap.add_argument("--cov", action="append", default=[], help="ID:NAME:<cov.tsv or its folder>, repeatable")

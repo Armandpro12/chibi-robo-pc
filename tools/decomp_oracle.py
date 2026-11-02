@@ -434,8 +434,16 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                 name = rec.get("function")
                 a = agg.setdefault(name, new_aggregate(rec))
                 if kind in ("case", "mismatch") and not rec.get("synthetic"):  # a synthetic case's targets are invented
-                    for call in rec.get("calls", []):
-                        a.setdefault("call_targets", {}).setdefault(int(call[0], 16), set()).add(int(call[1], 16))
+                    calls = rec.get("calls", [])
+                    for call in calls if isinstance(calls, list) else [calls]:
+                        try:
+                            if not isinstance(call, list):  # a string would index into two hex digits
+                                raise TypeError
+                            site, target = int(call[0], 16), int(call[1], 16)
+                        except (TypeError, IndexError, ValueError):
+                            problems.append(f"{where}: {name}: malformed call record {call!r:.60}")
+                            continue
+                        a.setdefault("call_targets", {}).setdefault(site, set()).add(target)
                 if kind == "summary":
                     summaries += 1
                     expected = (addresses or {}).get(name)
@@ -1234,8 +1242,10 @@ def main() -> int:
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
     k.add_argument("--label", required=True, help="one or more labels, comma-separated (results are added up)")
     k.add_argument("--closure", action="store_true",
-                   help="also the call closure of each enabled function, with the targets seen at its indirect sites "
-                        "(needs the extracted disc; about 20 s per version)")
+                   help="also the call closure of each enabled function: is a callee that waits ruled out (complete) "
+                        "or unknown (partial), with the targets seen at its indirect sites; not decomp_progress.py "
+                        "--closure, which is what decompiled code still depends on (needs the extracted disc; about "
+                        "20 s per version)")
     k.add_argument("--versions")
     k.add_argument("--min-cases", type=int, default=DEFAULT_MIN_CASES)
     k.add_argument("--saturation", type=int, default=DEFAULT_SATURATION,

@@ -258,8 +258,8 @@ a batch.
   decompiled caller is on the host stack): one that falls due is counted and the game stops with a clear message
   (none in these runs). The build refuses a decompiled function whose calls lead to an SDK function that can
   switch threads (list in `runtime/core/hle/thread_switching_natives.txt`; proven jump tables are followed, and a
-  function with an indirect call in the way is listed as `partial`, never as free of callees that wait: all 64
-  enabled functions are `complete` in US and PAL), and a
+  function with an indirect call in the way is listed as `partial`, a warning and not a refusal, never as free of
+  callees that wait: all 64 enabled functions are `complete` in US and PAL), and a
   nested call that keeps an interrupt waiting for more than one guest second stops with a message (the limit is set
   in production builds too). Production executables are unchanged today: none of the 64 enabled functions calls
   recompiled code (same HLE hooks; the five bench scenarios identical with the same guest cycle and tick counts, US

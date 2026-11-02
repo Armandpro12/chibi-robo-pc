@@ -1096,7 +1096,12 @@ class ProvenTables:
     of the section's, a superset of the function's). The one that gets looser is that an entry must be inside the
     function: here it must be inside the section. The compare, the bound, the table address and the indexed load are
     proven as for a function, and tests/decomp/run_thread_switch_refusal_test.py checks the result against the census
-    per function."""
+    per function.
+
+    This relaxed proof serves switching_reach only, and it fails in the dangerous direction: a mis-recognised table
+    (the pattern found in dead code or decoded data) would be taken for true with targets outside its function, the
+    real callee behind the bctr would be missed, and the site would turn from `partial` into `complete` wrongly. Rerun
+    run_thread_switch_refusal_test whenever jump_analysis or _prove_table changes."""
 
     def __init__(self, sections: list[tuple[int, int, Callable]]):
         self.sections = sections
@@ -1129,7 +1134,11 @@ def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]
     callee (a tail call is a call); a conditional branch to an address of `natives` too, so the native is seen by name.
     Both go on through the guest body of a native, which may not run: the walk may then find more than the native does,
     never less. A bctr with a proven table (`tables`) goes on at each entry. In a REL module (`rel_bases`: start of its
-    code sections) a branch whose displacement is 0 is an unapplied relocation: its target is not known here."""
+    code sections) a branch whose displacement is 0 is an unapplied relocation: its target is not known here.
+
+    A blr is taken for a return. That is an assumption: mtlr of a computed value then blr is a jump this walk does not
+    see. Counted in the DOL of both versions of the game (RELs not counted): about 4 such sites per version, all in the
+    TRK debugger or __OSDBIntegrator."""
     seen: set[int] = set()
     todo = [entry]
     scan = LocalScan(set(), [], [], [], [])
@@ -1199,8 +1208,11 @@ def switching_reach(ranges: list[tuple[int, bytes]], entries: list[int], hooks: 
     """For each entry, the static closure of its calls (issue #65). "No callee that waits" is true or unknown, never
     assumed: `closure` is "complete" when every transitive call is known, "partial(n)" with n the distinct places
     where it is not ("sites": indirect calls and bctr without a proven table, plus addresses that are not readable
-    code; "unresolved": calls that are an unapplied REL relocation, also counted in n). Only a complete closure
-    without `path` means no callee can wait; a partial one says nothing about what it could not follow.
+    code; "unresolved": calls that are an unapplied REL relocation, also counted in n). A complete closure without
+    `path` means every call is known and no call reaches a native of `switching`; it does not mean nothing can wait:
+    guest code that busy-waits (on a flag, on a DMA) calls no such native. A partial closure says nothing about what it
+    could not follow. An unknown call blocks the claim instead of reading as no call, as in REA (MIT, its
+    src/domain/functionCallCoverage.ts: the idea, no code).
 
     {entry: {"path": [address, ..., native name] to a thread-switching native, or None; "closure"; "indirect": distinct
     indirect sites; "sites"; "unresolved"; "tables": bctr followed through a proven table; "observed": {site: targets}
