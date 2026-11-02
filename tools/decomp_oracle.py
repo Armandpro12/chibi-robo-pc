@@ -1233,6 +1233,9 @@ def main() -> int:
                    help="do not run the synthetic cases (the report then refuses the promotion)")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
     k.add_argument("--label", required=True, help="one or more labels, comma-separated (results are added up)")
+    k.add_argument("--closure", action="store_true",
+                   help="also the call closure of each enabled function, with the targets seen at its indirect sites "
+                        "(needs the extracted disc; about 20 s per version)")
     k.add_argument("--versions")
     k.add_argument("--min-cases", type=int, default=DEFAULT_MIN_CASES)
     k.add_argument("--saturation", type=int, default=DEFAULT_SATURATION,
@@ -1243,9 +1246,6 @@ def main() -> int:
     k.add_argument("--promote", action="store_true",
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
-    k.add_argument("--closure", action="store_true",
-                   help="also the call closure of each enabled function, with the targets seen at its indirect sites "
-                        "(needs the extracted disc; about 20 s per version)")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
     c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
     c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
