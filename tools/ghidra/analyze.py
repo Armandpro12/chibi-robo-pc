@@ -5,7 +5,7 @@ Usage:
   py -3 tools/ghidra/analyze.py <game> [--version ID] export          # re-exports functions and registers
   py -3 tools/ghidra/analyze.py <game> [--version ID] attest [--dol file] [--language id]
   py -3 tools/ghidra/analyze.py <game> [--version ID] dump <target>... [-o file]
-  py -3 tools/ghidra/analyze.py <game> [--version ID] script <Script.java> [args...]
+  py -3 tools/ghidra/analyze.py <game> [--version ID] script [--rels] <Script.java> [args...]
 
 Ghidra project: `generated/<game>/<ID>/ghidra/<ID>.gpr`, program `/main.dol`
 (and `/rels/<module>.rel` with `--rels`: the GameCube loader then puts the DOL and every REL of
@@ -132,7 +132,7 @@ def headless(project_dir: Path, project: str, args: list, log: Path) -> int:
     # Useful summary: report lines, error lines and script outputs.
     for line in text.splitlines():
         if any(k in line for k in ("REPORT", "ERROR", "Exception", "ApplySymbolMap", "ExportFunctions",
-                                   "ExportMmioRefs", "DumpDisasm", "SCRIPT")):
+                                   "ExportMmioRefs", "ExportJumpTables", "DumpDisasm", "SCRIPT")):
             print("  " + line.strip())
     if "ERROR" in text and "Abort" in text:
         return 1
@@ -223,11 +223,13 @@ def cmd_attest(ns, game, vid, p) -> int:
 
 def cmd_script(ns, game, vid, p) -> int:
     extra = [a.replace("{out}", str(p["out"])) for a in ns.args]
-    args = ["-process", "main.dol", "-noanalysis", "-scriptPath", SCRIPTS]
+    # --rels: the program of `import --rels`, named after the first REL.
+    target = sorted(p["rel_dir"].glob("*.rel"))[0].name if ns.rels else "main.dol"
+    args = ["-process", target, "-noanalysis", "-scriptPath", SCRIPTS]
     if ns.read_only:
         args.append("-readOnly")
     args += ["-postScript", ns.script, *extra]
-    return headless(p["project_dir"], vid, args, p["out"] / "script.log")
+    return headless(p["project_dir"], f"{vid}/rels" if ns.rels else vid, args, p["out"] / "script.log")
 
 
 def main() -> int:
@@ -250,6 +252,7 @@ def main() -> int:
     scr.add_argument("script")
     scr.add_argument("args", nargs=argparse.REMAINDER)
     scr.add_argument("--read-only", action="store_true")
+    scr.add_argument("--rels", action="store_true", help="the DOL + REL program of `import --rels`")
     ns = ap.parse_args()
     if ns.cmd is None:
         ns = ap.parse_args(sys.argv[1:] + ["import"])

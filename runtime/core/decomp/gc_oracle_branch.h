@@ -19,7 +19,7 @@ using branch_u32 = std::uint32_t;
 enum class branch_kind : std::uint8_t {
     none,      // not a branch the oracle handles (or a return, bclr without link)
     not_taken, // a conditional branch whose condition fails: the instruction falls through by itself
-    internal,  // a branch without link to an address inside the function
+    internal,  // a branch without link to an address inside the function (bctr: a case of a jump table)
     call,      // a branch with link (bl, bcl, bclrl, bcctrl): the function goes on after it
     tail,      // a branch without link out of the function (b, bc, bcctr): it leaves for another one
 };
@@ -68,6 +68,13 @@ inline branch_decision decode_branch(branch_u32 word, branch_u32 address, branch
         }
     } else {
         d.target = (to_lr ? lr : ctr) & ~3u;
+        // bctr to a case of the function: a jump table (tools/decomp_functions.py jump_analysis proves the table, this
+        // reads the value CTR really has). Its own entry stays a tail call: that is a recursive call, and no proven
+        // table holds it.
+        if (to_ctr && !lk && d.target != start && d.target - start < size) {
+            d.kind = branch_kind::internal;
+            return d;
+        }
     }
     d.kind = lk ? branch_kind::call : branch_kind::tail;
     return d;
