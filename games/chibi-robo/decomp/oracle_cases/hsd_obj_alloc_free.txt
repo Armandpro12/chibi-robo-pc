@@ -53,3 +53,13 @@ mem S+8 4 2
 mem S+C 4 2
 reserve S+C0
 end
+
+# Mutant obj_alloc_free.swapped_writes.c213695a: the block overlaps the pool's free-list head (never expected), so the
+# last of the two stores decides the word.
+case hsd_obj_alloc_free block_on_free_head
+r3 = S
+r4 = S+4
+mem S+4 4 S+80
+mem S+8 4 1
+mem S+C 4 1
+end

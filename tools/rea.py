@@ -1,7 +1,7 @@
 """REA (Reverse Engineer Anything) on the main executable of a GameCube game. Optional tool.
 
 Usage:
-  py -3 tools/rea.py <game> [--version ID] [--native] elf [--force]   # DOL + symbol map -> ELF (tools/dol2elf.py)
+  py -3 tools/rea.py <game> [--version ID] [--native] elf [--force]   # DOL, REL, symbol maps -> ELF (tools/dol2elf.py)
   py -3 tools/rea.py <game> [--version ID] image [--rebuild]          # build the Docker image (tools/rea/Dockerfile)
   py -3 tools/rea.py <game> [--version ID] [--native] run -- <rea arguments, {elf} = the ELF>
   py -3 tools/rea.py <game> [--version ID] [--native] mcp             # `rea mcp` over stdio, for an MCP client
@@ -13,11 +13,15 @@ Examples:
 REA (npm package `rea-agents`, MIT License, https://github.com/morluto/rea) drives Ghidra and answers
 questions about a binary (overview, functions, pseudo-C, references) from the command line or as an MCP
 server. Its PowerPC lane ("PowerPC ELF through Ghidra", REA docs/ghidra-ppc.md) admits 32-bit big-endian
-ELF executables without the EF_PPC_EMB flag, on Linux/macOS hosts only; GameCube DOL files are not admitted.
-Hence:
+ELF executables without the EF_PPC_EMB flag, on Linux/macOS hosts only. REA 6.8.0 also admits a DOL when told
+`--target-format gamecube-dol` (REA docs/ghidra-dol.md), but that lane admits no REL module, has no symbols,
+leaves r2 and r13 unset and defaults to a language without paired singles. Our ELF route has the REL modules,
+the symbol map, r13/r2 and the Gekko language, so it is kept. Hence:
   - `elf` converts the DOL into such an ELF with the version's symbol map: tools/dol2elf.py, output
-    `generated/<game>/<ID>/rea/<ID>.elf` (derived from the game: ignored by Git). Rebuilt automatically when
-    the DOL, the map or dol2elf.py is newer;
+    `generated/<game>/<ID>/rea/<ID>.elf` (derived from the game: ignored by Git). With `[rea] rels = true` in
+    game.toml the REL modules of `[code] rel_dir` go in as well, relocated, at the addresses of a recompiled build
+    (`[recomp] rel_base`), with their symbols (<ID>-rel.tsv) under the name `<module>.<name>`; `--no-rels` leaves
+    them out. Rebuilt automatically when the DOL, a REL, a map or dol2elf.py is newer;
   - by default REA runs in a Linux container (Docker), from the image of tools/rea/Dockerfile (base image,
     Node.js and REA pinned there; REA's transitive npm dependencies and the build stage's apt packages are
     not), with the host's Ghidra mounted read-only at /opt/ghidra and the ELF folder mounted at /work.
@@ -28,8 +32,11 @@ Hence:
   - the container has no network (`--network none`), no capabilities (`--cap-drop ALL`), cannot gain
     privileges (`--security-opt no-new-privileges`) and runs as a non-root user (container_user());
   - the Ghidra language comes from `[rea] language` in games/<game>/game.toml (passed as
-    REA_GHIDRA_LANGUAGE_ID) when that language id is declared by an installed `.ldefs` file of the Ghidra
-    installation; otherwise REA's default PowerPC language is used and a warning is printed.
+    REA_GHIDRA_LANGUAGE_ID). It must be declared by an installed `.ldefs` file of the Ghidra installation and
+    `--env` cannot replace it: `run` and `mcp` refuse otherwise, because REA's default PowerPC language does
+    not decode paired singles, which would come out wrong without any error;
+  - `[rea] disabled_analyzers` of game.toml (a list of Ghidra analyzer names) is passed as
+    REA_GHIDRA_DISABLED_ANALYZERS, to shorten the import; `--env REA_GHIDRA_DISABLED_ANALYZERS=` runs them all.
 
 Placeholders in `run` arguments: {elf} = the ELF path as REA sees it, {work} = its folder (writable: REA
 outputs such as snapshots may be written there; it is under generated/, ignored by Git).
@@ -37,7 +44,7 @@ Containers are named `rea-pc-<game>-<ID>-<pid>` and removed when they exit (`--r
 on stderr, so a stuck server can be stopped with `docker stop <that exact name>`.
 
 Each CLI call imports the program into Ghidra again (about 2 minutes for a 2 MiB DOL); the MCP server keeps
-its session open between questions.
+its session open between questions, and one `decompile-all` writes a whole batch of functions on one import.
 
 Paths: Ghidra from tools/toolchain.py (config/local.toml [paths] ghidra, then external/ghidra); docker from
 [paths] docker, then the PATH. Commands are run without a shell (argument lists), so paths with spaces work;
@@ -64,7 +71,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dol2elf  # noqa: E402
 import toolchain as tc  # noqa: E402
 
-REA_VERSION = "6.7.0"                        # keep in step with ARG REA_VERSION in tools/rea/Dockerfile
+REA_VERSION = "6.8.0"                        # keep in step with ARG REA_VERSION in tools/rea/Dockerfile
 IMAGE = f"gcrt-rea:{REA_VERSION}"
 DOCKERFILE_DIR = Path(__file__).resolve().parent / "rea"
 CONTAINER_GHIDRA = "/opt/ghidra"
@@ -143,6 +150,14 @@ class Context:
         default_map = self.game["_dir"] / sym.get("map_dir", "symbols") / f"{self.vid}.map"
         self.map = None if a.no_map else (Path(a.map) if a.map else (default_map if default_map.exists() else None))
         self.rea_cfg = self.game.get("rea", {})
+        self.rel_dir = None
+        if self.rea_cfg.get("rels") and not a.no_rels:
+            if "rel_dir" not in code:
+                sys.exit(f"[rea] rels of games/{self.slug}/game.toml needs [code] rel_dir")
+            self.rel_dir = base / "disc" / code["rel_dir"]
+        self.rel_base = self.game.get("recomp", {}).get("rel_base", dol2elf.gcimage.DEFAULT_REL_BASE)
+        rel_map = default_map.with_name(f"{self.vid}-rel.tsv")
+        self.rel_map = rel_map if self.rel_dir and not a.no_map and rel_map.exists() else None
         self.sda = a.sda or self.rea_cfg.get("sda", "auto")
         dol2elf.parse_sda(self.sda)          # a clean error now, before Docker or the ELF
 
@@ -151,11 +166,17 @@ class Context:
         if not self.dol.exists():
             sys.exit(f"DOL not found: {self.dol} (extract the game first: tools/extract.py {self.slug} "
                      f"--version {self.vid})")
-        inputs = [self.dol, Path(dol2elf.__file__)] + ([self.map] if self.map else [])
-        # The options used for the ELF are kept next to it: a change (map, small-data bases) rebuilds it.
+        rels = sorted(self.rel_dir.glob("*.rel")) if self.rel_dir else None
+        if self.rel_dir and not rels:
+            sys.exit(f"no REL module in {self.rel_dir} (extract the game first: tools/extract.py {self.slug} "
+                     f"--version {self.vid}, or --no-rels)")
+        inputs = [self.dol, Path(dol2elf.__file__), Path(dol2elf.gcimage.__file__), *(rels or []),
+                  *[m for m in (self.map, self.rel_map) if m]]
+        # The options used for the ELF are kept next to it: a change (map, small-data bases, REL) rebuilds it.
         stamp = self.elf.with_name(self.elf.name + ".options.json")
         options = {"dol": str(self.dol.resolve()), "map": str(self.map.resolve()) if self.map else None,
-                   "sda": self.sda}
+                   "sda": self.sda, "rels": str(self.rel_dir.resolve()) if self.rel_dir else None,
+                   "rel_base": self.rel_base, "rel_map": str(self.rel_map.resolve()) if self.rel_map else None}
         try:
             same = json.loads(stamp.read_text(encoding="utf-8")) == options
         except (OSError, ValueError):
@@ -164,7 +185,8 @@ class Context:
                 and self.elf.stat().st_mtime >= max(p.stat().st_mtime for p in inputs)):
             return self.elf
         log(f"dol2elf: {self.dol} -> {self.elf}" + (f" (map {self.map.name})" if self.map else " (no map)"))
-        p = dol2elf.convert(self.dol, self.elf, self.map, self.sda)
+        p = dol2elf.convert(self.dol, self.elf, self.map, self.sda, rels=rels, rel_base=self.rel_base,
+                            rel_map=self.rel_map)
         stamp.write_text(json.dumps(options, indent=1), encoding="utf-8")
         log(f"dol2elf: {len(p.funcs)} functions"
             + "".join(f", r{r} = {v:#010x}" for r, v in sorted(p.sda.items(), reverse=True)))
@@ -181,18 +203,25 @@ class Context:
         env: dict[str, str] = {}
         lang = self.rea_cfg.get("language")
         if lang:
-            if lang in installed_languages(ghidra):
-                env["REA_GHIDRA_LANGUAGE_ID"] = lang
-                if self.rea_cfg.get("compiler_spec"):
-                    env["REA_GHIDRA_COMPILER_SPEC_ID"] = self.rea_cfg["compiler_spec"]
-            else:
-                log(f"warning: Ghidra language {lang} ([rea] language of games/{self.slug}/game.toml) is not "
-                    f"installed in {ghidra}; REA will use its default PowerPC language "
-                    "(install the extension that provides it: tools/bootstrap.py --only ghidra_gc_loader)")
+            # A refusal, not a warning: REA would fall back to its default PowerPC language, which does not
+            # decode paired singles, and the pseudo-C of those functions would be wrong with no error.
+            if lang not in installed_languages(ghidra):
+                sys.exit(f"Ghidra language {lang} ([rea] language of games/{self.slug}/game.toml) is not "
+                         f"installed in {ghidra}: refusing to run REA without it, paired-single code would "
+                         "come out wrong without any error (install the extension that provides it: "
+                         "tools/bootstrap.py --only ghidra_gc_loader)")
+            env["REA_GHIDRA_LANGUAGE_ID"] = lang
+            if self.rea_cfg.get("compiler_spec"):
+                env["REA_GHIDRA_COMPILER_SPEC_ID"] = self.rea_cfg["compiler_spec"]
+        if self.rea_cfg.get("disabled_analyzers"):
+            env["REA_GHIDRA_DISABLED_ANALYZERS"] = ",".join(self.rea_cfg["disabled_analyzers"])
         for item in self.extra_env:
             key, sep, value = item.partition("=")
             if not sep:
                 sys.exit(f"--env expects NAME=VALUE, got {item!r}")
+            if key == "REA_GHIDRA_LANGUAGE_ID" and lang and value != lang:
+                sys.exit(f"--env {item}: [rea] language of games/{self.slug}/game.toml is {lang}, refusing "
+                         "another language")
             env[key] = value
         return env
 
@@ -268,6 +297,7 @@ class Context:
         if self.native and not rea:
             sys.exit(f"--native: `rea` not found on the PATH (npm install -g rea-agents@{REA_VERSION})")
         ghidra = self.ghidra()
+        env = self.rea_env(ghidra)           # refuses a missing language before Docker runs or the ELF is written
         if not self.native:
             # `--mount` takes comma-separated key=value fields: a comma in a path would split it.
             # Checked before the ELF is written and before Docker runs.
@@ -278,7 +308,6 @@ class Context:
             self.ensure_daemon()
             self.require_image()
         elf = self.ensure_elf()
-        env = self.rea_env(ghidra)
         if self.native:
             subst = {"{elf}": str(elf.resolve()), "{work}": str(self.work.resolve())}
             args = [rea_arg_subst(x, subst) for x in rea_args]
@@ -331,6 +360,8 @@ def mcp_config(ctx: Context, a: argparse.Namespace) -> int:
             opts += [f"--{name}", str(Path(getattr(a, name)).resolve())]
     if a.no_map:
         opts.append("--no-map")
+    if a.no_rels:
+        opts.append("--no-rels")
     if a.sda:
         opts += ["--sda", a.sda]
     for item in a.env or []:
@@ -361,6 +392,7 @@ def main() -> int:
                     "derived from it goes to the --out folder")
     ap.add_argument("--map", help="symbol map (default: games/<game>/<[symbols] map_dir>/<ID>.map)")
     ap.add_argument("--no-map", action="store_true", help="no symbol map")
+    ap.add_argument("--no-rels", action="store_true", help="only the DOL in the ELF, whatever [rea] rels says")
     ap.add_argument("--sda", help="small-data bases for dol2elf: auto, none or R13,R2 (default: [rea] sda)")
     ap.add_argument("--out", help="ELF and REA work folder (default: generated/<game>/<ID>/rea, ignored by Git). "
                     "The ELF is derived from the game: never commit it, keep --out outside the repository's "

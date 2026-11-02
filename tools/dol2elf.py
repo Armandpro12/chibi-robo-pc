@@ -2,6 +2,7 @@
 
 Usage:
   py -3 tools/dol2elf.py <in.dol> <out.elf> [--map FILE] [--sda auto|none|R13,R2] [--no-check]
+                         [--rels DIR] [--rel-base ADDR] [--rel-map FILE]
 
 Purpose: tools that read ELF but not DOL (for example REA's "PowerPC ELF through Ghidra" lane, see
 tools/rea.py) can analyse the game's main executable. The ELF holds exactly the DOL's bytes, at the DOL's
@@ -39,9 +40,22 @@ block, but only while it applies an R_PPC_EMB_SDA21 relocation, and it takes the
     recomputes it: no byte of the program changes.
 `--sda none` writes no relocation, no `_SDA*_BASE_` symbol and keeps the `.dataN` names.
 
+REL modules (`--rels DIR`, every `*.rel` of the folder): loaded by tools/gcimage.py, so at the addresses a recompiled
+build gives them (`--rel-base`, modules one after the other), linked against the DOL and each
+other. One section `.rel.<module>.s<N>` and one PT_LOAD per non-empty REL section, a NOBITS one for the module's BSS.
+Their words are the relocated ones, so here bytes do differ from the file: only at the relocated sites, see below.
+Nothing in the DOL calls a module statically, so without symbols Ghidra would find almost nothing there. Hence one
+symbol per function start known without the game's source: `<module>.<name>` for the lines of `--rel-map` (TSV
+"module_id module_name section offset size name", tools/symbols.py; the prefix because each module has its own
+`_prolog` or `__destroy_global_chain`), the header's prolog, epilog and unresolved functions, the targets of
+relocated `bl` instructions, and the pointers into code written by a relocation that look like a function start
+(looks_like_function_start: a jump table is also a list of pointers into code, and a case label taken for a
+function would cut its function in two). Without `--rels` the output is the same as before this option existed.
+
 Check (unless --no-check): the ELF is read back by an independent parser; every PROGBITS section must equal
 the DOL bytes at the same address, the NOBITS pieces plus the data sections must cover the BSS range exactly,
-the header fields must match, every relocation must leave its word unchanged. If `llvm-readelf` or GNU
+the header fields must match, every relocation must leave its word unchanged. With `--rels`, every REL section must
+match its REL file except at the words a relocation wrote. If `llvm-readelf` or GNU
 `readelf` is found (tools/toolchain.py: [paths] readelf, external/llvm/bin, PATH), its view of the header,
 sections and segments is compared too.
 
@@ -61,6 +75,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gcinfo  # noqa: E402
+import gcimage  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 # ELF constants (System V ABI; PowerPC supplement).
@@ -325,6 +340,95 @@ def plan(dol: bytes, map_path: Path | None, sda: str) -> Plan:
     return p
 
 
+def read_rel_map(path: Path) -> list[tuple[int, str, int, int, int, str]]:
+    """Lines (module_id, module_name, section, offset, size, name) of a REL symbol map (tools/symbols.py)."""
+    out = []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        sys.exit(f"cannot read the REL symbol map {path}: {e}")
+    for line in text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        try:
+            mid, mod, sec, off, size, name = line.split("\t")
+            out.append((int(mid), mod, int(sec), int(off, 16), int(size, 16), name))
+        except ValueError:
+            sys.exit(f"{path}: malformed line: {line!r}")
+    return out
+
+
+def looks_like_function_start(seg: gcimage.Segment, offset: int) -> bool:
+    """A pointer into code may be a function (virtual method, callback) or a case label of a jump table. A function
+    starts its section, follows a `blr` or padding, or opens a frame with `stwu r1,-N(r1)`; a case label follows the
+    `b` that ends the previous case."""
+    if offset == 0:
+        return True
+    if offset & 3:
+        return False
+    word = struct.unpack_from(">I", seg.data, offset)[0]
+    before = struct.unpack_from(">I", seg.data, offset - 4)[0]
+    return word >> 16 == 0x9421 or before in (0x4E800020, 0)
+
+
+def rel_entry_points(prog: gcimage.Program, mod: gcimage.Module) -> dict[int, str]:
+    """Function starts of a module, from what the module itself says: address -> name."""
+    stem = Path(mod.name).stem
+    names: dict[int, str] = {}
+    for key in ("prolog", "epilog", "unresolved"):
+        sec, off = mod.info[key]
+        seg = mod.sections.get(sec)
+        if sec and seg:
+            names[seg.addr + off] = f"{stem}._{key}"
+
+    def add(target: int) -> None:
+        seg = prog.seg(target)
+        if seg is not None and seg.module == mod.id and seg.code and target not in names \
+                and looks_like_function_start(seg, target - seg.addr):
+            names[target] = f"{stem}.{seg.name}_{target - seg.addr:X}"
+
+    for site in sorted(prog.code_sites):
+        word = prog.word(site)
+        if word is not None and word & 1:                            # LK set: a call
+            target = gcimage.branch_target(word, site)
+            if target is not None:
+                add(target)
+    for target in sorted(prog.pointer_sites.values()):
+        add(target)
+    return names
+
+
+def add_rels(p: Plan, dol_path: Path, rels: list[Path], rel_base: int, rel_map: Path | None) -> gcimage.Program:
+    """Adds the REL modules to the plan: sections, then function symbols (see the module's docstring)."""
+    if not rels:
+        sys.exit("--rels: no .rel file in that folder")
+    top = max(s.addr + s.size for s in p.sections)
+    if rel_base < top:
+        sys.exit(f"--rel-base {rel_base:#x} is inside the DOL, which ends at {top:#x}")
+    prog = gcimage.Program.load(dol_path, rels, rel_base)
+    modules = {m.id: m for m in prog.modules.values() if m.id}
+    for mod in modules.values():
+        if mod.unresolved:
+            sys.exit(f"{mod.name}: {mod.unresolved} relocations towards a module that is not loaded")
+        for seg in sorted(mod.sections.values(), key=lambda s: s.addr):
+            p.sections.append(Section(name=f".rel.{Path(mod.name).stem}.{seg.name}", addr=seg.addr, size=len(seg.data),
+                                      data=None if seg.bss else bytes(seg.data), exec_=seg.code))
+    p.sections.sort(key=lambda s: s.addr)
+
+    named: dict[int, tuple[int, str]] = {}
+    for mid, mod_name, sec, off, size, name in read_rel_map(rel_map) if rel_map else []:
+        seg = modules[mid].sections.get(sec) if mid in modules else None
+        if seg is None or not seg.code or off >= len(seg.data):
+            p.skipped.append(f"{mod_name}.{name}")
+            continue
+        named[seg.addr + off] = (size, f"{mod_name}.{name}")
+    for mod in modules.values():
+        for addr, name in rel_entry_points(prog, mod).items():
+            named.setdefault(addr, (0, name))
+    p.funcs += [(addr, size, name) for addr, (size, name) in sorted(named.items())]
+    return prog
+
+
 class StrTab:
     def __init__(self):
         self.data = bytearray(b"\0")
@@ -470,7 +574,40 @@ def read_elf(data: bytes) -> dict:
             "segments": phdrs, "symbols": syms, "relas": relas}
 
 
-def check(elf_bytes: bytes, dol: bytes, p: Plan) -> list[str]:
+def check_rels(elf_bytes: bytes, e: dict, prog: gcimage.Program) -> list[str]:
+    """Every REL section is in the ELF, and differs from its REL file only at the words a relocation wrote."""
+    errors = []
+    written = prog.code_sites | set(prog.pointer_sites)
+    sections = {s["name"]: s for s in e["sections"]}
+    for mod in prog.modules.values():
+        if not mod.id:
+            continue
+        data = mod.path.read_bytes()
+        files = {x["index"]: x for x in mod.info["sections"]}
+        for seg in mod.sections.values():
+            name = f".rel.{Path(mod.name).stem}.{seg.name}"
+            s = sections.get(name)
+            if s is None or (s["addr"], s["size"]) != (seg.addr, len(seg.data)):
+                errors.append(f"{name}: not in the ELF at {seg.addr:#x} size {len(seg.data):#x}")
+                continue
+            want = SHF_ALLOC | (SHF_EXECINSTR if seg.code else SHF_WRITE)
+            if s["flags"] != want or s["type"] != (SHT_NOBITS if seg.bss else SHT_PROGBITS):
+                errors.append(f"{name}: type {s['type']}, flags {s['flags']:#x}")
+            if not [ph for ph in e["segments"] if ph[0] == PT_LOAD and ph[2] == s["addr"]
+                    and ph[4] == (0 if seg.bss else s["size"]) and ph[5] == s["size"]]:
+                errors.append(f"{name}: no matching PT_LOAD")
+            if seg.bss:
+                continue
+            ours = elf_bytes[s["offset"]:s["offset"] + s["size"]]
+            base = files[seg.index]["offset"]
+            for o in range(0, len(ours) - 3, 4):
+                if ours[o:o + 4] != data[base + o:base + o + 4] and seg.addr + o not in written:
+                    errors.append(f"{name}+{o:#x}: differs from {mod.name}, and no relocation wrote it")
+                    break
+    return errors
+
+
+def check(elf_bytes: bytes, dol: bytes, p: Plan, prog: gcimage.Program | None = None) -> list[str]:
     errors = []
     e = read_elf(elf_bytes)
     img = DolImage(dol)
@@ -479,8 +616,10 @@ def check(elf_bytes: bytes, dol: bytes, p: Plan) -> list[str]:
         errors.append(f"header: type {e['type']} machine {e['machine']} flags {e['flags']:#x}")
     if e["entry"] != info["entry"]:
         errors.append(f"entry {e['entry']:#x} != DOL {info['entry']:#x}")
-    progbits = [s for s in e["sections"] if s["type"] == SHT_PROGBITS]
-    nobits = [s for s in e["sections"] if s["type"] == SHT_NOBITS]
+    progbits = [s for s in e["sections"] if s["type"] == SHT_PROGBITS and not s["name"].startswith(".rel.")]
+    nobits = [s for s in e["sections"] if s["type"] == SHT_NOBITS and not s["name"].startswith(".rel.")]
+    if prog is not None:
+        errors += check_rels(elf_bytes, e, prog)
     if len(progbits) != len(img.segs):
         errors.append(f"{len(progbits)} PROGBITS sections for {len(img.segs)} DOL sections")
     for seg in img.segs:
@@ -583,27 +722,31 @@ def readelf_check(path: Path, elf_bytes: bytes) -> tuple[str, list[str]]:
     return f"{exe.name}: {len(rows)} sections, {len(got)} LOAD segments", errors
 
 
-def convert(dol_path: Path, out_path: Path, map_path: Path | None, sda: str = "auto",
-            verify: bool = True) -> Plan:
+def convert(dol_path: Path, out_path: Path, map_path: Path | None, sda: str = "auto", verify: bool = True,
+            rels: list[Path] | None = None, rel_base: int = gcimage.DEFAULT_REL_BASE,
+            rel_map: Path | None = None) -> Plan:
     try:
         dol = dol_path.read_bytes()
     except OSError as e:
         sys.exit(f"cannot read the DOL: {e}")
     p = plan(dol, map_path, sda)
+    prog = add_rels(p, dol_path, rels, rel_base, rel_map) if rels is not None else None
     elf = write_elf(p)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_name(out_path.name + ".tmp")
     tmp.write_bytes(elf)
     if verify:
-        errors = check(elf, dol, p)
+        errors = check(elf, dol, p, prog)
         note, rerrors = readelf_check(tmp, elf)
         errors += rerrors
         if errors:
             tmp.unlink()
             sys.exit("dol2elf: check FAILED:\n  " + "\n  ".join(errors))
-        nprog = sum(1 for s in p.sections if s.data is not None)
+        nprog = sum(1 for s in p.sections if s.data is not None and not s.name.startswith(".rel."))
         print(f"dol2elf: check OK: {nprog} sections equal to the DOL, BSS covered, "
-              f"{len(p.funcs)} symbols, {len(p.relocs)} relocations unchanged words; {note}", file=sys.stderr)
+              f"{len(p.funcs)} symbols, {len(p.relocs)} relocations unchanged words"
+              + (f", {len(prog.modules) - 1} REL modules equal to their files outside relocations" if prog else "")
+              + f"; {note}", file=sys.stderr)
     tmp.replace(out_path)
     return p
 
@@ -615,8 +758,13 @@ def main() -> int:
     ap.add_argument("--map", type=Path, help='symbol map, lines "ADDRESS SIZE NAME" (hexadecimal)')
     ap.add_argument("--sda", default="auto", help="small-data bases: auto (from the boot code), none, or R13,R2")
     ap.add_argument("--no-check", action="store_true", help="skip the read-back and readelf checks")
+    ap.add_argument("--rels", type=Path, help="folder of the REL modules: adds every *.rel of it to the ELF")
+    ap.add_argument("--rel-base", type=lambda v: int(v, 0), default=gcimage.DEFAULT_REL_BASE,
+                    help="address of the first REL module (default 0x81800000)")
+    ap.add_argument("--rel-map", type=Path, help="REL symbol map, TSV: module_id module_name section offset size name")
     a = ap.parse_args()
-    p = convert(a.dol, a.out, a.map, a.sda, not a.no_check)
+    rels = sorted(a.rels.glob("*.rel")) if a.rels else None
+    p = convert(a.dol, a.out, a.map, a.sda, not a.no_check, rels, a.rel_base, a.rel_map)
     print(f"{a.out}: entry {p.entry:#010x}, {len(p.sections)} sections, {len(p.funcs)} functions"
           + (f" ({len(p.skipped)} map entries outside the text sections skipped)" if p.skipped else "")
           + "".join(f", r{r} = {v:#010x}" for r, v in sorted(p.sda.items(), reverse=True)))

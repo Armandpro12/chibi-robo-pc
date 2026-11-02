@@ -72,3 +72,16 @@ mem S+5C 4 S+80
 mem S+C0 4 BF800000
 reserve S+80
 end
+
+# Mutant pobj_set_shape_blend.constant.960b7594 (one bit too many in the kind mask): the kind with a flag outside the
+# mask set.
+case hsd_pobj_set_shape_blend kind_with_low_flag
+r3 = S
+r4 = 5
+r5 = S+C0
+mem S+C 2 1001
+mem S+14 4 S+40
+mem S+40 2 FFFD
+mem S+5C 4 3F800000
+mem S+C0 4 3E800000
+end
