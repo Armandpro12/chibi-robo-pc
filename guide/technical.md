@@ -232,7 +232,7 @@ py -3 tools/rea.py chibi-robo --version GGTE01 run -- decompile-all {elf} --outp
 
 `{work}/all/functions/` then holds one file per function, named by address, and `decompile-index.json` lists them.
 Add `--address-start 0x... --address-end 0x...` for one range. On this project's machine, a range of 30 functions
-took 2.5 to 6 minutes depending on the load, almost all of it the import, and the whole executable 8 to 10 minutes.
+took 2.5 to 6 minutes depending on the load, almost all of it the import, and the whole executable 8 to 13 minutes.
 The output folder must not exist yet, or pass `--resume`. Pseudo-C helps reading; the assembly remains the reference.
 
 Limits: each command-line call imports the program again (about 2 minutes); the MCP server keeps it open between
