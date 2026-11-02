@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1085,35 +1086,72 @@ def thread_switching_natives(path: Path = THREAD_SWITCHING_NATIVES) -> set[str]:
     return out
 
 
-def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]) -> tuple[set[int], int, list[int]]:
+class ProvenTables:
+    """Jump tables of a program's code, for switching_reach. `sections`: (start, size, load), `load` giving the memory
+    of that module for jump_analysis (code and data, relocated for a REL). A section is only read when the walk meets
+    a bctr in it, so a closure without one costs nothing.
+
+    The walk starts at call targets and knows no function bounds, and a build has no function list it can always rely
+    on. So each section goes through jump_analysis as ONE span. Its checks only get stricter on the branch targets (all
+    of the section's, a superset of the function's). The one that gets looser is that an entry must be inside the
+    function: here it must be inside the section. The compare, the bound, the table address and the indexed load are
+    proven as for a function, and tests/decomp/run_thread_switch_refusal_test.py checks the result against the census
+    per function."""
+
+    def __init__(self, sections: list[tuple[int, int, Callable]]):
+        self.sections = sections
+        self.analysis: dict[int, JumpAnalysis] = {}
+
+    def entries(self, site: int) -> tuple[int, ...] | None:
+        """Targets of the bctr at `site` if its table is proven, by table index; None otherwise."""
+        for start, size, load in self.sections:
+            if start <= site < start + size:
+                if start not in self.analysis:
+                    self.analysis[start] = jump_analysis(load(), start, size)
+                table = self.analysis[start].tables.get(site)
+                return table.entries if table else None
+        return None
+
+
+@dataclass
+class LocalScan:
+    callees: set[int]        # targets of the direct calls and of the jumps that may be tail calls
+    indirect: list[int]      # bctrl, bclrl, and bctr without a proven table: their targets are unknown
+    unresolved: list[int]    # calls whose target is an unapplied REL relocation
+    outside: list[int]       # addresses reached that are not code the walk can read
+    tables: list[int]        # bctr whose proven table was followed
+
+
+def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int], natives: frozenset[int] = frozenset(),
+                tables: ProvenTables | None = None) -> LocalScan:
     """Control flow of the code at `entry`, followed through its conditional and unconditional branches until every
-    path ends (blr, bctr, rfi, or an address outside the code): (targets of its direct calls and of its jumps that
-    may be tail calls, number of indirect calls, addresses of calls whose target is not resolved). A `b` is followed
-    as a jump and also reported as a callee (a tail call is a call). In a REL module (`rel_bases`: start of its code
-    sections) a branch whose displacement is 0 is an unapplied relocation: its target is not known here."""
+    path ends (blr, bctr, rfi, or an address outside the code). A `b` is followed as a jump and also reported as a
+    callee (a tail call is a call); a conditional branch to an address of `natives` too, so the native is seen by name.
+    Both go on through the guest body of a native, which may not run: the walk may then find more than the native does,
+    never less. A bctr with a proven table (`tables`) goes on at each entry. In a REL module (`rel_bases`: start of its
+    code sections) a branch whose displacement is 0 is an unapplied relocation: its target is not known here."""
     seen: set[int] = set()
     todo = [entry]
-    callees: set[int] = set()
-    indirect = 0
-    unresolved: list[int] = []
+    scan = LocalScan(set(), [], [], [], [])
     while todo:
         at = todo.pop()
         while at not in seen:
             base, blob = _code_of(ranges, at)
             if blob is None or at - base + 4 > len(blob):
+                scan.outside.append(at)
                 break
             seen.add(at)
             w = _word(blob, at - base)
             op, lk = w >> 26, w & 1
             if op == 18:
                 if (w & 0x03FFFFFC) == 0 and not (w & 2) and base in rel_bases:
-                    unresolved.append(at)
+                    scan.unresolved.append(at)
                     if not lk:
                         break
                     at += 4
                     continue
                 t = _branch_target(w, at)
-                callees.add(t)
+                scan.callees.add(t)
                 if lk:
                     at += 4
                     continue
@@ -1122,9 +1160,9 @@ def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]
             if op == 16:
                 t = _branch_target(w, at)
                 bo = (w >> 21) & 0x1F
-                if lk:
-                    callees.add(t)
-                else:
+                if lk or t in natives:
+                    scan.callees.add(t)
+                if not lk:
                     todo.append(t)
                 if not lk and (bo & 0x14) == 0x14:  # branch always
                     break
@@ -1135,11 +1173,16 @@ def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]
                 bo = (w >> 21) & 0x1F
                 if xo in (16, 528):  # bclr, bcctr
                     if lk:
-                        indirect += 1  # bctrl, bclrl: indirect call
+                        scan.indirect.append(at)  # bctrl, bclrl: indirect call
                         at += 4
                         continue
-                    if xo == 528:
-                        indirect += 1  # bctr: jump table or indirect tail call, its targets are not followed
+                    if xo == 528:  # bctr: jump table or indirect tail call
+                        entries = tables.entries(at) if tables and (bo & 0x14) == 0x14 else None
+                        if entries is None:
+                            scan.indirect.append(at)
+                        else:
+                            scan.tables.append(at)
+                            todo.extend(entries)
                     if (bo & 0x14) == 0x14:
                         break
                     at += 4
@@ -1147,51 +1190,85 @@ def _local_scan(ranges: list[tuple[int, bytes]], entry: int, rel_bases: set[int]
                 if xo == 50:  # rfi
                     break
             at += 4
-    return callees, indirect, unresolved
+    return scan
 
 
 def switching_reach(ranges: list[tuple[int, bytes]], entries: list[int], hooks: dict[int, str],
-                    switching: set[str], rel_bases: set[int] | None = None) -> dict[int, dict]:
-    """For each entry, the static closure of its direct calls (issue #65): {entry: {"path": [address, ...,
-    native name] to a thread-switching native or None, "indirect": indirect calls met, "unresolved": calls whose target
-    is unknown}}. A hooked address whose name is a native replacement (any name of `hooks` except "decomp", "game",
-    "oracle-block", "oracle-call", "extra") is a leaf: its guest body does not run; a decompiled function is followed
-    through its original (functional decompilation: the same calls). Indirect calls (bctrl, bclrl) and jump tables
-    are not followed: the closure is a lower bound."""
+                    switching: set[str], rel_bases: set[int] | None = None, tables: ProvenTables | None = None,
+                    observed: dict[int, set[int]] | None = None) -> dict[int, dict]:
+    """For each entry, the static closure of its calls (issue #65). "No callee that waits" is true or unknown, never
+    assumed: `closure` is "complete" when every transitive call is known, "partial(n)" with n the distinct places
+    where it is not ("sites": indirect calls and bctr without a proven table, plus addresses that are not readable
+    code; "unresolved": calls that are an unapplied REL relocation, also counted in n). Only a complete closure
+    without `path` means no callee can wait; a partial one says nothing about what it could not follow.
+
+    {entry: {"path": [address, ..., native name] to a thread-switching native, or None; "closure"; "indirect": distinct
+    indirect sites; "sites"; "unresolved"; "tables": bctr followed through a proven table; "observed": {site: targets}
+    of the unknown sites `observed` has targets for; "observed_path": the sites on `path` that are such a target}}.
+
+    A hooked address whose name is a native replacement (any name of `hooks` except "decomp", "game", "oracle-block",
+    "oracle-call", "extra") is a leaf: its guest body does not run; hle/thread_switching_natives.txt lists those that
+    run a guest callback before they return. A decompiled function is followed through its original (functional
+    decompilation: the same calls). `tables`: bctr whose table is proven are followed, without it they stay unknown.
+    `observed`: {site: targets seen at run time}, followed too, but what was seen is not all that can happen: the site
+    stays unknown and the function partial, and a path through one is reported as such (`observed_path`)."""
     rel_bases = rel_bases or set()
+    observed = observed or {}
     followed = ("decomp", "game", "oracle-block", "oracle-call", "extra")
-    cache: dict[int, tuple[set[int], int, list[int]]] = {}
+    natives = frozenset(a for a, name in hooks.items() if name not in followed)
+    cache: dict[int, LocalScan] = {}
     out: dict[int, dict] = {}
     for entry in entries:
         parent: dict[int, int | None] = {entry: None}
+        through: dict[int, int] = {}  # callee reached only through an observed target -> its site
         queue = [entry]
         found = None
-        indirect = 0
-        unresolved: list[int] = []
-        while queue and found is None:
+        indirect: dict[int, None] = {}
+        other: dict[int, None] = {}
+        unresolved: dict[int, None] = {}
+        table_sites: dict[int, None] = {}
+        seen_at: dict[int, list[int]] = {}
+        while queue:
             f = queue.pop(0)
-            name = hooks.get(f)
-            if f != entry and name is not None and name not in followed:
-                if name in switching:
+            if f != entry and f in natives:
+                if found is None and hooks[f] in switching:
                     found = f
                 continue  # native: its guest body does not run
             if f not in cache:
-                cache[f] = _local_scan(ranges, f, rel_bases)
-            callees, ind, unres = cache[f]
-            indirect += ind
-            unresolved += unres
-            for c in sorted(callees):
+                cache[f] = _local_scan(ranges, f, rel_bases, natives, tables)
+            scan = cache[f]
+            indirect.update(dict.fromkeys(scan.indirect))
+            other.update(dict.fromkeys(scan.outside))
+            unresolved.update(dict.fromkeys(scan.unresolved))
+            table_sites.update(dict.fromkeys(scan.tables))
+            for c in sorted(scan.callees):
                 if c not in parent:
                     parent[c] = f
                     queue.append(c)
+            for site in scan.indirect:
+                seen_at[site] = sorted(observed.get(site, ()))
+                for c in seen_at[site]:
+                    if c not in parent:
+                        parent[c] = f
+                        through[c] = site
+                        queue.append(c)
         path = None
+        observed_path: list[int] = []
         if found is not None:
             path = [hooks[found]]
-            node = parent[found]
+            node = found
             while node is not None:
-                path.insert(0, f"{node:08X}")
+                if node in through:
+                    observed_path.insert(0, through[node])
                 node = parent[node]
-        out[entry] = {"path": path, "indirect": indirect, "unresolved": unresolved}
+                if node is not None:
+                    path.insert(0, f"{node:08X}")
+        sites = sorted(set(indirect) | set(other))
+        unknown = len(sites) + len(unresolved)
+        out[entry] = {"path": path, "closure": f"partial({unknown})" if unknown else "complete",
+                      "indirect": len(indirect), "sites": sites, "unresolved": list(unresolved),
+                      "tables": len(table_sites), "observed": {s: t for s, t in seen_at.items() if t},
+                      "observed_path": observed_path}
     return out
 
 

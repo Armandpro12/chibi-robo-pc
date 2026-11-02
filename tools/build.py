@@ -245,7 +245,7 @@ def rel_layout(rels: list[Path], rel_base: int) -> list[dict]:
             if tail_addr + tail_size > slot_end:
                 raise SystemExit(f"{path.name}: no room for the relocation table after the BSS "
                                  f"({tail_addr:08X}+{tail_size:X} > {slot_end:08X}).")
-        out.append({"name": path.stem, "id": be(0), "base": base, "file_size": size, "fix_size": fix_size,
+        out.append({"name": path.stem, "path": path, "id": be(0), "base": base, "file_size": size, "fix_size": fix_size,
                     "bss_addr": bss_addr, "bss_size": bss_size, "tail_addr": tail_addr, "slot_end": slot_end,
                     "crc32": zlib.crc32(data), "sections": sections})
         cursor = slot_end
@@ -431,44 +431,104 @@ def signature_scan(dol: Path, layout: list[dict]) -> dict:
     return {"hooks": hooks, "found": found, "hooked": hooked, "every_copy": every_copy, "replaceable": replaceable}
 
 
-def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: dict[int, str],
-                           entries: list[tuple[int, str]]) -> None:
-    """Issue #65 (option A): refuses a decompiled function whose static closure of direct calls reaches a native
-    replacement that can switch threads (runtime/core/hle/thread_switching_natives.txt). Decompiled code calls
-    recompiled code in a nested run of the chassis with its own frame on the host stack (hle/native_irq.c
-    gcrt_guest_call_interruptible): a thread switch cannot happen there. Indirect calls are not followed (lower
-    bound, counted in the message); a call whose target is an unapplied REL relocation refuses the function, its
-    closure being unknown. Every version is built with this check, so the refusal holds in each of them."""
-    if not entries:
-        return
+def closure_reach(dol: Path, layout: list[dict], hooks: dict[int, str], addresses: list[int],
+                  observed: dict[int, set[int]] | None = None) -> dict[int, dict]:
+    """tools/decomp_functions.py switching_reach over the code of the DOL and of the RELs, with their proven jump
+    tables. `observed`: targets seen at run time at indirect sites (tools/decomp_oracle.py report --closure)."""
     import decomp_functions  # noqa: E402
     import symbols as sy  # noqa: E402
     ranges = list(sy.Image.from_dol(dol).ranges)
+    sections = [(addr, len(blob), lambda: decomp_functions.dol_memory(dol)) for addr, blob in ranges]
     rel_bases = set()
     for m in layout:
         for (_, addr, _, ex, blob) in m["sections"]:
             if ex and blob:
                 ranges.append((addr, blob))
                 rel_bases.add(addr)
-    reach = decomp_functions.switching_reach(ranges, [a for a, _ in entries], hooks,
-                                             decomp_functions.thread_switching_natives(), rel_bases)
+                sections.append((addr, len(blob), lambda m=m: decomp_functions.rel_memory(m["path"], m)))
+    return decomp_functions.switching_reach(ranges, addresses, hooks, decomp_functions.thread_switching_natives(),
+                                            rel_bases, decomp_functions.ProvenTables(sections), observed)
+
+
+def check_thread_switching(version: str, dol: Path, layout: list[dict], hooks: dict[int, str],
+                           entries: list[tuple[int, str]]) -> None:
+    """Issue #65 (option A): refuses a decompiled function whose static closure of calls reaches a native replacement
+    that can switch threads (runtime/core/hle/thread_switching_natives.txt). Decompiled code calls recompiled code in a
+    nested run of the chassis with its own frame on the host stack (hle/native_irq.c gcrt_guest_call_interruptible): a
+    thread switch cannot happen there. Proven jump tables are followed. A function with an indirect call or an unproven
+    bctr in its closure is `partial`: nothing is known beyond that site, so it is listed as such and never described as
+    free of waiting callees. It is a warning, not a refusal (a refusal would be a new rule of the build). A call whose
+    target is an unapplied REL relocation refuses the function, its closure being unknown. Every version is built with
+    this check, so the refusal holds in each of them."""
+    if not entries:
+        return
+    reach = closure_reach(dol, layout, hooks, [a for a, _ in entries])
     refused = []
+    partial = []
     indirect = 0
+    tables = 0
     for a, name in entries:
         r = reach[a]
         indirect += r["indirect"]
+        tables += r["tables"]
         if r["path"]:
             refused.append(f"{name} at {a:08X} reaches {r['path'][-1]}: {' -> '.join(r['path'])}")
         elif r["unresolved"]:
             refused.append(f"{name} at {a:08X}: call(s) at {', '.join(f'{x:08X}' for x in r['unresolved'][:4])} "
                            "with an unapplied REL relocation, closure unknown")
+        elif r["closure"] != "complete":
+            partial.append(f"{name} at {a:08X}: {r['closure']}, unknown at "
+                           f"{', '.join(f'{x:08X}' for x in r['sites'][:4])}{' ...' if len(r['sites']) > 4 else ''}")
     if refused:
         raise SystemExit(f"Decompiled functions refused for {version}: a callee can switch threads or wait for "
                          "another thread, which a call from decompiled code into guest code cannot do (issue #65, "
                          "runtime/core/hle/thread_switching_natives.txt); keep these rows disabled:\n  "
                          + "\n  ".join(refused))
-    print(f"   {version}: {len(entries)} decompiled functions, no thread-switching callee in their direct calls "
-          f"({indirect} indirect call(s) not followed)")
+    followed = f", {tables} jump table(s) followed" if tables else ""
+    if partial:
+        print(f"   WARNING: {version}: {len(partial)} of {len(entries)} decompiled functions have a partial closure: "
+              f"whether a callee waits is unknown past these sites (not refused):\n     " + "\n     ".join(partial))
+        print(f"   {version}: the other {len(entries) - len(partial)} decompiled functions: complete closure, no "
+              f"thread-switching callee{followed}")
+    else:
+        print(f"   {version}: {len(entries)} decompiled functions, no thread-switching callee in their direct calls "
+              f"({indirect} indirect call(s) not followed){followed}")
+
+
+def closure_report(game: str, game_cfg: dict, version: str, observed: dict[int, set[int]]) -> list[str]:
+    """Lines of tools/decomp_oracle.py report --closure for `version`: closure of each enabled function, with the
+    targets the oracle saw at its indirect sites. The hooks are those of a production build (signature_scan, plus
+    "decomp" on the enabled functions); the hooks of game.toml are walked through either way."""
+    import decomp_functions  # noqa: E402
+    manifest = tc.GENERATED / game / version / "manifest.json"
+    if not manifest.exists():
+        return [f"   {version}: closure not computed (not extracted: {manifest})"]
+    disc_root = Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
+    dol = disc_root / game_cfg["code"]["dol"]
+    layout = decomp_functions._layout(game_cfg, disc_root)
+    hooks = dict(signature_scan(dol, layout)["hooks"])
+    entries = [(a, f.name) for a, f in decomp_functions.resolve(game_cfg, version, disc_root, layout)]
+    hooks.update({a: "decomp" for a, _ in entries})
+    reach = closure_reach(dol, layout, hooks, [a for a, _ in entries], observed)
+    partial = [(a, n) for a, n in entries if reach[a]["closure"] != "complete"]
+    sites = {s for a, _ in entries for s in reach[a]["sites"]}
+    seen = {s for a, _ in entries for s in reach[a]["observed"]}
+    lines = [f"   {version}: {len(entries) - len(partial)} complete, {len(partial)} partial of {len(entries)} enabled; "
+             f"{len(sites)} unknown sites, {len(seen)} with an observed target (seen, not proven: the site stays "
+             f"unknown)"]
+    for a, name in partial:
+        r = reach[a]
+        lines.append(f"     {name} at {a:08X}: {r['closure']}, a callee may wait; unknown at "
+                     f"{', '.join(f'{x:08X}' for x in r['sites'][:8])}{' ...' if len(r['sites']) > 8 else ''}")
+        for s, targets in r["observed"].items():
+            lines.append(f"       observed at {s:08X}: {', '.join(f'{t:08X}' for t in targets)}")
+    for a, name in entries:
+        r = reach[a]
+        if r["path"]:
+            how = f"through the observed target(s) at {', '.join(f'{s:08X}' for s in r['observed_path'])}" \
+                if r["observed_path"] else "by proven calls"
+            lines.append(f"     {name} at {a:08X} reaches {r['path'][-1]} {how}: {' -> '.join(r['path'])}")
+    return lines
 
 
 def hle_hooks(game_cfg: dict, version: str, dol: Path, layout: list[dict]) -> list[tuple[int, str]]:

@@ -433,6 +433,9 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                     problems.append(f"{where}: records of version {other_version} in the {version} folder")
                 name = rec.get("function")
                 a = agg.setdefault(name, new_aggregate(rec))
+                if kind in ("case", "mismatch") and not rec.get("synthetic"):  # a synthetic case's targets are invented
+                    for call in rec.get("calls", []):
+                        a.setdefault("call_targets", {}).setdefault(int(call[0], 16), set()).add(int(call[1], 16))
                 if kind == "summary":
                     summaries += 1
                     expected = (addresses or {}).get(name)
@@ -793,6 +796,15 @@ def cmd_report(args) -> int:
         else:
             state = f"stays {f.status}: " + " | ".join(reasons)
         print(f"{f.name}: {state}")
+    if args.closure:
+        import build  # noqa: E402  (tools/build.py)
+        print("\nCall closure (tools/decomp_functions.py switching_reach, proven jump tables followed):")
+        for v in versions:
+            observed: dict[int, set[int]] = {}
+            for a in results[v].values():
+                for site, targets in a.get("call_targets", {}).items():
+                    observed.setdefault(site, set()).update(targets)
+            print("\n".join(build.closure_report(game, game_cfg, v, observed)))
     for p in problems:
         print(f"WARNING: {p}")
     if not args.promote:
@@ -1231,6 +1243,9 @@ def main() -> int:
     k.add_argument("--promote", action="store_true",
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
+    k.add_argument("--closure", action="store_true",
+                   help="also the call closure of each enabled function, with the targets seen at its indirect sites "
+                        "(needs the extracted disc; about 20 s per version)")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
     c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
     c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
