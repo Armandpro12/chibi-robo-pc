@@ -3,6 +3,8 @@
 Usage:
   py -3 tools/decomp_progress.py <game> [--version ID[,ID]] [--module NAME[,NAME]] [--list] [--json]
                                         [--root CHECKOUT] [--require-complete]
+                                        [--routes] [--closure] [--function NAME|ADDRESS[,...]] [--top N]
+                                        [--cov ID:NAME:PATH ...] [--cov-hooks ID:PATH ...]
 
   --list              also print every function left to decompile, and every automatic name found in the
                       decompiled code (file:line)
@@ -15,8 +17,17 @@ Usage:
                       every function has an address in every version, and no automatic name is left in the
                       decompiled code (the stage's final criterion). Always computed on every version and every
                       module of game.toml: --version and --module only filter what is printed.
+  --routes            planning view, per version (section "Routes" below). Printed instead of the progress table;
+                      with --json the view is added to the report. Needs the coverage of that version.
+  --closure           planning view, per version (section "Closure" below). Same printing rule.
+  --function          limit the rows of --routes to these functions (name, reference address, or address in a
+                      version); the figures stay those of the whole game
+  --top               length of the rankings of --routes and --closure (default 20)
+  --cov, --cov-hooks  coverage runs (ID:NAME:<cov.tsv or its folder>) and probe address list of a version to read
+                      instead of the configured ones; a --cov replaces all the configured runs of every version
 
-Exit codes: 0 report printed; 1 --require-complete not met; 2 usage or configuration error.
+Exit codes: 0 report printed; 1 --require-complete not met; 2 usage or configuration error, or an input of --routes
+or --closure missing (an absent input is never read as "nothing was reached").
 
 Game-specific parameters: [decomp] section of `games/<game>/game.toml` (all paths are relative):
   reference      version whose functions define the work (default: [symbols] reference)
@@ -97,6 +108,46 @@ the patterns and their limits are in AUTO_PATTERNS below. Counted (1) in the dec
 and string literals left out, and in the names of the table, and (2) among the functions left to decompile,
 from the symbol maps (<ID>.map, <ID>-rel.tsv) and the dtk names (also with the dtk filter of tools/symbols.py).
 Read-only: the script writes nothing.
+
+Routes (--routes): what to aim for so that a scenario reaches a function no run reached. The tool says what to aim for,
+not how to get there: the real cost stays the scenario. Static call graph of tools/decomp_graph.py, in each version from
+that version's own code, with the REL relocations applied.
+  Each function to decompile has a reach status in each version:
+    reached        the probe saw its entry in at least one run
+    never-reached  the probe was compiled on its address and never saw it
+    not-measured   rel-module (the probe had no hook in the RELs), no-probe, or no-address: NOT "never reached", never
+                   counted with the never-reached functions; a route is still given when there is one
+    An address that is not established (gap level position or sized) is used, as the probe did, and marked "?".
+  Route: shortest path of direct calls and tail branches from the nearest reached function (all reached functions are
+  sources). It gives the start, each hop, the call site to take in the start, the block ending at that site, and the
+  gate: the closest branch known to have run from which that block can be taken. Block coverage does not exist: what is
+  known to have run is a lower bound (tools/decomp_graph.py covered_blocks), so the true decision can be further along.
+  Route status and flag:
+    found / exhaustive             no shorter way exists on the evidence: no function that could shorten the path has
+                                   its address taken or is not measured
+    found / incomplete frontier    a route, but an indirect call or a function not measured may give a shorter one
+                                   (reasons listed), or the block sits behind a jump that is not followed
+    pointer / incomplete frontier  no direct path, but a path with at least one step through an address reference: a
+                                   function loads the address (step "pointer") or loads a table holding it (step
+                                   "table", the nearest address loaded before that data word: a guess). The indirect
+                                   call that uses the pointer is not known. The gate "ran" says the load is known to run
+    unknown / incomplete frontier  none of those, but the function or one of its callers has its address taken or is
+                                   not measured: the absence is not established
+    not-found / exhaustive         no direct path, and no address reference on any of its callers: dead on static
+                                   evidence (limit: an address computed in another way, tools/decomp_graph.py)
+  Inputs (not in Git): the coverage probe's files, [decomp] coverage_hooks and [decomp.coverage_runs] of game.toml,
+  paths relative to --root, {slug} and {id} replaced.
+
+Closure (--closure): what decompiled code still depends on. Each function of a version is decompiled, replaced (in the
+build, oracle not passed), native (tools/build.py signature_scan: a superset of what the runtime replaces, see
+replaceable_copies), library (excluded from the decompilation, still recompiled) or recompiled.
+  State of a function from its transitive direct callees. A native function is a leaf: its guest body does not run. A
+  decompiled function is followed through its original, which makes the same calls.
+    closed    every callee is decompiled or native, and no indirect call or jump anywhere: proven
+    unknown   no recompiled callee found, but an indirect call or jump is on the way: its targets are not known
+    library   library functions are left, and no recompiled function to decompile
+    open      a recompiled function to decompile is among the callees
+  The ranking gives the recompiled functions with the most call sites in decompiled code: the next profitable batches.
 """
 
 from __future__ import annotations
@@ -167,6 +218,7 @@ AUTO_PATTERNS = [
 REGION_ALIASES = {"ntsc-u": "us", "ntsc-j": "jp", "pal": "pal", "ntsc-k": "kr"}
 NO_ADDRESS = {"", "-", "0", "none", "n/a", "absent"}
 TRANSPOSITION_CANDIDATES = 8   # tools/symbols.py writes at most 8 candidates per function in its report
+REASONS_KEPT = 6                # --routes: reasons kept per route, the total is given
 
 
 @dataclass
@@ -816,6 +868,470 @@ def print_text(out: dict, want_list: bool) -> None:
           f"name): {'yes' if out['complete'] else 'no'}")
 
 
+# ---------------------------------------------------------------------------------------------
+# Planning views (--routes, --closure): static graph of tools/decomp_graph.py, one per version
+
+
+def disc_root(cfg: dict, vid: str) -> Path:
+    return cfg["root"] / "generated" / cfg["slug"] / vid / "disc"
+
+
+def guest_address(f: Fn, vid: str, image) -> tuple[int | None, bool]:
+    """(guest address of `f` in `vid`, provisional): a gap address not established is given, marked provisional."""
+    a, provisional = f.addr.get(vid), False
+    if a is None and vid in f.gated:
+        a, provisional = f.gated[vid][0], True
+    if a is None:
+        return None, False
+    if f.module != "dol":
+        base = image.modules.get(f.module)
+        return (None, False) if base is None else (base + a, provisional)
+    return a, provisional
+
+
+def version_sizes(cfg: dict, vid: str) -> dict[int, int]:
+    """Reference address -> size of the function in `vid`, where the symbol files establish it: same code as the
+    reference (transposition report, identical), or the target size of the gap file."""
+    if vid == cfg["ref"]:
+        return {}
+    out = {r: t.ref_size for r, t in dcom.read_transposition(
+        dcom.transposition_path(cfg["game"], cfg["game"]["_dir"].parent.parent, vid)).items() if t.identical}
+    for g in dcom.read_gaps(cfg["map_dir"] / f"{vid}-gaps.tsv"):
+        if g.size:
+            out[g.ref] = g.size
+    return out
+
+
+def version_graph(cfg: dict, fns: list[Fn], vid: str, warnings: list[str]):
+    """(graph, image) of `vid`: every function of the inventory that has an address there."""
+    import decomp_functions as dfn
+    import decomp_graph as dg
+    image = dg.load_image(cfg["game"], disc_root(cfg, vid))
+    warnings += [f"{vid}: {w}" for w in image.warnings]
+    placed: dict[int, Fn] = {}
+    for f in fns:
+        a = guest_address(f, vid, image)[0]
+        if a is None:
+            continue
+        if a in placed:
+            warnings.append(f"{vid}: {f.name} and {placed[a].name} both at {a:08X}: the first one is kept in the graph")
+            continue
+        placed[a] = f
+    sizes = version_sizes(cfg, vid)
+    starts = sorted(placed)
+    nodes = []
+    for i, a in enumerate(starts):
+        f = placed[a]
+        base, blob = dfn._code_of(image.code, a)
+        if blob is None:
+            warnings.append(f"{vid}: {f.name}: {a:08X} is outside the code sections, not in the graph")
+            continue
+        limit = min(starts[i + 1] if i + 1 < len(starts) else base + len(blob), base + len(blob))
+        if vid == cfg["ref"]:
+            size = f.size
+        elif f.module == "dol" and f.ref in sizes:
+            size = sizes[f.ref]
+        elif f.size <= limit - a and dfn._ends_function(dfn._word(blob, a + f.size - 4 - base)):
+            size = f.size                              # not established: the reference size still ends a function
+        else:
+            size = limit - a                           # not established: up to the next known function
+            while size > 4 and dfn._word(blob, a + size - 4 - base) == 0:
+                size -= 4
+        nodes.append(dg.Node(a, min(size, limit - a), f.name, f))
+    return dg.Graph(image, nodes), image
+
+
+def load_coverage(cfg: dict, cov_args: list[str], hook_args: list[str]) -> dict:
+    """Version -> dg.Coverage, for the versions that have runs. Configured runs: [decomp.coverage_runs]; --cov replaces
+    all of them. A list of probe addresses is required: without it, not measured and never reached look the same."""
+    import decomp_graph as dg
+    root, slug = cfg["root"], cfg["slug"]
+    dc = cfg["game"].get("decomp", {})
+    runs: dict[str, list[tuple[str, Path]]] = defaultdict(list)
+    if cov_args:
+        for c in cov_args:
+            vid, name, path = c.split(":", 2)
+            p = Path(path)
+            runs[vid].append((name, p / "cov.tsv" if p.is_dir() else p))
+    else:
+        for vid, patterns in dc.get("coverage_runs", {}).items():
+            for p in dg.expand_runs([x.format(slug=slug, id=vid) for x in patterns], root):
+                runs[vid].append((p.parent.name, p))
+    hooks = {vid: root / dc["coverage_hooks"].format(slug=slug, id=vid) for vid in runs if dc.get("coverage_hooks")}
+    for h in hook_args:
+        vid, path = h.split(":", 1)
+        hooks[vid] = Path(path)
+    out = {}
+    for vid, items in runs.items():
+        if vid not in hooks or not hooks[vid].exists():
+            raise dg.GraphError(f"{vid}: list of the addresses the probe was compiled on missing "
+                                f"({hooks.get(vid, '[decomp] coverage_hooks')}): not measured and never reached "
+                                "cannot be told apart")
+        cov = dg.Coverage()
+        cov.hooks = {int(x, 16) for x in hooks[vid].read_text(encoding="utf-8").split()}
+        for name, path in items:
+            if not path.exists():
+                raise dg.GraphError(f"{path}: coverage file missing")
+            dg.read_cov(path, cov, name)
+        out[vid] = cov
+    return out
+
+
+def reach_status(f: Fn, addr: int | None, cov) -> str:
+    if addr is None:
+        return "not-measured:no-address"
+    if addr in cov.reached:
+        return "reached"
+    if addr in cov.hooks:
+        return "never-reached"
+    return "not-measured:rel-module" if f.module != "dol" else "not-measured:no-probe"
+
+
+def reached_in(f: Fn, vid: str, cov) -> bool:
+    """`f` was seen in `vid`. DOL only: REL functions were not measured."""
+    if f.module != "dol":
+        return False
+    a = f.addr.get(vid)
+    if a is None and vid in f.gated:
+        a = f.gated[vid][0]
+    return a is not None and a in cov.reached
+
+
+def path_of(found: dict, target: int) -> list[tuple[int, object]]:
+    """Functions from the source to `target`, each with the site of the edge that enters it."""
+    out = []
+    a = target
+    while a is not None:
+        _d, site, parent = found[a]
+        out.insert(0, (a, site))
+        a = parent
+    return out
+
+
+def taken_reason(graph, a: int) -> str:
+    refs = graph.taken[a]
+    return f"{graph.nodes[a].name} ({a:08X}) has its address taken ({len(refs)}, first {refs[0]})"
+
+
+def routes_view(cfg: dict, fns: list[Fn], work: list[Fn], rows_of: list[Fn], vid: str, covs: dict, top: int,
+                warnings: list[str]) -> dict:
+    import decomp_functions as dfn
+    import decomp_graph as dg
+    cov = covs[vid]
+    graph, image = version_graph(cfg, fns, vid, warnings)
+    no_return = dfn.no_return_addresses(cfg["game"], vid)
+    code = image.code
+    status_at = {a: reach_status(n.tag, a, cov) for a, n in graph.nodes.items()}
+    unmeasured = {a for a, s in status_at.items() if s.startswith("not-measured")}
+    sources = [a for a, s in status_at.items() if s == "reached"]
+    near = dg.shortest_from(graph, sources)
+    loose = dg.shortest_from(graph, sources, extra=graph.pointer_sites())
+    far = dg.shortest_from(graph, sorted(unmeasured), skip=set(sources))
+    seen = dg.seen_instructions(graph, cov, code)
+    flows: dict[int, tuple] = {}
+
+    def flow(a: int):
+        if a not in flows:
+            c = dg.control_flow(code, a, graph.nodes[a].size, no_return)
+            flows[a] = (c, dg.covered_blocks(c, a, seen.get(a, set())))
+        return flows[a]
+
+    def hops(found: dict, target: int) -> list[dict]:
+        return [{"function": f"{a:08X}", "name": graph.nodes[a].name, "reach": status_at[a],
+                 "site": f"{s.at:08X}" if s else None, "kind": s.kind if s else None,
+                 "data": f"{s.via:08X}" if s and s.via else None} for a, s in path_of(found, target)]
+
+    def first_step(found: dict, a: int) -> dict:
+        chain = path_of(found, a)
+        start, site = chain[0][0], chain[1][1]
+        c, known = flow(start)
+        block = c.block_of(site.at)
+        gate = dg.find_gate(code, c, block, known)
+        for k in ("at", "to"):
+            if k in gate:
+                gate[k] = f"{gate[k]:08X}"
+        return {"hops": len(chain) - 1, "start": f"{start:08X}", "start_name": graph.nodes[start].name,
+                "site": f"{site.at:08X}", "site_kind": site.kind, "block": f"{block:08X}", "gate": gate,
+                "path": hops(found, a)}
+
+    def capped(reasons: list[str]) -> dict:
+        return {"reasons": reasons[:REASONS_KEPT], "reasons_total": len(reasons)}
+
+    def route(a: int) -> dict:
+        if a in near:
+            r = first_step(near, a)
+            d = r["hops"]
+            ball = dg.callers_within(graph, a, d)
+            reasons = [taken_reason(graph, x) for x in sorted(ball) if graph.taken.get(x)]
+            reasons += [f"{graph.nodes[x].name} ({x:08X}) is not measured" for x in sorted(ball)
+                        if x in unmeasured and x != a]
+            if r["gate"]["status"] == "unknown":
+                reasons.append(f"block {r['block']} is behind a jump or a path that is not followed")
+            r["alternatives"] = sum(1 for x, e in dg.callers_within(graph, a, d + 1).items()
+                                    if e == d and status_at[x] == "reached")
+            return {"status": "found", "flag": "incomplete frontier" if reasons else "exhaustive", **r, **capped(reasons)}
+        if a in loose:
+            r = first_step(loose, a)
+            if r["gate"]["status"] == "contradiction":
+                r["gate"] = {"status": "ran"}          # a load that ran is no contradiction: nothing called the pointer
+            reason = "a step goes through an address reference: the indirect call that uses it is not known"
+            return {"status": "pointer", "flag": "incomplete frontier", **r, **capped([reason])}
+        ancestors = dg.all_callers(graph, a)
+        reasons = [taken_reason(graph, x) for x in sorted(ancestors) if graph.taken.get(x)]
+        reasons += [f"{graph.nodes[x].name} ({x:08X}) is not measured" for x in sorted(ancestors)
+                    if x in unmeasured and x != a]
+        if not reasons:
+            return {"status": "not-found", "flag": "exhaustive", "hops": None, **capped([])}
+        r = {"status": "unknown", "flag": "incomplete frontier", "hops": None, **capped(reasons)}
+        if a in far and far[a][0]:
+            r["from_not_measured"] = hops(far, a)
+        return r
+
+    rows = []
+    wanted = {id(f) for f in rows_of}
+    counts: Counter = Counter()
+    by_hops: Counter = Counter()
+    targets: dict[str, dict[tuple[str, str], dict]] = {"found": {}, "pointer": {}}
+    for f in work:
+        a, prov = guest_address(f, vid, image)
+        if a is not None and a not in graph.nodes:
+            a = None
+        st = reach_status(f, a, cov)
+        kind = st.split(":")[0]
+        counts[st] += 1
+        if st == "reached":
+            continue
+        r = route(a) if a is not None else {"status": "unknown", "flag": "incomplete frontier", "hops": None,
+                                            "reasons": [f"no address in {vid}"], "reasons_total": 1}
+        counts[f"{kind} {r['status']} {r['flag']}"] += 1
+        if kind == "never-reached":
+            by_hops[r["hops"] if r["hops"] is not None else "-"] += 1
+            if r["status"] in targets:
+                t = targets[r["status"]].setdefault((r["start"], r["site"]), {
+                    "start": r["start"], "start_name": r["start_name"], "site": r["site"], "kind": r["site_kind"],
+                    "block": r["block"], "gate": r["gate"], "functions": 0, "bytes": 0})
+                t["functions"] += 1
+                t["bytes"] += f.size
+        if id(f) in wanted:
+            rows.append({"name": f.name, "module": f.module, "address": f"{a:08X}" if a is not None else "-",
+                         "reference": f"{f.ref:08X}" if f.module == "dol" else f"{f.module}:{f.ref:X}", "size": f.size,
+                         "category": f.category, "reach": st, "provisional": prov, "decompiled": vid in f.done,
+                         "reached_in": [v for v, c in covs.items() if v != vid and reached_in(f, v, c)], "route": r})
+    return {"region": dict(cfg["versions"]).get(vid, ""), "runs": cov.runs, "hooks": len(cov.hooks),
+            "probe_warnings": cov.warnings, "edges": sum(len(v) for v in graph.callers.values()),
+            "functions": len(graph.nodes), "counts": dict(counts),
+            "hops": {str(k): v for k, v in sorted(by_hops.items(), key=lambda x: str(x[0]))},
+            "targets": {k: sorted(v.values(), key=lambda t: (-t["functions"], -t["bytes"], t["site"]))[:top]
+                        for k, v in targets.items()},
+            "rows": rows}
+
+
+def closure_view(cfg: dict, fns: list[Fn], work: list[Fn], vid: str, covs: dict, top: int, warnings: list[str]) -> dict:
+    import build
+    import decomp_functions as dfn
+    import decomp_graph as dg
+    graph, image = version_graph(cfg, fns, vid, warnings)
+    disc = disc_root(cfg, vid)
+    scan = build.signature_scan(disc / cfg["game"]["code"]["dol"], dfn._layout(cfg["game"], disc))
+    native = {a for addrs in scan["replaceable"].values() for a in addrs}
+
+    def kind(a: int) -> str:
+        f = graph.nodes[a].tag
+        if vid in f.done:
+            return "decompiled"
+        if vid in f.replaced:
+            return "replaced"
+        if a in native:
+            return "native"
+        if f.category in cfg["excluded"] or f.category == "rel-excluded":
+            return "library"
+        return "recompiled"
+
+    kinds = {a: kind(a) for a in graph.nodes}
+
+    def spread(seeds: set[int], include_seeds: bool) -> set[int]:
+        """Functions with a transitive direct callee in `seeds`, not through a native function (its body does not
+        run). `include_seeds`: a seed counts for itself (an indirect call of its own); otherwise only for its callers."""
+        out = set(seeds) if include_seeds else set()
+        seen = set(seeds)
+        todo = list(seeds)
+        while todo:
+            for c, _s in graph.callers.get(todo.pop(), ()):
+                if kinds[c] == "native":
+                    continue
+                out.add(c)
+                if c not in seen:
+                    seen.add(c)
+                    todo.append(c)
+        return out
+
+    recompiled = {a for a, k in kinds.items() if k == "recompiled"}
+    library = {a for a, k in kinds.items() if k == "library"}
+    uncertain = {a for a, n in graph.nodes.items() if kinds[a] != "native" and (n.indirect or n.unknown_targets)}
+    open_set, lib_set, unk_set = spread(recompiled, False), spread(library, False), spread(uncertain, True)
+
+    def state(a: int) -> str:
+        return "open" if a in open_set else "library" if a in lib_set else "unknown" if a in unk_set else "closed"
+
+    tally = {"all": Counter(), "decompiled": Counter(), "recompiled": Counter()}
+    no_address = 0
+    work_nodes = []
+    for f in work:
+        a = guest_address(f, vid, image)[0]
+        if a is None or a not in graph.nodes:
+            no_address += 1
+            continue
+        work_nodes.append(a)
+        s = state(a)
+        tally["all"][s] += 1
+        tally["decompiled" if kinds[a] in ("decompiled", "replaced") else "recompiled"][s] += 1
+    decompiled = {a for a, k in kinds.items() if k in ("decompiled", "replaced")}
+    leaves = sum(1 for a in work_nodes if state(a) == "closed" and not graph.nodes[a].sites)
+    cov = covs.get(vid)
+
+    def ranking(wanted: set[int]) -> list[dict]:
+        rows = []
+        for a in wanted:
+            sites = [(c, s) for c, s in graph.callers.get(a, ()) if c in decompiled]
+            if not sites:
+                continue
+            n = graph.nodes[a]
+            rows.append({"address": f"{a:08X}", "name": n.name, "size": n.size, "category": n.tag.category,
+                         "module": n.tag.module, "call_sites": len(sites), "callers": len({c for c, _ in sites}),
+                         "decompiled_blocked": len({c for c in dg.all_callers(graph, a) if c in decompiled}),
+                         "calls": None if cov is None else cov.reached.get(a, 0)})
+        return sorted(rows, key=lambda r: (-r["call_sites"], -r["callers"], r["address"]))
+
+    next_batches = ranking(recompiled)
+    libraries = ranking(library)
+    ready_set = {a for a in work_nodes if kinds[a] == "recompiled" and state(a) == "closed"}
+
+    def unlocks(a: int) -> int:
+        """Recompiled callers of `a` that become ready once `a` is decompiled: `a` is the only direct callee they still
+        wait for, and they have no indirect call."""
+        n = 0
+        for c in {c for c, _s in graph.callers.get(a, ())}:
+            nc = graph.nodes[c]
+            if kinds[c] != "recompiled" or c == a or nc.indirect or nc.unknown_targets:
+                continue
+            if all(s.callee in (a, c) or kinds.get(s.callee) in ("decompiled", "replaced", "native") for s in nc.sites):
+                n += 1
+        return n
+
+    ready = sorted(ready_set, key=lambda a: (-unlocks(a), -len({c for c, _s in graph.callers.get(a, ())}), a))
+    total = sum(tally["all"].values())
+    return {"region": dict(cfg["versions"]).get(vid, ""),
+            "functions": {k: sum(1 for x in kinds.values() if x == k)
+                          for k in ("decompiled", "replaced", "native", "library", "recompiled")},
+            "work": total, "no_address": no_address, "leaves_closed": leaves,
+            "states": {k: dict(v) for k, v in tally.items()},
+            "percent_closed": pct(tally["all"]["closed"], total),
+            "percent_decompiled_closed": pct(tally["decompiled"]["closed"], sum(tally["decompiled"].values())),
+            "next_batches": next_batches[:top], "next_batches_total": len(next_batches),
+            "libraries": libraries[:top], "libraries_total": len(libraries),
+            "ready": [{"address": f"{a:08X}", "name": graph.nodes[a].name, "size": graph.nodes[a].size,
+                       "unlocks": unlocks(a), "callers": len({c for c, _ in graph.callers.get(a, ())})}
+                      for a in ready[:top]],
+            "ready_total": len(ready)}
+
+
+def gate_text(g: dict) -> str:
+    if g["status"] != "gate":
+        return g["status"]
+    return f"{g['branch']} {g['at']} -> {g['to']} (+{g['between']})"
+
+
+def route_text(r: dict) -> str:
+    x = r["route"]
+    parts = []
+    if x["status"] in ("found", "pointer"):
+        parts.append(f"from {x['start']} {x['start_name']} site {x['site']} ({x['site_kind']}) block {x['block']} "
+                     f"gate {gate_text(x['gate'])} path "
+                     + " > ".join(h["function"] + (f"({h['kind']})" if h["kind"] in ("pointer", "table") else "")
+                                  for h in x["path"])
+                     + (f" [{x['alternatives']} start(s) at this distance]" if "alternatives" in x else ""))
+    elif "from_not_measured" in x:
+        parts.append("from a function not measured: " + " > ".join(h["function"] for h in x["from_not_measured"]))
+    if x["reasons"]:
+        parts.append(f"{x['reasons_total']} reason(s), first: {x['reasons'][0]}")
+    if r["reached_in"]:
+        parts.append("reached in " + ",".join(r["reached_in"]))
+    return " ; ".join(parts)
+
+
+def print_routes(out: dict) -> None:
+    x = out.get("routes_all_versions")
+    if x:
+        print(f"Functions of the DOL to decompile: {x['functions']}; reached in at least one version: {x['reached_any']}; "
+              f"reached in no version: {x['reached_none']} ({x['reached_none_remaining']} of them not decompiled yet); "
+              f"reached in one version only: {x['reached_one']}")
+    for vid, v in out["routes"].items():
+        print(f"\nRoutes {vid} ({v['region']}): {v['functions']} functions in the graph, {v['edges']} direct edges; "
+              f"{len(v['runs'])} runs: {', '.join(v['runs'])}; probe on {v['hooks']} addresses")
+        for w in v["probe_warnings"]:
+            print(f"  warning: {w}")
+        c = v["counts"]
+        print("  Reach of the functions to decompile:")
+        for k in sorted(k for k in c if " " not in k):
+            print(f"    {k:28s} {c[k]:6d}")
+        print("  Routes:")
+        for k in sorted(k for k in c if " " in k):
+            print(f"    {k:52s} {c[k]:6d}")
+        print("  Hops of the never-reached functions (- = no route): "
+              + ", ".join(f"{k}: {n}" for k, n in v["hops"].items()))
+        for key, title in (("found", "Call sites that open the most never-reached functions"),
+                           ("pointer", "Address loads behind the most never-reached functions, the indirect call unknown")):
+            print(f"  {title} (top {len(v['targets'][key])}): functions bytes site kind block gate, start")
+            for t in v["targets"][key]:
+                print(f"    {t['functions']:5d} {t['bytes']:7d} {t['site']} {t['kind']:7s} {t['block']} "
+                      f"{gate_text(t['gate']):34s} {t['start']} {t['start_name']}")
+        print(f"  Functions ({len(v['rows'])}): address size reach route flag hops name | detail")
+        for r in v["rows"]:
+            hops = r["route"]["hops"]
+            print(f"    {r['address']:>8s} {r['size']:6X} {r['reach'] + ('?' if r['provisional'] else ''):24s} "
+                  f"{r['route']['status']:9s} {r['route']['flag']:19s} {'-' if hops is None else hops:>2} "
+                  f"{r['name']} | {route_text(r)}")
+
+
+def print_closure(out: dict) -> None:
+    for vid, v in out["closure"].items():
+        print(f"\nClosure {vid} ({v['region']}): " + ", ".join(f"{k} {n}" for k, n in v["functions"].items())
+              + " (whole inventory; native = superset of what the runtime replaces)")
+        print(f"  Functions to decompile with an address here: {v['work']} (no address: {v['no_address']})")
+        print("  State (transitive direct callees)   closed  unknown  library     open")
+        for k in ("all", "decompiled", "recompiled"):
+            s = v["states"][k]
+            print(f"    {k:32s} {s.get('closed', 0):7d} {s.get('unknown', 0):8d} {s.get('library', 0):8d} "
+                  f"{s.get('open', 0):8d}")
+        print(f"  Closed, proven: {fmt_pct(v['percent_closed'])} of the functions to decompile ({v['leaves_closed']} of "
+              f"them have no call at all); {fmt_pct(v['percent_decompiled_closed'])} of the decompiled ones")
+        print(f"  Next batches: recompiled functions called by decompiled code ({v['next_batches_total']}, top "
+              f"{len(v['next_batches'])}): sites callers blocked size address name [calls measured]")
+        for r in v["next_batches"]:
+            print(f"    {r['call_sites']:4d} {r['callers']:4d} {r['decompiled_blocked']:4d} {r['size']:6X} "
+                  f"{r['address']} {r['name']} [{'-' if r['calls'] is None else r['calls']}]")
+        print(f"  Library functions still recompiled, called by decompiled code ({v['libraries_total']}, top "
+              f"{len(v['libraries'])}): sites callers blocked size address name")
+        for r in v["libraries"]:
+            print(f"    {r['call_sites']:4d} {r['callers']:4d} {r['decompiled_blocked']:4d} {r['size']:6X} "
+                  f"{r['address']} {r['name']}")
+        print(f"  Ready: recompiled, every callee decompiled or native, no indirect call ({v['ready_total']}, top "
+              f"{len(v['ready'])}): unlocks callers size address name (unlocks: callers it would make ready)")
+        for r in v["ready"]:
+            print(f"    {r['unlocks']:4d} {r['callers']:4d} {r['size']:6X} {r['address']} {r['name']}")
+
+
+def selected_functions(work: list[Fn], names: list[str]) -> list[Fn]:
+    wanted = {n.lower() for n in names}
+    out = []
+    for f in work:
+        known = [a for a in f.addr.values() if a is not None] + [g[0] for g in f.gated.values()]
+        keys = {f.name.lower(), f"{f.ref:08x}"} | {f"{a:08x}" for a in known}
+        if keys & wanted:
+            out.append(f)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game")
@@ -828,6 +1344,12 @@ def main() -> int:
     ap.add_argument("--decomp-dir", type=Path, help="decompiled code folder to scan instead")
     ap.add_argument("--map-dir", type=Path, help="folder of the symbol maps (<ID>.map, <ID>-rel.tsv) to read instead")
     ap.add_argument("--require-complete", action="store_true", help="exit 1 unless everything is decompiled")
+    ap.add_argument("--routes", action="store_true", help="routes to the functions no run reached")
+    ap.add_argument("--closure", action="store_true", help="what decompiled code still depends on")
+    ap.add_argument("--function", help="comma-separated: limit the rows of --routes (name or address)")
+    ap.add_argument("--top", type=int, default=20, help="length of the rankings (default 20)")
+    ap.add_argument("--cov", action="append", default=[], help="ID:NAME:<cov.tsv or its folder>, repeatable")
+    ap.add_argument("--cov-hooks", action="append", default=[], help="ID:<list of probe addresses>, repeatable")
     ns = ap.parse_args()
     root = (ns.root or tc.ROOT).resolve()
     try:
@@ -862,8 +1384,52 @@ def main() -> int:
     table = apply_table(cfg, fns, rows, warnings) if rows is not None else None
     code = scan_code(cfg, table["names"] if table else [])
     out = report(cfg, fns, versions, modules, ns.list, table, code, warnings)
+    if ns.routes or ns.closure:
+        if fns is None:
+            print("error: --routes and --closure need the function inventory (see the warnings)", file=sys.stderr)
+            return 2
+        import decomp_graph as dg
+        work = [f for f in fns if f.category not in cfg["excluded"] and f.category != "rel-excluded"]
+        rows_of = [f for f in work if not modules or f.module in modules]
+        if ns.function:
+            rows_of = selected_functions(rows_of, ns.function.split(","))
+        try:
+            try:
+                covs = load_coverage(cfg, ns.cov, ns.cov_hooks)
+            except dg.GraphError:
+                if ns.routes or ns.cov:
+                    raise
+                covs = {}                              # --closure alone: the coverage only adds a column
+            for vid in versions:
+                if ns.routes and vid not in covs:
+                    raise dg.GraphError(f"{vid}: no coverage run ([decomp.coverage_runs] of game.toml, or --cov): what "
+                                        "was reached is not known, which is not the same as nothing")
+                if ns.routes:
+                    out.setdefault("routes", {})[vid] = routes_view(cfg, fns, work, rows_of, vid, covs, ns.top, warnings)
+                if ns.closure:
+                    out.setdefault("closure", {})[vid] = closure_view(cfg, fns, work, vid, covs, ns.top, warnings)
+            if ns.routes and len(covs) > 1:
+                dol = [f for f in work if f.module == "dol"]
+                seen_in = {id(f): sum(reached_in(f, v, c) for v, c in covs.items()) for f in dol}
+                out["routes_all_versions"] = {
+                    "functions": len(dol), "reached_any": sum(1 for n in seen_in.values() if n),
+                    "reached_none": sum(1 for n in seen_in.values() if not n),
+                    "reached_none_remaining": sum(1 for f in dol if not seen_in[id(f)] and not f.done),
+                    "reached_one": sum(1 for n in seen_in.values() if n == 1)}
+        except (dg.GraphError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     if ns.json:
         print(json.dumps(out, indent=1))
+    elif ns.routes or ns.closure:
+        if ns.routes:
+            print_routes(out)
+        if ns.closure:
+            print_closure(out)
+        if warnings:
+            print(f"\nWarnings ({len(warnings)}):")
+            for w in warnings:
+                print(f"  - {w}")
     else:
         print_text(out, ns.list)
     if ns.require_complete and not out["complete"]:
