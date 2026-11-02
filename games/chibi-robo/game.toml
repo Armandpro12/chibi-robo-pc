@@ -79,6 +79,9 @@ guest_cost = "decomp/guest_cost.tsv"
 # Reference scenarios (games/<game>/scenarios/) that tools/decomp_oracle.py run replays on the oracle executable when
 # no --scenarios is given: every scenario of the A/B bench, so that the promotion sees every state they reach.
 oracle_scenarios = ["title-boot", "new-game", "load-game", "overwrite-save", "intro-no-card"]
+# tools/decomp_progress.py --routes: the addresses the coverage probe was compiled on, relative to --root, local file.
+# A function outside this list is "not measured", which is not "never reached".
+coverage_hooks = "tests/decomp/cov/hooks-{id}.txt"
 # Statuses of the table (compared whole, case-insensitive, surrounding brackets ignored; never by prefix):
 #   verified   = replaces its recompiled version and passed the oracle: the only status counted as decompiled
 #   unverified = replaces its recompiled version, not yet checked by the oracle: shown as "replaced, not
@@ -122,6 +125,14 @@ OSPanic = { GGTE01 = "80163F80", GGTP01 = "80166830" }
 [decomp.columns]
 GGTE01 = "us_addr"
 GGTP01 = "pal_addr"
+
+# tools/decomp_progress.py --routes: coverage runs of each version (cov.tsv of the coverage probe), globs relative to
+# --root, local files. A pattern that matches nothing is refused: it would read as "never reached".
+[decomp.coverage_runs]
+GGTE01 = ["tests/{slug}/{id}/ab/cov-d1/*/cov.tsv", "tests/decomp/cov/runs/{id}-*/cov.tsv",
+          "tests/decomp/cov/runs/us-play-*/cov.tsv"]
+GGTP01 = ["tests/{slug}/{id}/ab/cov-d1/*/cov.tsv", "tests/decomp/cov/runs/{id}-*/cov.tsv",
+          "tests/decomp/cov/runs/pal-play-*/cov.tsv"]
 
 # Names of the DOL sections, for the globals table (tools/decomp_globals.py): the section names of the dtk splits of
 # the reference version (cbr_decomp, decomp_dtk_main/config/GGTE01/splits.txt, CC0), in the DOL slot order; the same

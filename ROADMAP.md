@@ -366,6 +366,13 @@ a batch.
   code): 64 verified (1.69 %; 3,388 bytes, 0.17 %; DOL 64 of 3,297, 1.94 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
+  Two planning views come with it, on both US and PAL: `--routes` gives, for each function no test run reached, the
+  shortest static path from a reached function, the call site to take and whether the search was exhaustive, on static
+  evidence only: it cannot see code outside a version's inventory or addresses computed in another way (1,208 DOL
+  functions are reached in neither version; the 475 REL functions are not measured, which is not the same as not
+  reached; a coverage file cut by under about 1 % goes unnoticed); `--closure` gives the share of functions with every
+  transitive callee decompiled or native (an upper bound: 30.40 % US, 30.32 % PAL, mostly functions with no call at
+  all) and what to decompile next.
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
   decompiled in PAL: in the DOL, 22 placed by position only and 65 whose PAL size comes only from the code partition
   (both enabled per version, once the oracle has passed on PAL), and 1 ambiguous match; 9 in the RELs. The other PAL
