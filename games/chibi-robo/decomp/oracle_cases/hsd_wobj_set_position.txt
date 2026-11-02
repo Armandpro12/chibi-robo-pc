@@ -51,3 +51,13 @@ mem S+10 4 40000000
 mem S+14 4 40400000
 mem S+18 4 40800000
 end
+
+# Mutant HSD_WObjSetPosition.swapped_writes.87605e17: the source's z is the object's flags word (never seen in the
+# game), so the flags must still hold their old value when z is read.
+case hsd_wobj_set_position overlap_z_on_flags
+r3 = S
+r4 = S
+mem S 4 11111111
+mem S+4 4 22222222
+mem S+8 4 00000001
+end

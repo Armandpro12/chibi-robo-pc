@@ -146,3 +146,28 @@ mem S+D8 1 3
 mem S+D9 1 0
 end
 
+
+# Mutants AssignColorReg.constant.6c3d37c7 (assigned < 3) and .7ce4afc3 (three turns): the last constant register, and
+# the last colour register's alpha.
+case hsd_texp_assign_color_reg assigned_konst_register_last
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+30 4 S+80
+mem S+8C 1 1
+mem S+8E 1 3
+mem S+8F 1 0
+end
+
+case hsd_texp_assign_color_reg free_alpha_last
+r3 = S
+r4 = 1
+r5 = S+C0
+mem S+30 4 S+80
+mem S+8C 1 6
+mem S+8E 1 FF
+mem S+8F 1 0
+mem S+D5 1 1
+mem S+D7 1 1
+mem S+D9 1 1
+end
