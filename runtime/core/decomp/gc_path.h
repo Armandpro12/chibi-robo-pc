@@ -133,6 +133,18 @@ template <class C> inline C falls_through(C condition) noexcept {
     return condition;
 }
 
+// The original's next branch is the bctr of a jump table of `count` entries, going to entry `index` (the graph has one
+// node per entry but the last, tools/decomp_path_cost.py). Call it once the bound branch is marked, index in range.
+// Returns `index`.
+inline std::uint32_t jump_table(std::uint32_t index, std::uint32_t count) noexcept {
+    for (std::uint32_t entry = 0; entry + 1 < count; entry++) {
+        ::gc::abi::detail::path_step(entry == index);
+        if (entry == index)
+            break;
+    }
+    return index;
+}
+
 } // namespace gc::path
 
 #endif // GC_PATH_H

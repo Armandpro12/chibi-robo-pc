@@ -16,9 +16,13 @@ Graph: an entry edge, then one node per conditional branch reached (bc, bclr), e
 edge: the cycles charged until the next conditional branch, and that branch's index or RETURN (blr, a taken bclr, a
 tail branch out of the function). Unconditional branches inside the function are followed; a call (bl, bctrl) goes
 on to the next instruction (the callee is charged where it runs: the cost is exclusive, as the oracle measures it).
-Refused (ValueError): an indirect jump (bcctr without link), a conditional call, rfi, a straight-line loop, a path
-that runs off the end of the function, a function whose loops DolRecomp outlined (`loop_<address>`, not read here),
-an instruction absent from the generated code.
+The bctr of a proven jump table (tools/decomp_functions.py jump_analysis, given by FunctionWords or `tables`) becomes
+one node per entry but the last, at the bctr's address, each asking "is it this entry?": `taken` goes to that case,
+`not_taken` to the next node, the last node's to the last entry (gc::path::jump_table walks them; the graph format is
+the same). DolRecomp's bctr leaves its chunk through the dispatcher, without a charge: a case runs from the target's
+label, with the charges from there on. Refused (ValueError): any other indirect jump (bcctr without link), a
+conditional call, rfi, a straight-line loop, a path that runs off the end of the function, a function whose loops
+DolRecomp outlined (`loop_<address>`, not read here), an instruction absent from the generated code.
 
 Call sites (issue #68): the graph also lists the original's reachable call sites (bl, bcl, bcctrl, and the branches
 out of the function: tail calls), each with its target (0 for bcctrl), the cycles charged after it until the next
@@ -29,6 +33,8 @@ that does not return at its end) has no entry, and a call there has no known pre
 
 Usage (diagnostic): py -3 tools/decomp_path_cost.py <game> --version <ID> [--function NAME ...]
 prints, for each enabled function of the game's table, its constant cost or its graph (path-dependent).
+       py -3 tools/decomp_path_cost.py <game> --version <ID> --address HEX --size HEX [--module NAME]
+does the same for any function, in the table or not (--module: a REL, the address being the offset in its code).
 """
 
 from __future__ import annotations
@@ -151,17 +157,21 @@ def _target(word: int, at: int) -> int:
     return (off & 0xFFFFFFFF) if (word & 2) else (at + off) & 0xFFFFFFFF
 
 
-def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Graph:
+def build_graph(words: list[int], address: int, charges: dict[int, int],
+                tables: dict[int, tuple[int, ...]] | None = None) -> Graph:
     """Graph of the function whose instructions are `words` (starting at `address`), with the cycle charges of its
-    cost-group heads (`charges`: {instruction address: N}). ValueError if the code is not supported (module doc)."""
+    cost-group heads (`charges`: {instruction address: N}). `tables`: {bctr: targets by index}, by default those of
+    `words` when it is a FunctionWords. ValueError if the code is not supported (module doc)."""
     n = len(words)
     end = address + 4 * n
+    tables = getattr(words, "jump_tables", {}) if tables is None else tables
+    refusals = getattr(words, "jump_refusals", {})
 
     def inside(t: int) -> bool:
         return address <= t < end and (t - address) % 4 == 0
 
     # Kind of each instruction: ("go", index) straight or unconditional branch; ("ret",) end of the path;
-    # ("cond", taken target index or None for a return or a tail branch).
+    # ("cond", taken target index or None for a return or a tail branch); ("jump", target indexes by entry).
     kinds: list[tuple] = []
     for i, w in enumerate(words):
         at = address + 4 * i
@@ -190,8 +200,13 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
                 raise ValueError(f"{at:08X}: bclrl not supported")
             kinds.append(("ret",) if always else ("cond", None))
         elif op == 19 and ((w >> 1) & 0x3FF) == 528:  # bcctr
+            if not lk and at in tables:
+                cases = tuple((t - address) // 4 for t in tables[at])
+                kinds.append(("jump", cases) if len(cases) > 1 else ("go", cases[0]))
+                continue
             if not lk:
-                raise ValueError(f"{at:08X}: indirect jump (bcctr) not supported")
+                why = f": {refusals[at]}" if at in refusals else ""
+                raise ValueError(f"{at:08X}: indirect jump (bcctr) not supported{why}")
             if not always:
                 raise ValueError(f"{at:08X}: conditional call (bcctrl) not supported")
             kinds.append(("go", i + 1))
@@ -201,16 +216,16 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
             kinds.append(("go", i + 1))
 
     graph = Graph(address, Edge(0, RETURN))
-    index: dict[int, int] = {}
-    todo: list[int] = []
+    index: dict[tuple[int, int], int] = {}  # (instruction, entry of its jump table, 0 otherwise) -> node
+    todo: list[tuple[int, int]] = []
     reached: set[int] = set()  # instructions on some path from the entry
 
-    def node_of(i: int) -> int:
-        if i not in index:
-            index[i] = len(graph.nodes)
+    def node_of(i: int, entry: int = 0) -> int:
+        if (i, entry) not in index:
+            index[(i, entry)] = len(graph.nodes)
             graph.nodes.append(Node(address + 4 * i, Edge(0, RETURN), Edge(0, RETURN)))
-            todo.append(i)
-        return index[i]
+            todo.append((i, entry))
+        return index[(i, entry)]
 
     def follow(i: int) -> Edge:
         cycles, seen = 0, set()
@@ -232,9 +247,14 @@ def build_graph(words: list[int], address: int, charges: dict[int, int]) -> Grap
 
     graph.entry = follow(0)
     while todo:
-        i = todo.pop()
-        node = graph.nodes[index[i]]
+        i, entry = todo.pop()
+        node = graph.nodes[index[(i, entry)]]
         target = kinds[i][1]
+        if kinds[i][0] == "jump":
+            node.taken = follow(target[entry])
+            more = entry + 2 < len(target)
+            node.not_taken = Edge(0, node_of(i, entry + 1)) if more else follow(target[-1])
+            continue
         node.taken = follow(target) if target is not None else Edge(0, RETURN)
         node.not_taken = follow(i + 1)
     # Call sites of the reachable code (module doc). Every instruction after a reachable call is reachable, and so is
@@ -409,6 +429,9 @@ def main() -> int:
     p.add_argument("--version", required=True)
     p.add_argument("--function", action="append", default=[], help="only these names (repeatable)")
     p.add_argument("--recomp-dir", help="recompiler folder (default: generated/<game>/<version>/recomp)")
+    p.add_argument("--address", help="any function: its address (hexadecimal), or its offset in the code of --module")
+    p.add_argument("--size", help="its size (hexadecimal), with --address")
+    p.add_argument("--module", default="dol", help="its module, with --address (default: dol)")
     args = p.parse_args()
     import json
     game_cfg = tc.load_game(args.game)
@@ -417,9 +440,19 @@ def main() -> int:
         raise SystemExit(f"{manifest} missing: extract the disc first (tools/extract.py)")
     disc_root = Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
     words: dict[int, list[int]] = {}
+    recomp = Path(args.recomp_dir) if args.recomp_dir else tc.GENERATED / args.game / args.version / "recomp"
+    if args.address:
+        if not args.size:
+            raise SystemExit("--address needs --size")
+        a, w = decomp_functions.any_function_words(game_cfg, disc_root, args.module, int(args.address, 16),
+                                                   int(args.size, 16), decomp_functions._layout(game_cfg, disc_root))
+        for site, targets in sorted(w.jump_tables.items()):
+            print(f"jump table at {site:08X}: {len(targets)} entries, "
+                  f"{len(set(targets))} distinct targets: {' '.join(f'{t:08X}' for t in targets)}")
+        print(describe(f"{args.address}", build_graph(w, a, GeneratedCode(recomp).charges(a, 4 * len(w)))))
+        return 0
     entries = decomp_functions.resolve(game_cfg, args.version, disc_root,
                                        decomp_functions._layout(game_cfg, disc_root), words=words)
-    recomp = Path(args.recomp_dir) if args.recomp_dir else tc.GENERATED / args.game / args.version / "recomp"
     errors: dict[int, str] = {}
     graphs = graphs_for(recomp, words, errors)
     for a, f in entries:
