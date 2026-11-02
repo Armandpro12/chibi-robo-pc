@@ -288,10 +288,10 @@ exe_name = "chibi-robo.exe"
 # Required: tools/rea.py refuses to run when no installed .ldefs declares it, because REA's default
 # PowerPC:BE:32:default would turn paired-single code into wrong output without any error.
 language = "PowerPC:BE:32:Gekko_Broadway"
-# Ghidra analyzers left out of REA's import. "Stack" saves 13 to 25 s on a 109 to 165 s import. On the whole main
-# executable of both versions it leaves the functions, their ranges and their calls unchanged; only the stack
-# variables differ: decompiler names (auStack_28 for local_28), and no stack references or locals in `function`.
-disabled_analyzers = ["Stack"]
+# Ghidra analyzers left out of REA's import: none. "Stack" would save 13 to 25 s on a 109 to 165 s import and leaves
+# the functions, their ranges and their calls unchanged, but it costs the stack variables (auStack_28 for local_28,
+# no stack references or locals in `function`), which matter more to someone reading the code.
+disabled_analyzers = []
 # The REL modules of [code] rel_dir go in the ELF too, at the addresses of a recompiled build ([recomp] rel_base):
 # `--no-rels` of tools/rea.py leaves them out.
 rels = true
