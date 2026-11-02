@@ -1,0 +1,69 @@
+# Sorted survivors of tools/decomp_oracle.py mutate (tools/decomp_mutants.py). One line per surviving mutant: id, verdict,
+# reason. equivalent: no input tells it from the source. hypothesis: not proven either way. gap: a real gap, no case yet.
+# case:<label>: the synthetic case added to kill it. Names and reasons only: no game data.
+id	verdict	reason
+flag_set_clear.swapped_writes.4f44ef76	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+flag_set_clear.write_before_read.653d20ad	equivalent	the load and the store are on two disjoint words of one object: the order changes no byte
+HSD_AObjInitEndCallBack.swapped_writes.2f6cacbc	equivalent	two distinct globals set to 0: same final bytes
+HSD_CObjSetViewportf.swapped_writes.11c64c2e	equivalent	both values are read before either store (A19 fix): disjoint fields, same final bytes
+HSD_CObjSetViewportf.swapped_writes.41537ea7	equivalent	both values are read before either store (A19 fix): disjoint fields, same final bytes
+HSD_IDGetDataFromTable.signedness.46044438	equivalent	the pointee only receives 0 or 1: same bytes in either type
+HSD_LObjGetActiveByIndex.constant.bc203cc2	gap	needs a non-null light in slot 7: the array is a global, which synthetic cases cannot set, and no scenario reaches eight active lights
+obj_alloc_free.swapped_writes.9c3f942a	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+obj_alloc_free.swapped_writes.144c8c57	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+obj_alloc_free.write_before_read.1a61cf70	equivalent	the temporary is inlined with no store between the load and the store it feeds: same accesses in the same order
+HSD_PObjClearMtxMark.swapped_writes.7658ceac	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+HSD_PObjClearMtxMark.signedness.2ddefe73	equivalent	the field is only stored here: same bytes in either type
+HSD_PObjClearFlags.signedness.2313c518	equivalent	bit operation truncated to 16 bits: same bits in either type
+HSD_PObjSetFlags.signedness.2313c518	equivalent	bit operation truncated to 16 bits: same bits in either type
+HSD_TExpRef.relational.f5ec1119	equivalent	type == constant has already returned on the line above, so > and >= agree here
+HSD_TExpRef.signedness.eace8d6f	equivalent	the field only takes += 1: same 32-bit wrap in either type
+HSD_TExpRef.signedness.6b8ebc4d	equivalent	the field only takes += 1: same 32-bit wrap in either type
+AssignColorReg.swapped_writes.b0c03a7e	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorReg.swapped_writes.0a83d601	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorReg.swapped_writes.4d72ca1a	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorReg.swapped_writes.288eff2c	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorReg.swapped_writes.fea52fae	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorReg.swapped_writes.8e548897	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorReg.swapped_writes.4760c29e	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorReg.swapped_writes.ea8d2441	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorReg.signedness.c9285d23	equivalent	0 or -1 in r3: the same bits in either type
+AssignColorReg.signedness.b58b6589	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignColorReg.signedness.9fd156e1	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
+AssignColorReg.signedness.575d0ac6	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
+AssignColorKonst.swapped_writes.e2a541a6	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.swapped_writes.b0c03a7e	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.0a83d601	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.swapped_writes.d9b51762	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.5b95e201	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.swapped_writes.3e70a68b	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.b54c0144	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.d35ec414	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.swapped_writes.fea52fae	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.8e548897	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.swapped_writes.2ed26444	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.f96dd2de	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignColorKonst.swapped_writes.6e8016a7	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignColorKonst.signedness.a4ec330c	equivalent	0 or -1 in r3: the same bits in either type
+AssignColorKonst.signedness.424b8831	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignColorKonst.signedness.c6f9e46e	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
+AssignColorKonst.signedness.53ce62ed	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
+AssignAlphaKonst.swapped_writes.f1448cfc	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignAlphaKonst.swapped_writes.0f7360a6	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignAlphaKonst.swapped_writes.b0c03a7e	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignAlphaKonst.swapped_writes.0a83d601	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignAlphaKonst.swapped_writes.6c66502d	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignAlphaKonst.swapped_writes.95e7ac39	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignAlphaKonst.swapped_writes.3e70a68b	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignAlphaKonst.swapped_writes.fa210324	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
+AssignAlphaKonst.swapped_writes.e7d3fd7f	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+AssignAlphaKonst.signedness.0a093144	equivalent	0 or -1 in r3: the same bits in either type
+AssignAlphaKonst.signedness.424b8831	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignAlphaKonst.signedness.b80f2c43	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
+HSD_VIIsResetRequested.constant.1e4e0139	gap	the true side is never compared: the reset flag is a global no synthetic case can set, and no scenario presses reset; a branchless original, so block coverage cannot see it
+HSD_VIIsResetRequested.constant.8d284cfb	gap	the true side is never compared: the reset flag is a global no synthetic case can set, and no scenario presses reset; a branchless original, so block coverage cannot see it
+HSD_WObjSetPosition.swapped_writes.9852e807	equivalent	x and y are read before either store (A19 fix): disjoint fields, same final bytes
+HSD_WObjSetPosition.swapped_writes.c1a4bb7c	equivalent	set bit 1 and clear bit 0 of one word: two different bits commute
+xaction_reset.swapped_writes.b3ba3534	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+xaction_reset.swapped_writes.b8bf551a	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
+xaction_reset.swapped_writes.5e2d39fb	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
