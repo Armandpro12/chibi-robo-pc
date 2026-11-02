@@ -186,6 +186,21 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   edge or path coverage), not a proof on states that were never compared. Results from a run that did not finish,
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
   defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
+- **Mutants** (`tools/decomp_oracle.py mutate`, `tools/decomp_mutants.py`; experimental, blocks nothing, never in
+  a build): small deliberate errors in the decompiled sources (a branch, a bound, a constant, a store, a type, a
+  store moved above a load) are replayed offline on the captured cases, under `build/`, to measure whether the
+  cases tell them from the right code. Current run, on the 64 verified functions in US and PAL, with the cases of
+  one oracle run over the five reference scenarios: 865 mutants, of which 382 killed, 170 detected without a proven
+  difference, 67 survivors, 102 with the same machine code as the source and 144 that do not compile. The survivors
+  are all sorted (`games/chibi-robo/decomp/oracle_mutants/triage.tsv`). It found test gaps, not code errors: 13
+  synthetic cases closed 16 survivors, with no difference from the originals. Of the 67 survivors, 43 are equivalent
+  and 24 stay open. Five on three functions need a state held in a global, which synthetic cases cannot set, and the
+  five scenarios never reach it. Nineteen are unproven: objects assumed not to overlap, or an index assumed valid by
+  callers that are not decompiled.
+  The tool is on trial, not validated. Its first prediction failed: it expected swapped stores to reproduce a real
+  bug, and that bug was a read after a write, which the oracle's final bytes do not show as an order of stores. The
+  operator for that shape was defined after the failure, so its results on that bug prove nothing. Each batch of the
+  trial writes a figure before the run; two batches in a row with no real gap and the tool is dropped.
 - **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
@@ -348,6 +363,13 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   code): 64 verified (1.69 %; 3,388 bytes, 0.17 %; DOL 64 of 3,297, 1.94 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
+  Two planning views come with it, on both US and PAL: `--routes` gives, for each function no test run reached, the
+  shortest static path from a reached function, the call site to take and whether the search was exhaustive, on static
+  evidence only: it cannot see code outside a version's inventory or addresses computed in another way (1,208 DOL
+  functions are reached in neither version; the 475 REL functions are not measured, which is not the same as not
+  reached; a coverage file cut by under about 1 % goes unnoticed); `--closure` gives the share of functions with every
+  transitive callee decompiled or native (an upper bound: 30.40 % US, 30.32 % PAL, mostly functions with no call at
+  all) and what to decompile next.
 - **PAL addresses**: 97 of the functions to decompile have no established PAL address yet, so they cannot count as
   decompiled in PAL: in the DOL, 22 placed by position only and 65 whose PAL size comes only from the code partition
   (both enabled per version, once the oracle has passed on PAL), and 1 ambiguous match; 9 in the RELs. The other PAL

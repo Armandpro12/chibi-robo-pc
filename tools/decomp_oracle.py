@@ -19,6 +19,8 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
         [--promote [--dry-run]]
   py -3 tools/decomp_oracle.py replay --label L [--versions ...] [--negative DIR] [--extra-source FILE]
   py -3 tools/decomp_oracle.py replay --cases FILE.jsonl [...]      (replay of any case file)
+  py -3 tools/decomp_oracle.py mutate --label L [--versions ...] [--functions a,b] [--operators ...]
+        [--prediction NOTE] [--drop-synthetic LABEL,...] [--list]   (mutants, tools/decomp_mutants.py)
   py -3 tools/decomp_oracle.py hash                                 (hashes the results are tied to)
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
@@ -877,11 +879,10 @@ def case_lines(rec: dict) -> list[str]:
     return out
 
 
-def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, extra: list[Path]) -> Path:
-    clang = tc.find_clang_cl()
-    if not clang:
-        raise SystemExit("clang-cl not found (tools/doctor.py)")
-    core = tc.ROOT / "runtime" / "core"
+def replay_sources(game: str, game_cfg: dict, out: Path, negative: Path | None,
+                   extra: list[Path]) -> tuple[list[Path], Path]:
+    """The decompiled sources of the replay executable, and its generated table (written to `out`, with
+    decomp_globals.h)."""
     src = sorted((tc.ROOT / "games" / game / "decomp" / "src").rglob("*.cpp"))
     # Oracle test functions (disabled rows of the table, oracle builds only): their records are in the table too.
     src += sorted((tc.ROOT / "games" / game / "decomp" / "oracle_tests").rglob("*.cpp"))
@@ -906,15 +907,57 @@ def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, ex
     import decomp_globals  # noqa: E402
     (out / "decomp_globals.h").write_text(decomp_globals.header_source(decomp_globals.read_table(game_cfg)),
                                           encoding="utf-8")
+    return src, table
+
+
+def replay_flags(out: Path, negative: Path | None) -> list[str]:
+    """Compiler flags of the replay (the same for the plain replay and for every mutant)."""
+    core = tc.ROOT / "runtime" / "core"
+    return ["/std:c++20", "/EHsc", "/O2", "/W4", "/clang:-ffp-contract=off", "/DGC_MEM_OBSERVER",
+            *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}", f"/I{out}"]
+
+
+def find_clang() -> str:
+    clang = tc.find_clang_cl()
+    if not clang:
+        raise SystemExit("clang-cl not found (tools/doctor.py)")
+    return str(clang)
+
+
+def build_replay(game: str, game_cfg: dict, out: Path, negative: Path | None, extra: list[Path]) -> Path:
+    clang = find_clang()
+    src, table = replay_sources(game, game_cfg, out, negative, extra)
     exe = out / f"oracle_replay{tc.EXE}"
-    cmd = [str(clang), "/nologo", "/std:c++20", "/EHsc", "/O2", "/W4", "/clang:-ffp-contract=off",
-           "/DGC_MEM_OBSERVER", *(["/DGC_DECOMP_ORACLE_NEGATIVE"] if negative else []), f"/I{core}", f"/I{out}",
-           str(core / "decomp" / "oracle_replay.cpp"), str(table),
+    cmd = [clang, "/nologo", *replay_flags(out, negative),
+           str(tc.ROOT / "runtime" / "core" / "decomp" / "oracle_replay.cpp"), str(table),
            *[str(s) for s in src], f"/Fo{out}\\", f"/Fe{exe}"]
     r = subprocess.run(cmd, capture_output=True, text=True, env=tc.msvc_env())
     if r.returncode != 0:
         raise SystemExit(f"replay build failed:\n{r.stdout}\n{r.stderr}")
     return exe
+
+
+def build_replay_objects(game: str, game_cfg: dict, out: Path, extra: list[Path], jobs: int = 8) -> tuple:
+    """The objects of the replay, one compilation per source (tools/decomp_mutants.py relinks them with one object
+    replaced): ({decompiled source: object}, [the other objects], flags, clang, environment)."""
+    from concurrent.futures import ThreadPoolExecutor
+    clang = find_clang()
+    src, table = replay_sources(game, game_cfg, out, None, extra)
+    flags, env = replay_flags(out, None), tc.msvc_env()
+    others = [tc.ROOT / "runtime" / "core" / "decomp" / "oracle_replay.cpp", table]
+
+    def compile_one(source: Path) -> Path:
+        obj = out / f"{source.stem}.obj"
+        r = subprocess.run([clang, "/nologo", "/c", *flags, str(source), f"/Fo{obj}"], capture_output=True, text=True,
+                           env=env)
+        if r.returncode != 0:
+            raise SystemExit(f"replay build failed on {source}:\n{r.stdout}\n{r.stderr}")
+        return obj
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        objects = list(pool.map(compile_one, [*src, *others]))
+    mapping = dict(zip(src, objects))
+    return mapping, objects[len(src):], flags, clang, env
 
 
 def globals_users(game_cfg: dict) -> set[str]:
@@ -980,6 +1023,11 @@ def cmd_replay(args) -> int:
         if not line.startswith("PASS ") or args.verbose:
             print(line)
     return r.returncode
+
+
+def cmd_mutate(args) -> int:
+    import decomp_mutants
+    return decomp_mutants.run(args, sys.modules[__name__])
 
 
 # --- cost ------------------------------------------------------------------------------------------------------------
@@ -1205,9 +1253,27 @@ def main() -> int:
     y.add_argument("--mismatches", action="store_true", help="also replay the recorded mismatches")
     y.add_argument("--out", help="build folder of the replay executable (default build/oracle-replay)")
     y.add_argument("--verbose", action="store_true")
+    m = sub.add_parser("mutate", help="mutants of the decompiled code judged by the captured cases "
+                                      "(tools/decomp_mutants.py; never blocks, every survivor is to be sorted)")
+    m.add_argument("--label", required=True, help="one or more labels, comma-separated (their cases are added up)")
+    m.add_argument("--versions")
+    m.add_argument("--functions", help="comma-separated table names (default: every row of --status)")
+    m.add_argument("--status", default="verified", help="status of the rows to mutate (default %(default)s)")
+    m.add_argument("--operators", help="comma-separated (default: all of tools/decomp_mutants.py OPERATORS)")
+    m.add_argument("--only", metavar="REGEX", help="keep the mutants whose id matches")
+    m.add_argument("--drop-synthetic", metavar="LABEL,...", help="leave these synthetic cases out (labels)")
+    m.add_argument("--jobs", type=int, default=6)
+    m.add_argument("--out", help="work folder, under build/ (default build/oracle-mutants/<label>)")
+    m.add_argument("--report", help="name of the json report in the work folder (default mutants.json)")
+    m.add_argument("--triage", help="sorted survivors (default games/<game>/decomp/oracle_mutants/triage.tsv)")
+    m.add_argument("--prediction", metavar="NOTE", help="note written before the run, with the line 'mutants-prediction: "
+                                                         "survivors=<n> gaps=<n>' (a batch without one gets a warning; "
+                                                         "the output compares the figures)")
+    m.add_argument("--list", action="store_true", help="list the mutants, build nothing")
+    m.add_argument("--keep", action="store_true", help="keep each mutant's folder")
     args = p.parse_args()
     return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash,
-            "cost": cmd_cost}[args.cmd](args)
+            "cost": cmd_cost, "mutate": cmd_mutate}[args.cmd](args)
 
 
 if __name__ == "__main__":
