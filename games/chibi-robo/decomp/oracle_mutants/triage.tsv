@@ -16,6 +16,8 @@ HSD_PObjClearMtxMark.swapped_writes.7658ceac	equivalent	two stores to disjoint f
 HSD_PObjClearMtxMark.signedness.2ddefe73	equivalent	the field is only stored here: same bytes in either type
 HSD_PObjClearFlags.signedness.2313c518	equivalent	bit operation truncated to 16 bits: same bits in either type
 HSD_PObjSetFlags.signedness.2313c518	equivalent	bit operation truncated to 16 bits: same bits in either type
+HSD_SynthIsStreamStarted.constant.6bfb10d7	gap	the false side (empty list) is never compared: the list head is a global no synthetic case can set (tried: an absolute or out-of-area mem is refused, an r13 into the area only moves the original's read, so the two sides differ), and the five reference scenarios only call it with a stream started; a branchless original, so block coverage cannot see it. The party play scenario reached the empty list in an earlier run: a run with it should close this
+HSD_SynthIsStreamStarted.constant.0d71695c	gap	the false side (empty list) is never compared: the list head is a global no synthetic case can set (tried: an absolute or out-of-area mem is refused, an r13 into the area only moves the original's read, so the two sides differ), and the five reference scenarios only call it with a stream started; a branchless original, so block coverage cannot see it. The party play scenario reached the empty list in an earlier run: a run with it should close this
 HSD_TExpRef.relational.f5ec1119	equivalent	type == constant has already returned on the line above, so > and >= agree here
 HSD_TExpRef.signedness.eace8d6f	equivalent	the field only takes += 1: same 32-bit wrap in either type
 HSD_TExpRef.signedness.6b8ebc4d	equivalent	the field only takes += 1: same 32-bit wrap in either type

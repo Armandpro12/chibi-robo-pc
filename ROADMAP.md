@@ -188,11 +188,12 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
 - **Mutants** (`tools/decomp_oracle.py mutate`, `tools/decomp_mutants.py`; experimental, blocks nothing, never in
   a build): small deliberate errors in the decompiled sources (a branch, a bound, a constant, a store, a type, a
   store moved above a load) are replayed offline on the captured cases, under `build/`, to measure whether the
-  cases tell them from the right code. Current run, on the 64 verified functions in US and PAL: 865 mutants, 384
-  killed, 170 detected without a proven difference, 65 survivors, all sorted
-  (`games/chibi-robo/decomp/oracle_mutants/triage.tsv`). It found test gaps, not code errors: 13 synthetic cases
-  closed 16 survivors, with no difference from the originals. Three survivors on two functions stay open, because
-  synthetic cases cannot set a global.
+  cases tell them from the right code. Current run, on the 64 verified functions in US and PAL, with the cases of
+  one oracle run over the five reference scenarios: 865 mutants, 382 killed, 170 detected without a proven
+  difference, 67 survivors, all sorted (`games/chibi-robo/decomp/oracle_mutants/triage.tsv`). It found test gaps, not
+  code errors: 13 synthetic cases closed 16 survivors, with no difference from the originals. Five survivors on three
+  functions stay open: each needs a state held in a global, which synthetic cases cannot set, and the five scenarios
+  never reach it.
   The tool is on trial, not validated. Its first prediction failed: it expected swapped stores to reproduce a real
   bug, and that bug was a read after a write, which the oracle's final bytes do not show as an order of stores. The
   operator for that shape was defined after the failure, so its results on that bug prove nothing. Each batch of the

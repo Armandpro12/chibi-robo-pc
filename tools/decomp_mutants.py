@@ -7,7 +7,7 @@ The score blocks nothing; what matters is that every survivor is sorted (below).
 
 Mutants never leave the build folder: each is a temporary copy of one source file (and its sibling headers) under
 build/, compiled alone and linked with the unchanged objects of the replay. Nothing here writes to the decompiled
-sources, the production build or the oracle build; --out outside build/ is refused.
+sources, the production build or the oracle build; --out outside build/, or build/ itself, is refused.
 
 Operators (OPERATORS, on the functions of the table, their helpers in the same file, the constants and field types
 they use): invert_branch (a condition, each operand of || and &&, == and != outside conditions), relational (< and <=,
@@ -806,8 +806,8 @@ def run(args, oracle) -> int:
     labels = [x for x in args.label.split(",") if x]
     out = Path(args.out).resolve() if args.out else tc.ROOT / "build" / "oracle-mutants" / labels[0]
     build_root = (tc.ROOT / "build").resolve()
-    if build_root != out and build_root not in out.parents:
-        raise SystemExit(f"--out {out}: mutants stay under {build_root}")
+    if build_root not in out.parents:  # build/ itself too: the tool would write cases/, work/, base/ straight into it
+        raise SystemExit(f"--out {out}: mutants stay under {build_root}, in a folder of their own")
     operators = [x for x in (args.operators or ",".join(OPERATORS)).split(",") if x]
     unknown = [x for x in operators if x not in OPERATORS]
     if unknown:
