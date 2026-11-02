@@ -12,8 +12,8 @@ Ghidra project: `generated/<game>/<ID>/ghidra/<ID>.gpr`, program `/main.dol`
 the folder into a single program, the RELs following the end of the DOL).
 Outputs: `generated/<game>/<ID>/ghidra/out/` (ignored by Git: contains information taken from the game).
   functions.tsv: functions (entry, size, name, callees); mmio.tsv: accesses to the hardware registers
-  and to the OS low globals; noreturn.tsv: functions marked no-return, and whether that is wrong (noreturn-rels.tsv
-  for the RELs); disasm.txt: disassemblies requested by `dump`; attest.tsv: attestation of the program (below).
+  and to the OS low globals; disasm.txt: disassemblies requested by `dump`; attest.tsv: attestation of the program
+  (below).
 
 Provenance (tools/ghidra_provenance.py): every Ghidra run also runs AttestImage.java, which compares each loaded block
 with the DOL, then the entry point and the language. Files written by the run's scripts then start with a header made
@@ -102,9 +102,6 @@ def attested(run):
         rc = run(project_dir, project, [*args[:at], *attest, *args[at:]], log)
         if rc != 0:
             return rc
-        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-            if "ExportNoReturn:" in line:
-                print("  " + line.strip())
         found = gp.read_report(report)
         if found is None:
             print(f"attestation: no report ({report}): see {log}", file=sys.stderr)
@@ -150,8 +147,7 @@ def program_exists(project_dir: Path, project: str) -> bool:
 
 def post_exports(out: Path) -> list:
     return ["-postScript", "ExportFunctions.java", out / "functions.tsv",
-            "-postScript", "ExportMmioRefs.java", out / "mmio.tsv",
-            "-postScript", "ExportNoReturn.java", out / "noreturn.tsv"]
+            "-postScript", "ExportMmioRefs.java", out / "mmio.tsv"]
 
 
 def cmd_import(ns, game, vid, p) -> int:
@@ -197,8 +193,7 @@ def import_rels(ns, p, project, map_path: Path | None) -> int:
     if map_path:
         # The DOL addresses are the same in this program: the DOL map applies as is.
         args += ["-preScript", "ApplySymbolMap.java", map_path]
-    args += ["-postScript", "ExportFunctions.java", p["out"] / "functions-rels.tsv",
-             "-postScript", "ExportNoReturn.java", p["out"] / "noreturn-rels.tsv"]
+    args += ["-postScript", "ExportFunctions.java", p["out"] / "functions-rels.tsv"]
     return headless(p["project_dir"], f"{project}/rels", args, p["out"] / "import-rels.log")
 
 
@@ -244,7 +239,7 @@ def main() -> int:
     imp.add_argument("--force", action="store_true", help="imports again even if the project exists")
     imp.add_argument("--map", default="auto", help="auto (games/<game>/symbols/<ID>.map), none, or a path")
     imp.add_argument("--rels", action="store_true", help="also imports DOL + REL into /rels/")
-    sub.add_parser("export", help="re-exports functions.tsv, mmio.tsv and noreturn.tsv")
+    sub.add_parser("export", help="re-exports functions.tsv and mmio.tsv")
     att = sub.add_parser("attest", help="compares the imported program with the DOL")
     att.add_argument("--dol", help="another DOL to compare with")
     att.add_argument("--language", help="another expected language")
