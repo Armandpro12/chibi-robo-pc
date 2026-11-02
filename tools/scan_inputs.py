@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gcimage  # noqa: E402
+import ghidra_provenance as gp  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 DTK_RE = re.compile(r"^(\S+)\s*=\s*([^:\s]+):0x([0-9A-Fa-f]+);\s*//\s*(.*)$")
@@ -184,6 +185,7 @@ def ghidra_functions(slug: str, vid: str, root: Path) -> dict[int, int]:
     out: dict[int, int] = {}
     if not tsv.exists():
         return out
+    gp.require(tsv, code_paths(slug, tc.load_game(slug), vid, root)[0], vid)
     for line in tsv.read_text(encoding="utf-8").splitlines():
         if line.startswith("#") or not line.strip():
             continue
