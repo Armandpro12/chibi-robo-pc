@@ -232,7 +232,8 @@ a batch.
   takes no time that can be told from the noise of one scenario (about 90 s in US), and adds about 30 MB of local
   results per scenario. Grids run under their own label, so they never change the hash of the cases and never promote,
   but a grid given to `report` can refuse: an open difference refuses a promotion of that function, and only that one,
-  and the exit code is non-zero; a sorted difference refuses nothing. A grid is not required, so a report without one
+  and the exit code is non-zero; a sorted difference refuses nothing. It blocks a new promotion but does not demote a
+  function already verified. A grid is not required, so a report without one
   checks none of this: making it mandatory is the owner's call too. Paired singles have a shape, but no paired-single
   function has run on a grid yet.
 - **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US

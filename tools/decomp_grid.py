@@ -1140,9 +1140,10 @@ def cases_command(args, oracle) -> int:
     return 0
 
 
-def records(oracle, bench: Path, game: str, label: str, version: str, *kinds: str):
+def records(oracle, bench: Path, game: str, label: str, version: str, *kinds: str, skipped: list[str] | None = None):
     """The records of these kinds in the oracle files of (label, version). An unreadable line is skipped here: `report`
-    counts it as a problem of its own, and this module only prints warnings."""
+    counts it as a problem of its own, and this module only prints warnings. A grid label is not read by `report`, so
+    report_grid passes `skipped` to learn of them: a damaged mismatch line must not read as no difference."""
     wanted = [f'"kind":"{k}"' for k in kinds]
     for path in sorted(oracle.oracle_dir(bench, game, label, version).glob("oracle-*.jsonl")):
         with path.open(encoding="utf-8", errors="replace") as f:
@@ -1151,7 +1152,8 @@ def records(oracle, bench: Path, game: str, label: str, version: str, *kinds: st
                     try:
                         yield json.loads(line)
                     except json.JSONDecodeError:
-                        continue
+                        if skipped is not None:
+                            skipped.append(path.name)
 
 
 def seen_requirements(oracle, bench: Path, game: str, labels: list[str], version: str,
@@ -1293,13 +1295,15 @@ def report_grid(oracle, bench: Path, game: str, labels: list[str], versions: lis
         different: dict[tuple[str, str], list[dict]] = defaultdict(list)
         stats = Counter()
         partial: list[dict] = []
+        damaged: list[str] = []
         for label in labels:
             if not any(oracle.oracle_dir(bench, game, label, version).glob("oracle-*.jsonl")):
                 print(f"  {version}: no oracle file for {label}")
                 unread.append(f"{version} {label}: no oracle file")
                 continue
             print(f"  {version} {label}: grid hash {run_grid_hash(oracle, bench, game, label, version)}")
-            for rec in records(oracle, bench, game, label, version, "header", "end", "summary", "case", "mismatch"):
+            for rec in records(oracle, bench, game, label, version, "header", "end", "summary", "case", "mismatch",
+                               skipped=damaged):
                 tag = rec.get("synthetic") or ""
                 if rec["kind"] == "header":
                     stats["runs"] += 1
@@ -1355,6 +1359,10 @@ def report_grid(oracle, bench: Path, game: str, labels: list[str], versions: lis
                 print(f"  NOT RUN {version} {rec['function']}: {rec['never_ran']} of {rec.get('synthetic_cases', 0)} "
                       f"cases (the scenarios of this run did not call the function)")
         cut_short = stats["runs"] - stats["ended"]
+        if damaged:
+            print(f"  WARNING {version}: {len(damaged)} damaged lines in {', '.join(sorted(set(damaged)))}: what they "
+                  f"held appears nowhere below")
+            unread.append(f"{version}: {len(damaged)} damaged lines")
         if cut_short:
             print(f"  WARNING {version}: {cut_short} of {stats['runs']} runs have no end line (stopped early): cases "
                   f"and calls after the stop appear nowhere below")
