@@ -129,7 +129,7 @@ def require(path: Path, dol: Path | None = None, version: str | None = None) -> 
     if fields is None:
         if path not in _warned:
             _warned.add(path)
-            print(f"warning: {path} has no provenance header (old output): it cannot be checked against "
+            print(f"warning: {path} has no provenance header (old or partial output): it cannot be checked against "
                   f"{version or 'the DOL'}. Run tools/ghidra/analyze.py <game> --version <ID> export to get one.",
                   file=sys.stderr)
         return
