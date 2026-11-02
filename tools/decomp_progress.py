@@ -5,6 +5,7 @@ Usage:
                                         [--root CHECKOUT] [--require-complete]
                                         [--routes] [--closure] [--function NAME|ADDRESS[,...]] [--top N]
                                         [--cov ID:NAME:PATH ...] [--cov-hooks ID:PATH ...]
+                                        [--parity] [--proof [--require-fresh]] [--proof-file PATH]
 
   --list              also print every function left to decompile, and every automatic name found in the
                       decompiled code (file:line)
@@ -26,8 +27,21 @@ Usage:
   --top               length of the rankings of --routes and --closure (default 20)
   --cov, --cov-hooks  coverage runs (ID:NAME:<cov.tsv or its folder>) and probe address list of a version to read
                       instead of the configured ones; a --cov replaces all the configured runs of every version
+  --parity            rows of the table whose masked code is the same, differs or is unknown between the versions,
+                      totals and per batch (tools/decomp_proof.py). Printed instead of the progress table, like the
+                      planning views; with --json added to the report. Always every version, and every row whatever
+                      --module says: reads the extracted discs under --root, an absent disc reads as unknown
+  --proof             verified rows whose proof still applies, per version: fresh, stale (unit or row changed, or a
+                      shared input changed), unknown (tools/decomp_proof.py). Same printing rule. Reads the local
+                      digest file under --root ([decomp] proof_digests): the checkout that holds tests/. On a fresh
+                      clone there is no such file and every verified row reads as unknown, never as fresh
+  --require-fresh     with --proof: exit code 1 if a verified row is stale-unit in any version (its code or its row
+                      changed since its promotion). stale-shared and unknown are printed and never refuse here; they
+                      block the close of a batch or a release (notes/decisions.md, 2026-11-02). Always computed on every
+                      version of game.toml, like --require-complete
+  --proof-file        digest file to read instead
 
-Exit codes: 0 report printed; 1 --require-complete not met; 2 usage or configuration error, or an input of --routes
+Exit codes: 0 report printed; 1 --require-complete or --require-fresh not met; 2 usage or configuration error, or an input of --routes
 or --closure missing (an absent input is never read as "nothing was reached").
 
 Game-specific parameters: [decomp] section of `games/<game>/game.toml` (all paths are relative):
@@ -1381,7 +1395,13 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=20, help="length of the rankings (default 20)")
     ap.add_argument("--cov", action="append", default=[], help="ID:NAME:<cov.tsv or its folder>, repeatable")
     ap.add_argument("--cov-hooks", action="append", default=[], help="ID:<list of probe addresses>, repeatable")
+    ap.add_argument("--parity", action="store_true", help="masked code of the rows between the versions")
+    ap.add_argument("--proof", action="store_true", help="verified rows: fresh, stale or unknown proof")
+    ap.add_argument("--require-fresh", action="store_true", help="with --proof: exit 1 on a stale-unit row")
+    ap.add_argument("--proof-file", type=Path, help="local digest file to read instead of [decomp] proof_digests")
     ns = ap.parse_args()
+    if ns.require_fresh and not ns.proof:
+        ap.error("--require-fresh goes with --proof")
     root = (ns.root or tc.ROOT).resolve()
     try:
         cfg = load_config(ns.game, root)
@@ -1450,13 +1470,31 @@ def main() -> int:
         except (dg.GraphError, ValueError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
+    if ns.parity or ns.proof:
+        import decomp_proof as dp
+        game = dict(cfg["game"], decomp=dict(cfg["game"]["decomp"], functions=str(cfg["table"])))
+        src = cfg["decomp_dir"] / "src"
+        try:
+            if ns.parity:
+                out["parity"] = dp.parity_report(game, {v: disc_root(cfg, v) for v in all_ids}, src)
+            if ns.proof:
+                digests = ns.proof_file.resolve() if ns.proof_file else dp.proof_path(game, root)
+                out["proof"] = dp.proof_report(game, digests, all_ids if ns.require_fresh else versions, src,
+                                               root / "external" / "DolRecomp", root)
+        except SystemExit as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     if ns.json:
         print(json.dumps(out, indent=1))
-    elif ns.routes or ns.closure:
+    elif ns.routes or ns.closure or ns.parity or ns.proof:
         if ns.routes:
             print_routes(out)
         if ns.closure:
             print_closure(out)
+        if ns.parity or ns.proof:
+            lines = dp.parity_lines(out["parity"]) if ns.parity else []
+            lines += dp.proof_lines(out["proof"], ns.list) if ns.proof else []
+            print("\n".join(lines))
         if warnings:
             print(f"\nWarnings ({len(warnings)}):")
             for w in warnings:
@@ -1465,6 +1503,13 @@ def main() -> int:
         print_text(out, ns.list)
     if ns.require_complete and not out["complete"]:
         return 1
+    if ns.require_fresh:
+        stale = sum(c[dp.STALE_UNIT] for c in out["proof"]["versions"].values())
+        rest = sum(c[dp.STALE_SHARED] + c[dp.UNKNOWN] for c in out["proof"]["versions"].values())
+        print(f"--require-fresh: {stale} stale-unit (refused); {rest} stale-shared or unknown (reported only); "
+              f"exit 0 is not a proof of freshness",
+              file=sys.stderr)
+        return 1 if stale else 0
     return 0
 
 
