@@ -30,8 +30,9 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
 
 `run --grid DIR` gives the executable the generated cases of DIR/<ID> instead of the hand-written ones: such a label has
 its own hash of the cases, so it never promotes; `report --grid-label G` reads it apart (differences by function and
-kind), and its cases count for the required kinds. The report warns about a required kind no stored case shows
-(tools/decomp_grid.py); a warning, never a refused promotion.
+kind), and its cases count for the required kinds. An open difference refuses that function and only that one, and the
+exit code is 3; a sorted difference refuses nothing; a grid is not required. The report warns about a required kind no
+stored case shows (tools/decomp_grid.py); a warning, never a refused promotion.
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
 next to the results: executable and its SHA-1, hash of the sources and of the synthetic cases, scenarios, bench
@@ -757,6 +758,9 @@ def cmd_labels(args) -> int:
     return 0
 
 
+EXIT_GRID_OPEN = 3  # `report --grid-label`: a grid difference is open, or the grid was not read in full
+
+
 def cmd_report(args) -> int:
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
@@ -846,6 +850,19 @@ def cmd_report(args) -> int:
             ok_all = False
             reasons.append("not every version was read (--versions)")
         proposed[f.name] = (ok_all, reasons)
+    import decomp_grid
+    grid_labels = [x for x in args.grid_label.split(",") if x]
+    grid = None
+    if grid_labels:
+        # A grid given here can only refuse: an open difference refuses its function, and only that one (a difference
+        # the triage table sorts refuses nothing). Read before the status lines, so that they tell the truth.
+        triage = Path(args.grid_triage) if args.grid_triage else game_cfg["_dir"] / "decomp" / "grid_triage.tsv"
+        grid = decomp_grid.report_grid(sys.modules[__name__], bench, game, grid_labels, versions,
+                                       decomp_grid.read_triage(triage), current["sources"])
+        for (version, name), count in sorted(grid.open_differences.items()):
+            if name in proposed:
+                proposed[name] = (False, [*proposed[name][1], f"{version}: {count} open grid differences"])
+    exit_code = EXIT_GRID_OPEN if grid and (grid.open_differences or grid.unread) else 0
     print()
     for f in functions:
         ok, reasons = proposed[f.name]
@@ -862,19 +879,16 @@ def cmd_report(args) -> int:
         print(f"{f.name}: {state}")
     for p in problems:
         print(f"WARNING: {p}")
-    import decomp_grid
-    grid_labels = [x for x in args.grid_label.split(",") if x]
-    # Required kinds and grid runs: information only, printed whatever the promotion says.
+    # Required kinds: information only, printed whatever the promotion says.
     if not args.no_kinds:
         decomp_grid.report_kinds(sys.modules[__name__], game_cfg, bench, game, labels + grid_labels, versions)
-    if grid_labels:
-        triage = Path(args.grid_triage) if args.grid_triage else game_cfg["_dir"] / "decomp" / "grid_triage.tsv"
-        decomp_grid.report_grid(sys.modules[__name__], bench, game, grid_labels, versions,
-                                decomp_grid.read_triage(triage), current["sources"])
     if not args.promote:
-        return 0
+        return exit_code
     if problems:
         print(f"--promote refused: {len(problems)} problems with the results (WARNING lines above)")
+        return 2
+    if grid and grid.unread:
+        print(f"--promote refused: the grid was not read in full: {'; '.join(grid.unread)}")
         return 2
     promote = [f.name for f in functions if f.kind != "listed" and proposed[f.name][0]]
     if not promote:
@@ -884,10 +898,10 @@ def cmd_report(args) -> int:
             f"{args.max_not_compared}, labels {', '.join(labels)}")
     if args.dry_run:
         print(f"--promote --dry-run: would set {', '.join(promote)} to verified (nothing written; {rule})")
-        return 0
+        return exit_code
     write_status(game_cfg, promote, versions)
     print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
-    return 0
+    return exit_code
 
 
 def weaker_thresholds(args) -> list[str]:
@@ -1315,7 +1329,8 @@ def main() -> int:
                    help="write the proposed statuses (refused with thresholds weaker than the defaults)")
     k.add_argument("--dry-run", action="store_true", help="with --promote: show what would be written, write nothing")
     k.add_argument("--grid-label", default="", metavar="L,...",
-                   help="labels of grid runs (run --grid): reported apart, their cases count for the required kinds, "
+                   help="labels of grid runs (run --grid): an open difference refuses its function (exit code 3), a "
+                        "sorted one nothing; reported apart, their cases count for the required kinds, "
                         "they never promote")
     k.add_argument("--grid-triage", metavar="FILE",
                    help="sorted differences of the grid (default games/<game>/decomp/grid_triage.tsv): "
