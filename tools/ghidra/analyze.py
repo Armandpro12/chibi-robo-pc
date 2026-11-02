@@ -3,8 +3,8 @@
 Usage:
   py -3 tools/ghidra/analyze.py <game> [--version ID] import [--force] [--map auto|none|<path>] [--rels]
   py -3 tools/ghidra/analyze.py <game> [--version ID] export          # re-exports functions and registers
-  py -3 tools/ghidra/analyze.py <game> [--version ID] dump <target>... [-o file]
   py -3 tools/ghidra/analyze.py <game> [--version ID] attest [--dol file] [--language id]
+  py -3 tools/ghidra/analyze.py <game> [--version ID] dump <target>... [-o file]
   py -3 tools/ghidra/analyze.py <game> [--version ID] script <Script.java> [args...]
 
 Ghidra project: `generated/<game>/<ID>/ghidra/<ID>.gpr`, program `/main.dol`
