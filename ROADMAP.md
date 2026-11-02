@@ -201,6 +201,22 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   bug, and that bug was a read after a write, which the oracle's final bytes do not show as an order of stores. The
   operator for that shape was defined after the failure, so its results on that bug prove nothing. Each batch of the
   trial writes a figure before the run; two batches in a row with no real gap and the tool is dropped.
+- **Value grids** (`tools/decomp_oracle.py cases --grid`, `tools/decomp_grid.py`; never in a build, generated under
+  `build/`, never tracked): the machine code of each original gives the shape of a leaf function, and the shape gives
+  the kinds of case it requires: null for a pointer tested first, N-1, N and N+1 for a compare with N, plus or minus
+  zero, denormals, infinities and quiet and signaling NaNs for a float, and overlap before and after for two pointers
+  with a store. The values are invented or come from the compare instructions, on top of the hand-written cases. The
+  grid applies to 35 of the 64 verified functions, with the same 7,741 cases in US and PAL. No difference from the
+  originals on any value a single-precision load can give, nor on any overlap, bound or null. The only 36 differences
+  are NaNs that only a double can hold, in one function whose three direct callers load those arguments with single
+  precision: an impossible state, listed apart with its evidence (`games/chibi-robo/decomp/grid_triage.tsv`). With the
+  hand-written overlap cases removed, the grid alone kills the 12 mutants those cases killed, chosen without reading
+  the list of mutants; with them, it kills none of the 67 survivors, all out of its reach or equivalent. `report` warns
+  about a required kind that no case shows: 3 functions today, for states a generated case does not reach (earlier
+  registers already taken). A warning only: refusing a promotion would change what "verified" means, and that is the
+  owner's call. A grid run takes no time that can be told from the noise of one scenario (about 90 s in US), and adds
+  about 30 MB of local results per scenario. Grids run under their own label, so they never change the hash of
+  the cases and never promote. Paired singles have a shape, but no paired-single function has run on a grid yet.
 - **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by

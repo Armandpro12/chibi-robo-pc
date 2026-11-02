@@ -1,0 +1,4 @@
+# Differences of the value grids (tools/decomp_oracle.py report --grid-label) that are not errors. Tab-separated:
+#   <function>	<regular expression on the case label>	<class>	<reason>
+# class: impossible (no caller can produce the state; the reason says how that is known) or the id of an anomaly.
+hsd_hermite_interpolate	^grid\.float\.f[356]_[qs]nan_d\.	impossible	A NaN only a double can hold, in an argument that enters an fmadds directly: gc_float.h returns a single and drops the low bits, DolRecomp keeps the double. The three direct calls load f3, f5 and f6 with lfs, which only gives single NaNs.
