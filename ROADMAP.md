@@ -261,6 +261,15 @@ a batch.
   unchanged today (none of the 64 enabled functions makes a call): same HLE hooks, and the title-boot scenario ends at
   the reference's exact cycle and tick counts in US and PAL. Not yet exercised in a production build, for the same
   reason. Removed with the cycle clock at D3.
+- **False "block without progress" stop**: that charge left the chassis's stuck-block check blind. A block entered at
+  the return address of a call, which loops back to the same call inside its recompiled range, ends in the compiled
+  hook of the decompiled function: same `pc` as on entry, and a `downcount` of 0 because the gateway has charged the
+  cycles itself. The chassis took it for a block that ran nothing and stopped the game. The 64 enabled functions never
+  reached that shape on the bench's scenarios; a test function on `HSD_Index2LightID` did (its second call in a light
+  loop), with or without the oracle, and without any jump table running. The check now reads the cycle counter, which sees both ways of counting
+  (test on hand-written blocks: the old check stops, the new one does not, and a block that really ran nothing still
+  stops). With the fix, the production path of that test function ends title-boot at the reference's exact cycle and
+  tick counts in US and PAL.
 - **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
   (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
   yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show
