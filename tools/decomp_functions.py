@@ -38,6 +38,11 @@ tools/build.py calls it for the HLE hooks (DolRecomp --hle-hooks) and the regist
 
 Usage: py -3 tools/decomp_functions.py <game> check [--version ID ...]     (default: every version of game.toml)
        py -3 tools/decomp_functions.py <game> list --version ID          (resolved addresses of one version)
+Options of check:
+  --parity      first compares the masked code of every row between the versions, all of them whatever --version says,
+                disabled rows included: same, differs, unknown (tools/decomp_proof.py). Warnings, refuses nothing. It
+                runs before the address checks, so that a refusal does not hide it
+  --table PATH  reads this table of functions instead of the configured one
 """
 
 from __future__ import annotations
@@ -1317,6 +1322,20 @@ def oracle_hash_inputs(game_cfg: dict, negative: Path | None = None) -> list[tup
     return out
 
 
+def hash_shared_inputs(h, game_cfg: dict, dolrecomp: str) -> None:
+    """Adds to `h` the inputs of an oracle verdict that are not files: `dolrecomp` (dolrecomp_state), the functions
+    that never return and the globals table. Also read by tools/decomp_proof.py common_hash."""
+    h.update(b"dolrecomp " + dolrecomp.encode() + b"\n")
+    # Functions that never return ([decomp.no_return]): they decide the assertion blocks of the report.
+    for name, per_version in sorted((game_cfg.get("decomp", {}).get("no_return") or {}).items()):
+        h.update(f"no_return {name} {sorted((per_version or {}).items())}\n".encode())
+    # The globals table (tools/decomp_globals.py): the addresses the decompiled code reads and writes.
+    import decomp_globals  # noqa: E402
+    gpath = decomp_globals.table_path(game_cfg)
+    if gpath is not None and gpath.exists():
+        h.update(b"globals\0" + gpath.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+
+
 def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     """SHA-1 of what an oracle verdict is about: the decompiled sources (games/<game>/decomp/src, every file), the
     oracle and gateway code (runtime/core/decomp), the wrong variants of a negative build, the tools and runtime
@@ -1332,15 +1351,7 @@ def oracle_sources_hash(game_cfg: dict, negative: Path | None = None) -> str:
     for name, path in oracle_hash_inputs(game_cfg, negative):
         h.update(name.encode() + b"\0")
         h.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
-    h.update(b"dolrecomp " + dolrecomp_state().encode() + b"\n")
-    # Functions that never return ([decomp.no_return]): they decide the assertion blocks of the report.
-    for name, per_version in sorted((game_cfg.get("decomp", {}).get("no_return") or {}).items()):
-        h.update(f"no_return {name} {sorted((per_version or {}).items())}\n".encode())
-    # The globals table (tools/decomp_globals.py): the addresses the decompiled code reads and writes.
-    import decomp_globals  # noqa: E402
-    gpath = decomp_globals.table_path(game_cfg)
-    if gpath is not None and gpath.exists():
-        h.update(b"globals\0" + gpath.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    hash_shared_inputs(h, game_cfg, dolrecomp_state())
     _, columns = config(game_cfg)
     for f in read_table(game_cfg):
         h.update("\t".join([f.name, f.module, *(f"{f.addresses.get(v) or 0:08X}" for v in sorted(columns)),
@@ -1576,12 +1587,26 @@ def main() -> int:
     parser.add_argument("game")
     parser.add_argument("action", choices=["check", "list"])
     parser.add_argument("--version", action="append", help="version ID (repeatable; default: all)")
+    parser.add_argument("--parity", action="store_true", help="check: compare the masked code between the versions")
+    parser.add_argument("--table", type=Path, help="table of functions to read instead of the configured one")
     args = parser.parse_args()
+    if args.parity and args.action != "check":
+        parser.error("--parity goes with check")
     game_cfg = tc.load_game(args.game)
+    if args.table:
+        game_cfg = dict(game_cfg, decomp=dict(game_cfg["decomp"], functions=str(args.table.resolve())))
     versions = args.version or [v["game_id"] for v in game_cfg["versions"]]
     functions = read_table(game_cfg)
     print(f"{len(functions)} functions in the table, "
           f"{sum(f.enabled for f in functions)} enabled")
+    if args.parity:
+        import decomp_proof  # noqa: E402  (imports this file: not at the top)
+        discs = {}
+        for version in (v["game_id"] for v in game_cfg["versions"]):
+            manifest = tc.GENERATED / args.game / version / "manifest.json"
+            discs[version] = (Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
+                              if manifest.exists() else None)
+        print("\n".join(decomp_proof.parity_lines(decomp_proof.parity_report(game_cfg, discs))))
     for version in versions:
         manifest = tc.GENERATED / args.game / version / "manifest.json"
         if not manifest.exists():

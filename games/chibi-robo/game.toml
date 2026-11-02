@@ -82,6 +82,11 @@ oracle_scenarios = ["title-boot", "new-game", "load-game", "overwrite-save", "in
 # tools/decomp_progress.py --routes: the addresses the coverage probe was compiled on, relative to --root, local file.
 # A function outside this list is "not measured", which is not "never reached".
 coverage_hooks = "tests/decomp/cov/hooks-{id}.txt"
+# tools/decomp_proof.py: batch of each row and stated reason of a row whose code differs between the versions (relative
+# to games/<game>/, in Git, names only) and the digests that --promote records (relative to the checkout that holds
+# tests/, local file, never in Git; a missing file reads as unknown, never as fresh).
+version_parity = "decomp/version_parity.tsv"
+proof_digests = "tests/{slug}/oracle/proof-digests.tsv"
 # Statuses of the table (compared whole, case-insensitive, surrounding brackets ignored; never by prefix):
 #   verified   = replaces its recompiled version and passed the oracle: the only status counted as decompiled
 #   unverified = replaces its recompiled version, not yet checked by the oracle: shown as "replaced, not

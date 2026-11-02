@@ -410,6 +410,11 @@ a batch.
   code): 64 verified (1.69 %; 3,388 bytes, 0.17 %; DOL 64 of 3,297, 1.94 %), on both US and PAL. Left out: 1,209 DOL functions (14 of the
   `.init` start-up section and 1,195 of the libraries: native replacement, or decision pending for THP) and 20 REL
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
+  `--parity` (`tools/decomp_proof.py`, also `tools/decomp_functions.py check --parity`) says, per batch, whether each
+  row's code is the same in US and PAL once addresses are masked, and warns on a difference with no version condition and
+  no stated reason; every row is the same today, because the batches were chosen that way. `--proof` tells a verified row
+  whose code changed since its promotion: each promotion records a digest of the function's source unit in a local file,
+  and a row with no digest (a fresh clone has none) reads as unknown, never as fresh.
   Two planning views come with it, on both US and PAL: `--routes` gives, for each function no test run reached, the
   shortest static path from a reached function, the call site to take and whether the search was exhaustive, on static
   evidence only: it cannot see code outside a version's inventory or addresses computed in another way (1,208 DOL

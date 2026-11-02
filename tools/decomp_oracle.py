@@ -85,7 +85,9 @@ on the first line of the report and on the --promote line.
 A function never reached stays `unverified`, whatever its other versions show. --promote writes `verified` (and
 "yes" in the oracle column of each version that has one, [decomp.oracle_columns] of game.toml: the PAL activation
 lock of the levels position and sized) only for rows that pass in all versions; it never touches a disabled row.
---dry-run shows what --promote would write without writing it.
+--dry-run shows what --promote would write without writing it. A real --promote also adds the digest of each promoted
+function's source unit to the local file [decomp] proof_digests of --bench-root (tools/decomp_proof.py), which
+tools/decomp_progress.py --proof reads to tell a proof that no longer applies.
 """
 from __future__ import annotations
 
@@ -921,6 +923,13 @@ def cmd_report(args) -> int:
         return exit_code
     write_status(game_cfg, promote, versions)
     print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
+    import decomp_proof
+    digests = decomp_proof.proof_path(game_cfg, bench)
+    if digests:
+        added, missing = decomp_proof.record_proofs(game_cfg, digests, promote, versions, current["sources"], labels)
+        print(f"--promote: {added} proof digests added to {digests} (local file, not in Git)")
+        for name in missing:
+            print(f"WARNING: {name}: no single source unit holds its export: no proof digest, it reads as unknown")
     return exit_code
 
 

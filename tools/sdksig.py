@@ -45,12 +45,19 @@ def pattern(words: list[int], masks: list[int]) -> str:
     return " ".join(out)
 
 
-def signature(img: sy.Image, addr: int, size: int) -> tuple[int, str] | None:
+def masked_words(img: sy.Image, addr: int, size: int) -> list[int] | None:
+    """Instruction words at `addr` with the address-dependent fields cleared, None outside the code."""
     words = img.words(addr, size // 4)
-    if not words:
+    return list(sy.masked(words, addr, size)) if words else None
+
+
+def signature(img: sy.Image, addr: int, size: int) -> tuple[int, str] | None:
+    masked = masked_words(img, addr, size)
+    if not masked:
         return None
+    words = img.words(addr, size // 4)
     masks = sy.keep_masks(words, addr, size)
-    data = b"".join((w & m).to_bytes(4, "big") for w, m in zip(words, masks))
+    data = b"".join(w.to_bytes(4, "big") for w in masked)
     return zlib.crc32(data), pattern(words[:PATTERN_WORDS], masks[:PATTERN_WORDS])
 
 
