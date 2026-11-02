@@ -219,9 +219,12 @@ a batch.
   grid applies to 35 of the 64 verified functions, with the same 7,741 cases in US and PAL. No difference from the
   originals on any value a single-precision load can give, nor on any overlap, bound or null. The only 36 differences
   are NaNs that only a double can hold, in one function whose three direct callers load those arguments with single
-  precision: an impossible state, listed apart with its evidence (`games/chibi-robo/decomp/grid_triage.tsv`). With the
-  hand-written overlap cases removed, the grid alone kills the 12 mutants those cases killed, chosen without reading
-  the list of mutants; with them, it kills none of the 67 survivors, all out of its reach or equivalent. `report` warns
+  precision: an impossible state, listed apart with its evidence (`games/chibi-robo/decomp/grid_triage.tsv`). A line of
+  that table names what may differ (here two registers and their low 29 bits, nothing written), so anything else on
+  the same case is reported as a real difference; a difference planted in a real executable on those cases was. The
+  report also counts the real calls left uncompared, not only the cases. With the hand-written overlap cases
+  removed, the grid alone kills the 12 mutants those cases killed, chosen without reading the list of mutants;
+  with them, it kills none of the 67 survivors, all out of its reach or equivalent. `report` warns
   about a required kind that no case shows: 3 functions today, for states a generated case does not reach (earlier
   registers already taken). A warning only: refusing a promotion would change what "verified" means, and that is the
   owner's call. A grid run takes no time that can be told from the noise of one scenario (about 90 s in US), and adds

@@ -26,6 +26,7 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
   py -3 tools/decomp_oracle.py run --exe ... --label G --grid build/oracle-grid --scenarios new-game
   py -3 tools/decomp_oracle.py report --label L --grid-label G
   py -3 tools/decomp_oracle.py hash                                 (hashes the results are tied to)
+  py -3 tools/decomp_oracle.py labels [--grid DIR]                  (labels that fit the current hashes, newest first)
 
 `run --grid DIR` gives the executable the generated cases of DIR/<ID> instead of the hand-written ones: such a label has
 its own hash of the cases, so it never promotes; `report --grid-label G` reads it apart (differences by function and
@@ -704,6 +705,58 @@ def same_folders(bench: Path, game: str, labels: list[str], versions: list[str])
     return out
 
 
+def fitting_labels(bench: Path, game: str, game_cfg: dict, versions: list[str], synthetic: str) -> list[str]:
+    """Labels whose results fit the current code and these cases, newest first. Chosen on what went IN, never on what
+    came out: results of another hash stay out, but a fitting run with a difference stays in, so that a regression is
+    not skipped for an older label. Fit means no problem for read_results, the rule of `report`."""
+    root = oracle_dir(bench, game, "x", "x").parent.parent
+    sources = df.oracle_sources_hash(game_cfg)
+    current = {"sources": sources, "synthetic": synthetic}
+    found: list[tuple[float, str]] = []
+    for folder in root.iterdir() if root.is_dir() else ():
+        infos = [folder / v / f"run-{v}.json" for v in versions]
+        if not all(p.exists() for p in infos):
+            continue
+        read = [json.loads(p.read_text(encoding="utf-8")) for p in infos]
+        if all(i.get("sources") == sources and i.get("synthetic") == synthetic for i in read):
+            found.append((max(p.stat().st_mtime for p in infos), folder.name))
+    functions = df.read_table(game_cfg)
+    kinds = {f.name: f.kind for f in functions}
+    out = []
+    for _, label in sorted(found, reverse=True):
+        seen = new_seen()
+        clean = True
+        for v in versions:
+            addresses = {f.name: f.addresses[v] for f in functions if f.module == "dol" and
+                         f.addresses.get(v) is not None}
+            clean &= not read_results(bench, game, [label], v, current, seen, addresses, kinds)[1]
+        if clean:
+            out.append(label)
+    return out
+
+
+def cmd_labels(args) -> int:
+    game = game_name(args.game)
+    game_cfg = tc.load_game(game)
+    bench = Path(args.bench_root).resolve() if args.bench_root else main_checkout()
+    versions = versions_of(game_cfg, args.versions)
+    if args.grid:
+        hashes = {synthetic_hash(game_cfg, Path(args.grid).resolve() / v) for v in versions}
+        if len(hashes) != 1:
+            raise SystemExit(f"{args.grid}: the versions have different grids: no label can fit them all")
+        synthetic = hashes.pop()
+    else:
+        synthetic = synthetic_hash(game_cfg)
+    labels = fitting_labels(bench, game, game_cfg, versions, synthetic)
+    for label in labels:
+        print(label)
+    if not labels:
+        print(f"no oracle result fits sources {df.oracle_sources_hash(game_cfg)} and synthetic {synthetic} in every "
+              f"version of {', '.join(versions)}: build with tools/build.py --oracle --tag <T>, then run "
+              f"tools/decomp_oracle.py run", file=sys.stderr)
+    return 0
+
+
 def cmd_report(args) -> int:
     game = game_name(args.game)
     game_cfg = tc.load_game(game)
@@ -817,7 +870,7 @@ def cmd_report(args) -> int:
     if grid_labels:
         triage = Path(args.grid_triage) if args.grid_triage else game_cfg["_dir"] / "decomp" / "grid_triage.tsv"
         decomp_grid.report_grid(sys.modules[__name__], bench, game, grid_labels, versions,
-                                decomp_grid.read_triage(triage))
+                                decomp_grid.read_triage(triage), current["sources"])
     if not args.promote:
         return 0
     if problems:
@@ -1266,7 +1319,7 @@ def main() -> int:
                         "they never promote")
     k.add_argument("--grid-triage", metavar="FILE",
                    help="sorted differences of the grid (default games/<game>/decomp/grid_triage.tsv): "
-                        "<function> <label regular expression> <class> <reason>")
+                        "<function> <label regular expression> <class> <registers> <writes> <reason>")
     k.add_argument("--no-kinds", action="store_true", help="skip the required-kinds warnings (they read the disc)")
     g = sub.add_parser("cases", help="generate value grids for the leaves of the table (tools/decomp_grid.py)")
     g.add_argument("--grid", action="store_true", help="required: edge values by function shape")
@@ -1277,6 +1330,10 @@ def main() -> int:
     g.add_argument("--list", action="store_true", help="print the counts, write nothing")
     g.add_argument("--verbose", action="store_true")
     sub.add_parser("hash", help="current hash of the sources and of the synthetic cases")
+    b = sub.add_parser("labels", help="labels whose results fit the current sources and cases, newest first (chosen on "
+                                      "the hashes, never on the outcome); none: a message on stderr")
+    b.add_argument("--versions")
+    b.add_argument("--grid", metavar="DIR", help="fit the generated cases of DIR/<ID> instead of the hand-written ones")
     c = sub.add_parser("cost", help="guest cost table of the enabled functions from the oracle's measurements")
     c.add_argument("--label", required=True, help="one or more labels, comma-separated (measurements added up)")
     c.add_argument("--versions")
@@ -1318,7 +1375,7 @@ def main() -> int:
     m.add_argument("--keep", action="store_true", help="keep each mutant's folder")
     args = p.parse_args()
     return {"run": cmd_run, "report": cmd_report, "replay": cmd_replay, "hash": cmd_hash,
-            "cost": cmd_cost, "mutate": cmd_mutate, "cases": cmd_cases}[args.cmd](args)
+            "cost": cmd_cost, "mutate": cmd_mutate, "cases": cmd_cases, "labels": cmd_labels}[args.cmd](args)
 
 
 if __name__ == "__main__":

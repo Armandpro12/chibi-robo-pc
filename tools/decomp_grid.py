@@ -28,7 +28,9 @@ The values are invented or come from the immediate operands of the compare instr
 the game. The output goes under build/ and is never tracked: tracked cases would change the hash of the synthetic
 cases (tools/decomp_oracle.py synthetic_hash) and turn a difference on an impossible state into a refused promotion,
 which is a change of what `verified` means. Hence a grid run has its own label (`run --grid DIR`), its results never
-promote, and `report --grid-label L` reads them apart.
+promote, and `report --grid-label L` reads them apart. A difference is sorted by what it touches, not only by its case
+label: a line of grid_triage.tsv names the registers (and their bits) allowed to differ, and anything else on that label
+is a real difference.
 
 Limits. The shape is a walk of the paths of the original with a small abstract value per register: an address built
 another way, or a compare hidden in arithmetic (a subfic + cntlzw sequence), is not seen, so a shape is a lower bound of
@@ -1194,55 +1196,164 @@ def report_kinds(oracle, game_cfg: dict, bench: Path, game: str, labels: list[st
 
 
 def label_kind(label: str) -> str:
+    if not label:
+        return "real calls"
     return label.split(".")[1] if label.startswith("grid.") else "hand"
 
 
-def report_grid(oracle, bench: Path, game: str, labels: list[str], versions: list[str], triage: dict) -> int:
-    """`report --grid-label`: what the grid runs show, apart from the promotion rule. Differences are listed by
-    function and kind; those of a triage line (<function> <label regular expression> <class> <reason>) are counted
-    under their class. Returns the number of untriaged differences."""
+# One register in the differences of a mismatch record, as describe() of runtime/core/decomp/gc_oracle_compare.h writes
+# it. Anything else (a byte, a call, cr2-cr4, no-return, reservation, unjournaled) does not fit, so it is never allowed.
+REGISTER_DIFFERENCE = re.compile(r"(?P<name>[rf]\d+(?:\.ps1)?)(?: bits)?: original (?P<original>[0-9A-F]+), "
+                                 r"decompiled (?P<decompiled>[0-9A-F]+)")
+ALLOWED_REGISTER = re.compile(r"(?P<name>[rf]\d+(?:\.ps1)?)(?::(?P<mask>[0-9A-Fa-f]+))?")
+ALL_BITS = 0xFFFFFFFFFFFFFFFF
+
+
+@dataclass(frozen=True)
+class TriageRow:
+    """A line of grid_triage.tsv. It sorts a difference only if the label matches and everything the record shows is
+    allowed: `registers` is {register: bits that may differ} and nothing written is ever allowed."""
+    pattern: re.Pattern
+    verdict: str
+    registers: dict[str, int]
+    reason: str
+
+    def refused(self, differences: list[str]) -> list[str]:
+        """The items of a record's differences this row does not allow. A record that lists nothing is refused too:
+        nothing would show what is being sorted."""
+        out = []
+        for text in differences:
+            m = REGISTER_DIFFERENCE.fullmatch(text)
+            if m is None or m["name"] not in self.registers or \
+                    (int(m["original"], 16) ^ int(m["decompiled"], 16)) & ~self.registers[m["name"]] & ALL_BITS:
+                out.append(text)
+        return out if differences else ["no difference listed in the record"]
+
+
+def sort_difference(rows: list[TriageRow], rec: dict) -> tuple[TriageRow | None, list[str]]:
+    """(the row that sorts this mismatch record, None if it stays open; what a row of its label refused). A real call
+    has no label, so it is never sorted."""
+    label = rec.get("synthetic") or ""
+    refused: list[str] = []
+    for row in rows if label.startswith("grid.") else ():
+        if row.pattern.search(label):
+            refused = row.refused(rec.get("differences") or [])
+            if not refused:
+                return row, []
+    return None, refused
+
+
+def report_grid(oracle, bench: Path, game: str, labels: list[str], versions: list[str], triage: dict,
+                sources: str | None = None) -> int:
+    """`report --grid-label`: what the grid runs show, apart from the promotion rule. A difference a triage line allows
+    prints SORTED under its class; any other prints DIFFERENCE, with what its line did not allow.
+
+    Two counters answer "what was not compared", and they count different things: `cases` are the cases a run loaded
+    (summary synthetic_not_compared), `real calls` the calls the scenario made (summary not_compared). One case can
+    cost all the calls of a function: a store of the original outside RAM makes it not comparable (gc_oracle.cpp
+    compare_call), and each later call and case of that function then runs the original alone. NOT COMPARED gives both
+    and the reason, function by function; NOT RUN gives the cases that never ran (a case runs at the first call of its
+    function). `sources`: current oracle sources hash; a grid run built from others is reported, not refused, since a
+    grid run never promotes. Returns the number of open differences."""
     print(f"Grid runs {', '.join(labels)} (never part of a promotion):")
     open_differences = 0
     for version in versions:
         compared: Counter = Counter()
         different: dict[tuple[str, str], list[dict]] = defaultdict(list)
         stats = Counter()
+        partial: list[dict] = []
         for label in labels:
             if not any(oracle.oracle_dir(bench, game, label, version).glob("oracle-*.jsonl")):
                 print(f"  {version}: no oracle file for {label}")
-            for rec in records(oracle, bench, game, label, version, "summary", "case", "mismatch"):
+            for rec in records(oracle, bench, game, label, version, "header", "end", "summary", "case", "mismatch"):
                 tag = rec.get("synthetic") or ""
-                if rec["kind"] == "summary":
+                if rec["kind"] == "header":
+                    stats["runs"] += 1
+                    if sources and rec.get("sources") != sources:
+                        print(f"  WARNING {version} {label}: built from sources {rec.get('sources')}, not the current "
+                              f"{sources}: what follows is about another build")
+                elif rec["kind"] == "end":
+                    stats["ended"] += 1
+                elif rec["kind"] == "summary":
                     stats["divergent"] += int(rec.get("fmadds_dolphin_divergent", 0))
-                    stats["not_compared"] += int(rec.get("synthetic_not_compared", 0))
-                elif tag.startswith("grid."):
-                    compared[(rec["function"], label_kind(tag))] += 1
+                    stats["cases_not_compared"] += int(rec.get("synthetic_not_compared", 0))
+                    stats["calls"] += int(rec.get("calls", 0))
+                    stats["calls_not_compared"] += int(rec.get("not_compared", 0))
+                    stats["calls_different"] += int(rec.get("mismatches", 0))
+                    ran = int(rec.get("synthetic_compared", 0)) + int(rec.get("synthetic_not_compared", 0))
+                    rec["never_ran"] = max(int(rec.get("synthetic_cases", 0)) - ran, 0)
+                    stats["cases_never_ran"] += rec["never_ran"]
+                    if rec["never_ran"] or int(rec.get("not_compared", 0)) or int(rec.get("synthetic_not_compared", 0)):
+                        partial.append(rec)
+                else:
+                    if tag.startswith("grid."):
+                        compared[(rec["function"], label_kind(tag))] += 1
                     if rec["kind"] == "mismatch":
                         different[(rec["function"], label_kind(tag))].append(rec)
         counts: Counter = Counter()
         for (name, kind), found in sorted(different.items()):
-            for rec in found:
-                sorted_as = next((t for t in triage.get(name, ()) if t[0].search(rec["synthetic"])), None)
-                counts[sorted_as[1] if sorted_as else "open"] += 1
-                if not sorted_as:
-                    open_differences += 1
-            example = found[0]
-            print(f"  DIFFERENCE {version} {name} {kind}: {len(found)} of {compared[(name, kind)]} cases, e.g. "
-                  f"{example['synthetic']}: {'; '.join(example.get('differences', [])[:3])}")
+            outcome = [sort_difference(triage.get(name, []), rec) for rec in found]
+            sorted_rows = [row for row, _ in outcome if row]
+            still_open = [(rec, why) for rec, (row, why) in zip(found, outcome) if not row]
+            for row in sorted_rows:
+                counts[row.verdict] += 1
+            counts["open"] += len(still_open)
+            open_differences += len(still_open)
+            of = f"{{}} of {compared[(name, kind)]} cases" if compared[(name, kind)] else "{}"
+            if sorted_rows:
+                row = sorted_rows[0]
+                print(f"  SORTED {version} {name} {kind}: {of.format(len(sorted_rows))}, class {row.verdict}, only "
+                      f"{', '.join(row.registers)} within its allowed bits, nothing written")
+            if still_open:
+                example, why = still_open[0]
+                shown = why or example.get("differences", [])
+                print(f"  DIFFERENCE {version} {name} {kind}: {of.format(len(still_open))}, e.g. "
+                      f"{example.get('synthetic') or 'a real call'}: {'; '.join(shown[:3])}"
+                      + (" (the label is on a triage line, which does not allow this)" if why else ""))
+        for rec in partial:
+            if int(rec.get("not_compared", 0)) or int(rec.get("synthetic_not_compared", 0)):
+                print(f"  NOT COMPARED {version} {rec['function']}: {rec.get('not_compared', 0)} of "
+                      f"{rec.get('calls', 0)} real calls, {rec.get('synthetic_not_compared', 0)} of "
+                      f"{rec.get('synthetic_cases', 0)} cases: "
+                      f"{rec.get('reason') or 'no reason recorded'}")
+            if rec["never_ran"]:
+                print(f"  NOT RUN {version} {rec['function']}: {rec['never_ran']} of {rec.get('synthetic_cases', 0)} "
+                      f"cases (the scenarios of this run did not call the function)")
+        cut_short = stats["runs"] - stats["ended"]
+        if cut_short:
+            print(f"  WARNING {version}: {cut_short} of {stats['runs']} runs have no end line (stopped early): cases "
+                  f"and calls after the stop appear nowhere below")
         print(f"  {version}: {sum(compared.values())} generated cases compared, {sum(len(r) for r in different.values())} "
-              f"differences ({', '.join(f'{k} {v}' for k, v in sorted(counts.items())) or 'none'}), "
-              f"{stats['not_compared']} not compared, {stats['divergent']} compared calls with an fmadds Dolphin "
-              f"would flush (fmadds_dolphin_divergent, real and synthetic)")
+              f"differences ({', '.join(f'{k} {v}' for k, v in sorted(counts.items()) if v) or 'none'}), "
+              f"{stats['cases_not_compared']} cases not compared, {stats['cases_never_ran']} cases never run; "
+              f"real calls: {stats['calls']}, {stats['calls_not_compared']} not compared, {stats['calls_different']} "
+              f"with a difference; {stats['divergent']} compared calls with an fmadds Dolphin would flush "
+              f"(fmadds_dolphin_divergent, real and synthetic)")
     return open_differences
 
 
-def read_triage(path: Path) -> dict[str, list[tuple[re.Pattern, str, str]]]:
-    out: dict[str, list[tuple[re.Pattern, str, str]]] = defaultdict(list)
+def read_triage(path: Path) -> dict[str, list[TriageRow]]:
+    """grid_triage.tsv. A line must say what may differ: one that does not (the older four columns, a register list
+    the grammar does not read, writes other than none) stops the report instead of sorting more than it says."""
+    out: dict[str, list[TriageRow]] = defaultdict(list)
     if not path.exists():
         return out
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip() or raw.startswith("#"):
             continue
-        name, pattern, verdict, reason = raw.split("\t", 3)
-        out[name].append((re.compile(pattern), verdict, reason))
+        fields = raw.split("\t", 5)
+        if len(fields) != 6 or not all(f.strip() for f in fields):
+            raise SystemExit(f"{path}:{number}: expected <function> <label regular expression> <class> <registers> "
+                             f"<writes> <reason>, tab-separated")
+        name, pattern, verdict, allowed, writes, reason = fields
+        if writes != "none":
+            raise SystemExit(f"{path}:{number}: writes {writes!r}: only none is read (a line never allows a byte "
+                             f"written)")
+        registers: dict[str, int] = {}
+        for item in allowed.split(","):
+            m = ALLOWED_REGISTER.fullmatch(item)
+            if m is None:
+                raise SystemExit(f"{path}:{number}: {item!r} is not <register> or <register>:<hexadecimal mask>")
+            registers[m["name"]] = int(m["mask"], 16) if m["mask"] else ALL_BITS
+        out[name].append(TriageRow(re.compile(pattern), verdict, registers, reason))
     return out

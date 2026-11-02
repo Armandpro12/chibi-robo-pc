@@ -1,4 +1,8 @@
 # Differences of the value grids (tools/decomp_oracle.py report --grid-label) that are not errors. Tab-separated:
-#   <function>	<regular expression on the case label>	<class>	<reason>
+#   <function>	<regular expression on the case label>	<class>	<registers>	<writes>	<reason>
 # class: impossible (no caller can produce the state; the reason says how that is known) or the id of an anomaly.
-hsd_hermite_interpolate	^grid\.float\.f[356]_[qs]nan_d\.	impossible	A NaN only a double can hold, in an argument that enters an fmadds directly: gc_float.h returns a single and drops the low bits, DolRecomp keeps the double. The three direct calls load f3, f5 and f6 with lfs, which only gives single NaNs.
+# registers: what may differ, comma-separated: <register> or <register>:<mask>, the mask being the bits that may differ
+# (hexadecimal). writes: none, the only value read: a line never allows a byte written.
+# A difference is sorted only if its label matches AND all it touches is allowed: another register, a bit outside the
+# mask, a byte, a call, or a record that lists nothing stays a real difference, printed as DIFFERENCE.
+hsd_hermite_interpolate	^grid\.float\.f[356]_[qs]nan_d\.	impossible	f1:1FFFFFFF,f1.ps1:1FFFFFFF	none	A NaN only a double can hold, in an argument that enters an fmadds directly: gc_float.h returns a single and drops the low 29 bits, DolRecomp keeps the double. The three direct calls load f3, f5 and f6 with lfs, which only gives single NaNs.
