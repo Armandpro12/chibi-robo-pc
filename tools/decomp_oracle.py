@@ -449,6 +449,17 @@ def read_results(bench: Path, game: str, labels: list[str], version: str,
                     problems.append(f"{where}: records of version {other_version} in the {version} folder")
                 name = rec.get("function")
                 a = agg.setdefault(name, new_aggregate(rec))
+                if kind in ("case", "mismatch") and not rec.get("synthetic"):  # a synthetic case's targets are invented
+                    calls = rec.get("calls", [])
+                    for call in calls if isinstance(calls, list) else [calls]:
+                        try:
+                            if not isinstance(call, list):  # a string would index into two hex digits
+                                raise TypeError
+                            site, target = int(call[0], 16), int(call[1], 16)
+                        except (TypeError, IndexError, ValueError):
+                            problems.append(f"{where}: {name}: malformed call record {call!r:.60}")
+                            continue
+                        a.setdefault("call_targets", {}).setdefault(site, set()).add(target)
                 if kind == "summary":
                     summaries += 1
                     expected = (addresses or {}).get(name)
@@ -877,6 +888,15 @@ def cmd_report(args) -> int:
         else:
             state = f"stays {f.status}: " + " | ".join(reasons)
         print(f"{f.name}: {state}")
+    if args.closure:
+        import build  # noqa: E402  (tools/build.py)
+        print("\nCall closure (tools/decomp_functions.py switching_reach, proven jump tables followed):")
+        for v in versions:
+            observed: dict[int, set[int]] = {}
+            for a in results[v].values():
+                for site, targets in a.get("call_targets", {}).items():
+                    observed.setdefault(site, set()).update(targets)
+            print("\n".join(build.closure_report(game, game_cfg, v, observed)))
     for p in problems:
         print(f"WARNING: {p}")
     # Required kinds: information only, printed whatever the promotion says.
@@ -1318,6 +1338,11 @@ def main() -> int:
                                                  "hand-written ones: results for report --grid-label, never promoted")
     k = sub.add_parser("report", help="per-function report and proposed status (--promote writes it)")
     k.add_argument("--label", required=True, help="one or more labels, comma-separated (results are added up)")
+    k.add_argument("--closure", action="store_true",
+                   help="also the call closure of each enabled function: is a callee that waits ruled out (complete) "
+                        "or unknown (partial), with the targets seen at its indirect sites; not decomp_progress.py "
+                        "--closure, which is what decompiled code still depends on (needs the extracted disc; about "
+                        "20 s per version)")
     k.add_argument("--versions")
     k.add_argument("--min-cases", type=int, default=DEFAULT_MIN_CASES)
     k.add_argument("--saturation", type=int, default=DEFAULT_SATURATION,

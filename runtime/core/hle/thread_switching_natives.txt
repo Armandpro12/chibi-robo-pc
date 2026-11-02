@@ -1,7 +1,7 @@
 # Native SDK replacements that can switch threads (or wait for another thread), read by tools/build.py: a
-# decompiled function is refused when its static closure of direct calls (US and PAL code alike) reaches one of
-# them. Reason: decompiled code calls recompiled code in a nested run of the chassis (hle/native_irq.c,
-# gcrt_guest_call_interruptible), with the decompiled caller's frame on the host stack; a thread switch cannot happen
+# decompiled function is refused when the static closure of its calls, proven jump tables followed (US and PAL
+# code alike), reaches one of them. Reason: decompiled code calls recompiled code in a nested run of the chassis
+# (hle/native_irq.c, gcrt_guest_call_interruptible), with the decompiled caller's frame on the host stack; a thread switch cannot happen
 # there, so a callee that sleeps, yields or wakes a higher-priority thread would not behave as in the game (the run
 # stops when one falls due). Recompiled SDK functions that wait (VIWaitForRetrace, DVDRead, OSJoinThread,
 # OSLockMutex, OSWaitCond...) all end in one of these natives, which the closure finds through them.
