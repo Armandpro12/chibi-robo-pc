@@ -503,28 +503,101 @@ class Coverage:
     warnings: list[str] = field(default_factory=list)
 
 
-def read_cov(path: Path, cov: Coverage, name: str) -> None:
-    """Adds one run (cov.tsv of the coverage probe: "A addr calls ... sites sites_full", "C addr site")."""
+# The probe's file has no end marker: a cut cannot be read from its last line. It can be read from its structure instead.
+# Each "A" line opens a record and declares what follows it: `sites` "C" lines and min(`states`, COV_TUPLES) "S" lines. The
+# records come out in the order of the probe's table, so the last one sits near the end of that table.
+COV_HEADER = "# cov probe v2"
+COV_FIELDS = {"A": 14, "S": 18, "C": 3}
+COV_TUPLES = 256           # TUPLE_CAP of the probe
+COV_SLOTS = 1 << 15        # SLOTS of the probe
+COV_HASH = 2654435761      # the probe's first slot for an address: ((address >> 2) * COV_HASH) & (COV_SLOTS - 1)
+COV_LAST_SLOT_ODDS = 1e-6  # below this chance of seeing such a gap at the end of the table in a whole file: it was cut
+
+# Share of the function entries of a run that must be in the probe list of its version. Measured on 16 real runs, 8 by
+# version: 85.2 to 91.4 % in its own list, 0.9 to 1.1 % in the other version's list.
+PROBE_SHARE_REFUSED = 50.0
+PROBE_SHARE_WARNED = 80.0
+
+
+def read_hooks(path: Path) -> set[int]:
+    """Addresses the probe was compiled on. Empty is refused: everything would read as not measured."""
+    try:
+        hooks = {int(x, 16) for x in path.read_text(encoding="utf-8", errors="replace").split()}
+    except ValueError as e:
+        raise GraphError(f"{path}: not a list of probe addresses ({e})") from None
+    if not hooks:
+        raise GraphError(f"{path}: empty list of probe addresses: nothing could be measured")
+    return hooks
+
+
+def probe_share(entries: list[int], hooks: set[int]) -> float:
+    """Percentage of `entries` that are in `hooks`."""
+    return 100.0 * sum(1 for a in entries if a in hooks) / len(entries)
+
+
+def read_cov(path: Path, cov: Coverage, name: str) -> list[int]:
+    """Adds one run (cov.tsv of the coverage probe: "A addr calls ... states states_full sites sites_full", "S addr
+    registers", "C addr site") and returns the function entries it saw. A line with 0 calls is no entry (the probe writes
+    none). A file that is not whole is refused, see above. What this cannot see: a cut exactly between two records that
+    loses less than about 1 % of the table, and whole records removed from the middle of the file."""
     text = path.read_text(encoding="utf-8", errors="replace")
     first = text.split("\n", 1)[0]
+    if not first.startswith(COV_HEADER):
+        raise GraphError(f"{path}: not a file of the coverage probe: its first line is not \"{COV_HEADER} ...\"")
     if "table full" in first:
         cov.warnings.append(f"{name}: the probe's table was full, some addresses are missing from this run")
-    n = 0
-    for line in text.splitlines():
+    if not text.endswith("\n"):
+        raise GraphError(f"{path}: cut, it ends in the middle of a line")
+    entries: list[int] = []
+    records = zero = 0
+    last = -1                                          # address of the record being read
+    label, calls, states_left, sites_left = "", 0, 0, 0
+
+    def close() -> None:
+        if states_left or sites_left:
+            raise GraphError(f"{path}: cut or damaged, function {label} misses {states_left} S and {sites_left} C lines "
+                             "of the ones it declares (negative: too many)")
+
+    for no, line in enumerate(text.splitlines(), 1):
         p = line.split()
-        if not p or p[0] not in ("A", "C"):
+        if not p or p[0] == "#":
             continue
-        a = int(p[1], 16)
-        if p[0] == "A":
-            cov.reached[a] = cov.reached.get(a, 0) + int(p[2])
-            if p[13] == "1":
-                cov.lr_full.add(a)
-            n += 1
-        else:
-            cov.lr.setdefault(a, set()).add(int(p[2], 16))
-    if not n:
+        try:
+            if COV_FIELDS[p[0]] != len(p):
+                raise ValueError
+            if p[0] == "A":
+                close()
+                last, label = int(p[1], 16), p[1]
+                calls = int(p[2])
+                states_left, sites_left = min(int(p[10]), COV_TUPLES), int(p[12])
+                records += 1
+                if calls:
+                    cov.reached[last] = cov.reached.get(last, 0) + calls
+                    entries.append(last)
+                    if p[13] == "1":
+                        cov.lr_full.add(last)
+                else:
+                    zero += 1
+            elif p[1] != label:
+                raise ValueError
+            elif p[0] == "S":
+                states_left -= 1
+            else:
+                sites_left -= 1
+                if calls:
+                    cov.lr.setdefault(last, set()).add(int(p[2], 16))
+        except (KeyError, ValueError):
+            raise GraphError(f"{path}:{no}: cut or damaged, unexpected line: {line[:60]}") from None
+    close()
+    if not entries:
         raise GraphError(f"{path}: no function entry in this coverage file")
+    if zero:
+        cov.warnings.append(f"{name}: {zero} function entries with 0 calls ignored, the probe writes none")
+    gap = COV_SLOTS - 1 - (((last >> 2) * COV_HASH) & (COV_SLOTS - 1))
+    if (1 - gap / COV_SLOTS) ** records < COV_LAST_SLOT_ODDS:
+        raise GraphError(f"{path}: cut, its {records} records stop {gap} slots before the end of the probe's table")
     cov.runs.append(name)
+    return entries
 
 
 def expand_runs(patterns: list[str], root: Path) -> list[Path]:

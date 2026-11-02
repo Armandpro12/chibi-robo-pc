@@ -124,7 +124,7 @@ that version's own code, with the REL relocations applied.
   known to have run is a lower bound (tools/decomp_graph.py covered_blocks), so the true decision can be further along.
   Route status and flag:
     found / exhaustive             no shorter way exists on the evidence: no function that could shorten the path has
-                                   its address taken or is not measured
+                                   its address taken or is not measured, the function itself included
     found / incomplete frontier    a route, but an indirect call or a function not measured may give a shorter one
                                    (reasons listed), or the block sits behind a jump that is not followed
     pointer / incomplete frontier  no direct path, but a path with at least one step through an address reference: a
@@ -136,7 +136,9 @@ that version's own code, with the REL relocations applied.
     not-found / exhaustive         no direct path, and no address reference on any of its callers: dead on static
                                    evidence (limit: an address computed in another way, tools/decomp_graph.py)
   Inputs (not in Git): the coverage probe's files, [decomp] coverage_hooks and [decomp.coverage_runs] of game.toml,
-  paths relative to --root, {slug} and {id} replaced.
+  paths relative to --root, {slug} and {id} replaced. Refused (code 2), never read as "nothing reached": a run of
+  another version (under half of its entries in the probe list of its version; under 80 %: a warning), a file that is
+  cut (limit: tools/decomp_graph.py, read_cov), an empty probe list. A function entry with 0 calls is not reached.
 
 Closure (--closure): what decompiled code still depends on. Each function of a version is decompiled, replaced (in the
 build, oracle not passed), native (tools/build.py signature_scan: a superset of what the runtime replaces, see
@@ -957,10 +959,19 @@ def load_coverage(cfg: dict, cov_args: list[str], hook_args: list[str]) -> dict:
         for vid, patterns in dc.get("coverage_runs", {}).items():
             for p in dg.expand_runs([x.format(slug=slug, id=vid) for x in patterns], root):
                 runs[vid].append((p.parent.name, p))
-    hooks = {vid: root / dc["coverage_hooks"].format(slug=slug, id=vid) for vid in runs if dc.get("coverage_hooks")}
+    hooks = {vid: root / dc["coverage_hooks"].format(slug=slug, id=vid) for vid, _r in cfg["versions"]
+             if dc.get("coverage_hooks")}
     for h in hook_args:
         vid, path = h.split(":", 1)
         hooks[vid] = Path(path)
+
+    def better_list(vid: str, entries: list[int]) -> str:
+        """Names the version whose probe list holds these entries, when it is not `vid`."""
+        for other, path in hooks.items():
+            if other != vid and path.exists() and dg.probe_share(entries, dg.read_hooks(path)) >= dg.PROBE_SHARE_REFUSED:
+                return f"; they fit the list of {other}"
+        return ""
+
     out = {}
     for vid, items in runs.items():
         if vid not in hooks or not hooks[vid].exists():
@@ -968,11 +979,18 @@ def load_coverage(cfg: dict, cov_args: list[str], hook_args: list[str]) -> dict:
                                 f"({hooks.get(vid, '[decomp] coverage_hooks')}): not measured and never reached "
                                 "cannot be told apart")
         cov = dg.Coverage()
-        cov.hooks = {int(x, 16) for x in hooks[vid].read_text(encoding="utf-8").split()}
+        cov.hooks = dg.read_hooks(hooks[vid])
         for name, path in items:
             if not path.exists():
                 raise dg.GraphError(f"{path}: coverage file missing")
-            dg.read_cov(path, cov, name)
+            entries = dg.read_cov(path, cov, name)
+            share = dg.probe_share(entries, cov.hooks)
+            said = f"{share:.1f} % of the {len(entries)} function entries of {name} are in the probe list of {vid}"
+            if share < dg.PROBE_SHARE_REFUSED:
+                raise dg.GraphError(f"{path}: only {said}: this run or this list comes from another version"
+                                    f"{better_list(vid, entries)}")
+            if share < dg.PROBE_SHARE_WARNED:
+                cov.warnings.append(f"only {said}: check that this run and this list go together")
         out[vid] = cov
     return out
 
@@ -1057,6 +1075,11 @@ def routes_view(cfg: dict, fns: list[Fn], work: list[Fn], rows_of: list[Fn], vid
     def capped(reasons: list[str]) -> dict:
         return {"reasons": reasons[:REASONS_KEPT], "reasons_total": len(reasons)}
 
+    def itself_unmeasured(a: int) -> list[str]:
+        """A function not measured is never "exhaustive": it may have run. As a last reason only: the reach column
+        already says it, the other rows do not need it."""
+        return [f"{graph.nodes[a].name} ({a:08X}) is not measured"] if a in unmeasured else []
+
     def route(a: int) -> dict:
         if a in near:
             r = first_step(near, a)
@@ -1067,6 +1090,7 @@ def routes_view(cfg: dict, fns: list[Fn], work: list[Fn], rows_of: list[Fn], vid
                         if x in unmeasured and x != a]
             if r["gate"]["status"] == "unknown":
                 reasons.append(f"block {r['block']} is behind a jump or a path that is not followed")
+            reasons = reasons or itself_unmeasured(a)
             r["alternatives"] = sum(1 for x, e in dg.callers_within(graph, a, d + 1).items()
                                     if e == d and status_at[x] == "reached")
             return {"status": "found", "flag": "incomplete frontier" if reasons else "exhaustive", **r, **capped(reasons)}
@@ -1080,6 +1104,7 @@ def routes_view(cfg: dict, fns: list[Fn], work: list[Fn], rows_of: list[Fn], vid
         reasons = [taken_reason(graph, x) for x in sorted(ancestors) if graph.taken.get(x)]
         reasons += [f"{graph.nodes[x].name} ({x:08X}) is not measured" for x in sorted(ancestors)
                     if x in unmeasured and x != a]
+        reasons = reasons or itself_unmeasured(a)
         if not reasons:
             return {"status": "not-found", "flag": "exhaustive", "hops": None, **capped([])}
         r = {"status": "unknown", "flag": "incomplete frontier", "hops": None, **capped(reasons)}
@@ -1397,7 +1422,7 @@ def main() -> int:
             try:
                 covs = load_coverage(cfg, ns.cov, ns.cov_hooks)
             except dg.GraphError:
-                if ns.routes or ns.cov:
+                if ns.routes or ns.cov or ns.cov_hooks:
                     raise
                 covs = {}                              # --closure alone: the coverage only adds a column
             for vid in versions:
