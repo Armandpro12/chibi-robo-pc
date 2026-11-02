@@ -36,11 +36,11 @@ replay_globals.cpp, under the build folder), which tools/decomp_oracle.py replay
 
 Sorting survivors: --triage FILE (default games/<game>/decomp/oracle_mutants/triage.tsv), tab-separated
   <mutant id> <verdict> <reason>
-verdict: equivalent (no input can tell it from the source: the reason says why), hypothesis (not proven either way,
+verdict: equivalent (no input can tell it from the source in final memory: the reason says why), hypothesis (not proven either way,
 the reason says what would settle it), case:<synthetic label> (the case added to kill it), gap (a real gap, no case
 yet). The ids are stable while the mutated text does not change. Survivors with no line are listed as untriaged.
 
-Prediction: a run on a batch (--functions) expects --prediction FILE, a note written before the run that holds a line
+Prediction: a run on a batch (--functions) expects --prediction NOTE, a note written before the run that holds a line
   mutants-prediction: survivors=<n> gaps=<n>
 Without it the tool only warns (it never blocks); with it the output compares the figures. Real gaps count the survivors
 sorted gap, case:<label> or hypothesis: those that need a case, or stay unproven for want of one.
@@ -793,8 +793,8 @@ def read_prediction(path: Path | None) -> tuple[int, int] | None:
     """(survivors, real gaps) of the note's prediction line, or None (no note, or no such line)."""
     if path is None or not path.is_file():
         return None
-    found = PREDICTION.search(path.read_text(encoding="utf-8", errors="replace"))
-    return (int(found.group(1)), int(found.group(2))) if found else None
+    found = PREDICTION.findall(path.read_text(encoding="utf-8", errors="replace"))
+    return (int(found[-1][0]), int(found[-1][1])) if found else None  # the last one: a note may keep earlier batches
 
 
 def run(args, oracle) -> int:
@@ -844,7 +844,7 @@ def run(args, oracle) -> int:
         print("WARNING: no prediction for this batch: --prediction FILE, a note written before the run with the line "
               "'mutants-prediction: survivors=<n> gaps=<n>' (not blocking)")
 
-    drop ={x for x in (args.drop_synthetic or "").split(",") if x}
+    drop = {x for x in (args.drop_synthetic or "").split(",") if x}
     if drop:
         print(f"   synthetic cases dropped: {', '.join(sorted(drop))}")
     out.mkdir(parents=True, exist_ok=True)

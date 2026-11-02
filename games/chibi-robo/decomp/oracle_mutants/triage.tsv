@@ -30,7 +30,7 @@ AssignColorReg.swapped_writes.8e548897	equivalent	two stores to disjoint fields 
 AssignColorReg.swapped_writes.4760c29e	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
 AssignColorReg.swapped_writes.ea8d2441	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
 AssignColorReg.signedness.c9285d23	equivalent	0 or -1 in r3: the same bits in either type
-AssignColorReg.signedness.b58b6589	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignColorReg.signedness.b58b6589	hypothesis	input index: signed and unsigned give the same element for 0..3, which holds only if every caller passes a valid stage; the callers are not decompiled
 AssignColorReg.signedness.9fd156e1	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
 AssignColorReg.signedness.575d0ac6	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
 AssignColorKonst.swapped_writes.e2a541a6	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
@@ -47,7 +47,7 @@ AssignColorKonst.swapped_writes.2ed26444	hypothesis	two stores to different obje
 AssignColorKonst.swapped_writes.f96dd2de	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
 AssignColorKonst.swapped_writes.6e8016a7	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
 AssignColorKonst.signedness.a4ec330c	equivalent	0 or -1 in r3: the same bits in either type
-AssignColorKonst.signedness.424b8831	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignColorKonst.signedness.424b8831	hypothesis	input index: signed and unsigned give the same element for 0..3, which holds only if every caller passes a valid stage; the callers are not decompiled
 AssignColorKonst.signedness.c6f9e46e	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
 AssignColorKonst.signedness.53ce62ed	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
 AssignAlphaKonst.swapped_writes.f1448cfc	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
@@ -60,7 +60,7 @@ AssignAlphaKonst.swapped_writes.3e70a68b	hypothesis	two stores to different obje
 AssignAlphaKonst.swapped_writes.fa210324	hypothesis	two stores to different objects (stage, constant node, allocation state): same bytes unless those objects overlap, which no reached call does; an overlap case would settle it, as A19's cases do for copies
 AssignAlphaKonst.swapped_writes.e7d3fd7f	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
 AssignAlphaKonst.signedness.0a093144	equivalent	0 or -1 in r3: the same bits in either type
-AssignAlphaKonst.signedness.424b8831	equivalent	input index, 0..3 on every valid stage: signed and unsigned give the same element there
+AssignAlphaKonst.signedness.424b8831	hypothesis	input index: signed and unsigned give the same element for 0..3, which holds only if every caller passes a valid stage; the callers are not decompiled
 AssignAlphaKonst.signedness.b80f2c43	equivalent	local counter that stays in 0..8: signed and unsigned compare and subtract alike there
 HSD_VIIsResetRequested.constant.1e4e0139	gap	the true side is never compared: the reset flag is a global no synthetic case can set, and no scenario presses reset; a branchless original, so block coverage cannot see it
 HSD_VIIsResetRequested.constant.8d284cfb	gap	the true side is never compared: the reset flag is a global no synthetic case can set, and no scenario presses reset; a branchless original, so block coverage cannot see it
