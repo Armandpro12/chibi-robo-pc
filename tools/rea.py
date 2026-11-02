@@ -14,9 +14,9 @@ REA (npm package `rea-agents`, MIT License, https://github.com/morluto/rea) driv
 questions about a binary (overview, functions, pseudo-C, references) from the command line or as an MCP
 server. Its PowerPC lane ("PowerPC ELF through Ghidra", REA docs/ghidra-ppc.md) admits 32-bit big-endian
 ELF executables without the EF_PPC_EMB flag, on Linux/macOS hosts only. REA 6.8.0 also admits a DOL when told
-`--target-format gamecube-dol` (REA docs/ghidra-dol.md), but that lane has no symbols, leaves r2 and r13 unset
-and defaults to a language without paired singles. Our ELF route has the symbol map, r13/r2 and the Gekko
-language, so it is kept. Hence:
+`--target-format gamecube-dol` (REA docs/ghidra-dol.md), but that lane admits no REL module, has no symbols,
+leaves r2 and r13 unset and defaults to a language without paired singles. Our ELF route has the REL modules,
+the symbol map, r13/r2 and the Gekko language, so it is kept. Hence:
   - `elf` converts the DOL into such an ELF with the version's symbol map: tools/dol2elf.py, output
     `generated/<game>/<ID>/rea/<ID>.elf` (derived from the game: ignored by Git). With `[rea] rels = true` in
     game.toml the REL modules of `[code] rel_dir` go in as well, relocated, at the addresses of a recompiled build

@@ -192,8 +192,9 @@ them that every relocated call of the REL modules reaches a function start.
 [REA](https://github.com/morluto/rea) (Reverse Engineer Anything, MIT) answers questions about a binary through
 Ghidra: overview, functions, pseudo-C, callers and references, from the command line or as an MCP server for an
 AI agent. It is not needed to build or play. REA reads 32-bit big-endian PowerPC ELF executables, on Linux or
-macOS only. REA 6.8.0 also reads a GameCube DOL when told `--target-format gamecube-dol`, but without symbols or
-the small-data registers, and by default without paired singles. The ELF route has all three, so it is kept:
+macOS only. REA 6.8.0 also reads a GameCube DOL when told `--target-format gamecube-dol`, but without REL modules,
+symbols or the small-data registers, and by default without paired singles. The ELF route has all four, so it is
+kept:
 
 - `tools/dol2elf.py` converts the extracted DOL (plus the version's symbol map) into such an ELF, byte for byte,
   under `generated/<game>/<ID>/rea/` (derived from your copy of the game: never committed). It checks the result
@@ -235,7 +236,7 @@ Add `--address-start 0x... --address-end 0x...` for one range. On this project's
 took 2.5 to 6 minutes depending on the load, almost all of it the import, and the whole executable 8 to 13 minutes.
 The output folder must not exist yet, or pass `--resume`. Pseudo-C helps reading; the assembly remains the reference.
 
-Limits: each command-line call imports the program again (about 2 minutes); the MCP server keeps it open between
+Limits: each command-line call imports the program again, which takes minutes; the MCP server keeps it open between
 questions. The export covers what Ghidra sees as a function: 295 of the 4,506 known functions of the GGTE01 main
-executable have no file, 0.61% of its code, most of them small functions only reached through pointers, and
+executable have no file, 0.61% of its code, about 42 bytes each on average, and
 10 of the 495 functions of the REL modules, 276 bytes.
