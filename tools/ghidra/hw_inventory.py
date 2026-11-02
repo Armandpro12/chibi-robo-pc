@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gcinfo  # noqa: E402
+import ghidra_provenance as gp  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 # --------------------------------------------------------------------------------------------------
@@ -121,8 +122,10 @@ def paths(game: str, vid: str) -> dict:
             "functions": base / "ghidra" / "out" / "functions.tsv"}
 
 
-def load_functions(path: Path) -> list[tuple[int, int, str, list[int]]]:
+def load_functions(p: dict, game_cfg: dict, vid: str) -> list[tuple[int, int, str, list[int]]]:
     """Ghidra functions.tsv: (entry, exclusive end, name, callees)."""
+    path = p["functions"]
+    gp.require(path, p["disc"] / game_cfg.get("code", {}).get("dol", "sys/main.dol"), vid)
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#"):
@@ -322,7 +325,7 @@ def cmd_static(ns, game_cfg, vid, p) -> int:
     rel_dir = p["disc"] / code["rel_dir"] if code.get("rel_dir") else None
     img = Image.from_dol(dol)
     names = load_map(game_cfg["_dir"] / "symbols" / f"{vid}.map")
-    funcs = load_functions(p["functions"])
+    funcs = load_functions(p, game_cfg, vid)
     idx = FuncIndex(funcs, names)
     rows = []
 
@@ -407,7 +410,7 @@ def read_pclog(paths_: list[Path]):
 
 def cmd_dynamic(ns, game_cfg, vid, p) -> int:
     names = load_map(game_cfg["_dir"] / "symbols" / f"{vid}.map")
-    idx = FuncIndex(load_functions(p["functions"]), names)
+    idx = FuncIndex(load_functions(p, game_cfg, vid), names)
     layout = load_rel_layout(p["base"] / "recomp" / "rel_layout.txt")
     agg = read_pclog([Path(x) for x in ns.logs])
     lines = ["# function\tname\tpc\ttype\tregister\taddress\tsize\tcount\tlr\tlr_function\tfirst\tlast"]
@@ -451,7 +454,7 @@ def cmd_dynamic(ns, game_cfg, vid, p) -> int:
 # --------------------------------------------------------------------------------------------------
 def cmd_report(ns, game_cfg, vid, p) -> int:
     names = load_map(game_cfg["_dir"] / "symbols" / f"{vid}.map")
-    idx = FuncIndex(load_functions(p["functions"]), names)
+    idx = FuncIndex(load_functions(p, game_cfg, vid), names)
     want = set(ns.blocks.split(",")) if ns.blocks else None
     per = defaultdict(lambda: {"static": set(), "dyn": defaultdict(int)})
     for line in (p["out"] / "hw_static.tsv").read_text(encoding="utf-8").splitlines():

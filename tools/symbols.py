@@ -57,6 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gcinfo  # noqa: E402
+import ghidra_provenance as gp  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 SYM_RE = re.compile(r"^(\S+)\s*=\s*([^:\s]+):0x([0-9A-Fa-f]+);\s*//\s*(.*)$")
@@ -1024,6 +1025,7 @@ def ghidra_starts(slug: str, vid: str) -> set[int]:
     tsv = tc.GENERATED / slug / vid / "ghidra" / "out" / "functions.tsv"
     if not tsv.exists():
         return set()
+    gp.require(tsv, code_paths(slug, vid, tc.load_game(slug))[0], vid)
     starts = set()
     for line in tsv.read_text(encoding="utf-8").splitlines():
         if line.startswith("#"):
