@@ -186,12 +186,17 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   from a failing bench run, from other sources than the current ones, or from an oracle whose settings are not the
   defaults are refused, as are accidental copies of a run (forged evidence is out of scope: results are not signed).
 - **Mutants** (`tools/decomp_oracle.py mutate`, `tools/decomp_mutants.py`; experimental, blocks nothing, never in
-  a build): small deliberate errors in the decompiled sources (a branch, a bound, a constant, a store, a type) are
-  replayed offline on the captured cases, under `build/`, to measure whether the cases tell them from the right
-  code. First run, on the 64 verified functions in US and PAL: 858 mutants, 379 killed, 170 detected without a
-  proven difference, 63 survivors, all sorted (`games/chibi-robo/decomp/oracle_mutants/triage.tsv`). It found
-  test gaps, not code errors: 13 synthetic cases closed 16 survivors, with no difference from the originals.
-  Three survivors on two functions stay open, because synthetic cases cannot set a global.
+  a build): small deliberate errors in the decompiled sources (a branch, a bound, a constant, a store, a type, a
+  store moved above a load) are replayed offline on the captured cases, under `build/`, to measure whether the
+  cases tell them from the right code. Current run, on the 64 verified functions in US and PAL: 865 mutants, 384
+  killed, 170 detected without a proven difference, 65 survivors, all sorted
+  (`games/chibi-robo/decomp/oracle_mutants/triage.tsv`). It found test gaps, not code errors: 13 synthetic cases
+  closed 16 survivors, with no difference from the originals. Three survivors on two functions stay open, because
+  synthetic cases cannot set a global.
+  The tool is on trial, not validated. Its first prediction failed: it expected swapped stores to reproduce a real
+  bug, and that bug was a read after a write, which the oracle's final bytes do not show as an order of stores. The
+  operator for that shape was defined after the failure, so its results on that bug prove nothing. Each batch of the
+  trial writes a figure before the run; two batches in a row with no real gap and the tool is dropped.
 - **Results** (at D1): over the five reference scenarios, the twelve verified functions were compared 7,402,837 times in US
   and 7,774,037 in PAL (every call compared), without a difference, together with their synthetic cases; all their
   blocks were covered (some branches only by the synthetic cases). The oracle also checks that every byte stored by
