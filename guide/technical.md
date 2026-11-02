@@ -192,14 +192,15 @@ them that every relocated call of the REL modules reaches a function start.
 [REA](https://github.com/morluto/rea) (Reverse Engineer Anything, MIT) answers questions about a binary through
 Ghidra: overview, functions, pseudo-C, callers and references, from the command line or as an MCP server for an
 AI agent. It is not needed to build or play. REA reads 32-bit big-endian PowerPC ELF executables, on Linux or
-macOS only, and does not read GameCube DOL files, so:
+macOS only. REA 6.8.0 also reads a GameCube DOL when told `--target-format gamecube-dol`, but without symbols or
+the small-data registers, and by default without paired singles. The ELF route has all three, so it is kept:
 
 - `tools/dol2elf.py` converts the extracted DOL (plus the version's symbol map) into such an ELF, byte for byte,
   under `generated/<game>/<ID>/rea/` (derived from your copy of the game: never committed). It checks the result
   against the DOL, and with `llvm-readelf` when available;
 - `tools/rea.py` runs REA in a Linux container (Docker), with the Ghidra of `external/ghidra` mounted read-only.
   The container has no network, no Linux capabilities and runs as a non-root user. The image is built from
-  `tools/rea/Dockerfile` (REA 6.7.0, Node.js 22, JDK 21): the base image, Node.js and REA are pinned; REA's
+  `tools/rea/Dockerfile` (REA 6.8.0, Node.js 22, JDK 21): the base image, Node.js and REA are pinned; REA's
   transitive npm dependencies and the build stage's apt packages are not, and npm install scripts are not run.
   On a Linux or macOS host with REA installed, `--native` runs it directly.
 
@@ -215,7 +216,23 @@ py -3 tools/rea.py chibi-robo --version GGTE01 mcp-config      # registration fo
 ```
 
 `{elf}` stands for the ELF as REA sees it. The Ghidra language is the Gekko/Broadway one of the GameCube loader
-(`[rea]` in `games/chibi-robo/game.toml`), so paired-single instructions are decoded. The small-data registers
-(r13, r2) are scanned from the entry point and its first calls and given to Ghidra, so small globals show as
-addresses rather than `unaff_r13 + offset`. Limits: each command-line call imports the program again (about
-2 minutes); the MCP server keeps it open between questions. Only the main executable is converted, not the REL modules.
+(`[rea]` in `games/chibi-robo/game.toml`), so paired-single instructions are decoded; `tools/rea.py` refuses to run
+without it, because REA's default language would turn that code into wrong output without any error. The small-data
+registers (r13, r2) are scanned from the entry point and its first calls and given to Ghidra, so small globals show
+as addresses rather than `unaff_r13 + offset`.
+
+To read many functions, export their pseudo-C once instead of asking one by one:
+
+```
+py -3 tools/rea.py chibi-robo --version GGTE01 run -- decompile-all {elf} --output {work}/all --provider ghidra --format json
+```
+
+`{work}/all/functions/` then holds one file per function, named by address, and `decompile-index.json` lists them.
+Add `--address-start 0x... --address-end 0x...` for one range. On this project's machine, a range of 30 functions
+took 2.5 to 6 minutes depending on the load, almost all of it the import, and the whole executable 8 to 10 minutes.
+The output folder must not exist yet, or pass `--resume`. Pseudo-C helps reading; the assembly remains the reference.
+
+Limits: each command-line call imports the program again (about 2 minutes); the MCP server keeps it open between
+questions. The export covers what Ghidra sees as a function: 301 of the 4,506 known functions of GGTE01 have no
+file, 0.63% of the code, most of them small functions only reached through pointers. Only the main executable is
+converted, not the REL modules.

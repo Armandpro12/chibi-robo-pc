@@ -13,8 +13,10 @@ Examples:
 REA (npm package `rea-agents`, MIT License, https://github.com/morluto/rea) drives Ghidra and answers
 questions about a binary (overview, functions, pseudo-C, references) from the command line or as an MCP
 server. Its PowerPC lane ("PowerPC ELF through Ghidra", REA docs/ghidra-ppc.md) admits 32-bit big-endian
-ELF executables without the EF_PPC_EMB flag, on Linux/macOS hosts only; GameCube DOL files are not admitted.
-Hence:
+ELF executables without the EF_PPC_EMB flag, on Linux/macOS hosts only. REA 6.8.0 also admits a DOL when told
+`--target-format gamecube-dol` (REA docs/ghidra-dol.md), but that lane has no symbols, leaves r2 and r13 unset
+and defaults to a language without paired singles. Our ELF route has the symbol map, r13/r2 and the Gekko
+language, so it is kept. Hence:
   - `elf` converts the DOL into such an ELF with the version's symbol map: tools/dol2elf.py, output
     `generated/<game>/<ID>/rea/<ID>.elf` (derived from the game: ignored by Git). Rebuilt automatically when
     the DOL, the map or dol2elf.py is newer;
@@ -28,8 +30,11 @@ Hence:
   - the container has no network (`--network none`), no capabilities (`--cap-drop ALL`), cannot gain
     privileges (`--security-opt no-new-privileges`) and runs as a non-root user (container_user());
   - the Ghidra language comes from `[rea] language` in games/<game>/game.toml (passed as
-    REA_GHIDRA_LANGUAGE_ID) when that language id is declared by an installed `.ldefs` file of the Ghidra
-    installation; otherwise REA's default PowerPC language is used and a warning is printed.
+    REA_GHIDRA_LANGUAGE_ID). It must be declared by an installed `.ldefs` file of the Ghidra installation and
+    `--env` cannot replace it: `run` and `mcp` refuse otherwise, because REA's default PowerPC language does
+    not decode paired singles, which would come out wrong without any error;
+  - `[rea] disabled_analyzers` of game.toml (a list of Ghidra analyzer names) is passed as
+    REA_GHIDRA_DISABLED_ANALYZERS, to shorten the import; `--env REA_GHIDRA_DISABLED_ANALYZERS=` runs them all.
 
 Placeholders in `run` arguments: {elf} = the ELF path as REA sees it, {work} = its folder (writable: REA
 outputs such as snapshots may be written there; it is under generated/, ignored by Git).
@@ -37,7 +42,7 @@ Containers are named `rea-pc-<game>-<ID>-<pid>` and removed when they exit (`--r
 on stderr, so a stuck server can be stopped with `docker stop <that exact name>`.
 
 Each CLI call imports the program into Ghidra again (about 2 minutes for a 2 MiB DOL); the MCP server keeps
-its session open between questions.
+its session open between questions, and one `decompile-all` writes a whole batch of functions on one import.
 
 Paths: Ghidra from tools/toolchain.py (config/local.toml [paths] ghidra, then external/ghidra); docker from
 [paths] docker, then the PATH. Commands are run without a shell (argument lists), so paths with spaces work;
@@ -64,7 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dol2elf  # noqa: E402
 import toolchain as tc  # noqa: E402
 
-REA_VERSION = "6.7.0"                        # keep in step with ARG REA_VERSION in tools/rea/Dockerfile
+REA_VERSION = "6.8.0"                        # keep in step with ARG REA_VERSION in tools/rea/Dockerfile
 IMAGE = f"gcrt-rea:{REA_VERSION}"
 DOCKERFILE_DIR = Path(__file__).resolve().parent / "rea"
 CONTAINER_GHIDRA = "/opt/ghidra"
@@ -181,18 +186,25 @@ class Context:
         env: dict[str, str] = {}
         lang = self.rea_cfg.get("language")
         if lang:
-            if lang in installed_languages(ghidra):
-                env["REA_GHIDRA_LANGUAGE_ID"] = lang
-                if self.rea_cfg.get("compiler_spec"):
-                    env["REA_GHIDRA_COMPILER_SPEC_ID"] = self.rea_cfg["compiler_spec"]
-            else:
-                log(f"warning: Ghidra language {lang} ([rea] language of games/{self.slug}/game.toml) is not "
-                    f"installed in {ghidra}; REA will use its default PowerPC language "
-                    "(install the extension that provides it: tools/bootstrap.py --only ghidra_gc_loader)")
+            # A refusal, not a warning: REA would fall back to its default PowerPC language, which does not
+            # decode paired singles, and the pseudo-C of those functions would be wrong with no error.
+            if lang not in installed_languages(ghidra):
+                sys.exit(f"Ghidra language {lang} ([rea] language of games/{self.slug}/game.toml) is not "
+                         f"installed in {ghidra}: refusing to run REA without it, paired-single code would "
+                         "come out wrong without any error (install the extension that provides it: "
+                         "tools/bootstrap.py --only ghidra_gc_loader)")
+            env["REA_GHIDRA_LANGUAGE_ID"] = lang
+            if self.rea_cfg.get("compiler_spec"):
+                env["REA_GHIDRA_COMPILER_SPEC_ID"] = self.rea_cfg["compiler_spec"]
+        if self.rea_cfg.get("disabled_analyzers"):
+            env["REA_GHIDRA_DISABLED_ANALYZERS"] = ",".join(self.rea_cfg["disabled_analyzers"])
         for item in self.extra_env:
             key, sep, value = item.partition("=")
             if not sep:
                 sys.exit(f"--env expects NAME=VALUE, got {item!r}")
+            if key == "REA_GHIDRA_LANGUAGE_ID" and lang and value != lang:
+                sys.exit(f"--env {item}: [rea] language of games/{self.slug}/game.toml is {lang}, refusing "
+                         "another language")
             env[key] = value
         return env
 
@@ -268,6 +280,7 @@ class Context:
         if self.native and not rea:
             sys.exit(f"--native: `rea` not found on the PATH (npm install -g rea-agents@{REA_VERSION})")
         ghidra = self.ghidra()
+        env = self.rea_env(ghidra)           # refuses a missing language before Docker runs or the ELF is written
         if not self.native:
             # `--mount` takes comma-separated key=value fields: a comma in a path would split it.
             # Checked before the ELF is written and before Docker runs.
@@ -278,7 +291,6 @@ class Context:
             self.ensure_daemon()
             self.require_image()
         elf = self.ensure_elf()
-        env = self.rea_env(ghidra)
         if self.native:
             subst = {"{elf}": str(elf.resolve()), "{work}": str(self.work.resolve())}
             args = [rea_arg_subst(x, subst) for x in rea_args]

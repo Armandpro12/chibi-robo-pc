@@ -121,7 +121,8 @@ Performance in the heaviest scene measured so far (the birthday party), as frame
 
 - **Reverse engineering with REA** (`tools/rea.py`, `tools/dol2elf.py`): REA over Ghidra on the main executable of
   both versions, from the command line or as an MCP server, in a container with no network that runs as a non-root
-  user. Not needed to build or play; see [Technical notes](guide/technical.md#optional-reverse-engineering-with-rea).
+  user. One `decompile-all` exports the pseudo-C of a batch or of the whole executable in a single import. Not needed
+  to build or play; see [Technical notes](guide/technical.md#optional-reverse-engineering-with-rea).
 
 ## Stage 2 — Full decompilation 🟡
 
