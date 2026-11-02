@@ -1792,3 +1792,21 @@ selections are the bytes at +0x20 and +0x21, the four colour inputs start at +0x
 +0x44, 8 bytes each (kind at +0, GX argument at +2, source node at +4); the constant node holds its component, register
 and component index as bytes at +0xC, +0xE and +0xF; the compilation state has two bytes per register (colour
 components used, alpha used) from +0xC. The code of each pair is identical in US and PAL once addresses are masked.
+
+## Appendix J. Jump tables of the game's code, checked on 2026-11-02
+
+Every indirect jump without link (`bctr`) of the DOL and of the 16 REL, in GGTE01 and GGTP01, as found in the bytes and
+cross-checked with Ghidra 12.1.4's decompiler (`HighFunction.getJumpTables`) and with the disassembly `[verified: both
+versions, every function of the symbol maps]`:
+
+- 178 `bctr` in 130 functions, the same in both versions: 174 in the DOL and one in each of `hori`, `stage01`, `stage04` and
+  `stage09`. 177 are `switch` tables; the other one, the last instruction of the function at `0x801514A0` / `0x80153D50`,
+  jumps to a function pointer, taken directly or read through two indexed loads, and Ghidra finds no table there either.
+- A table is compiled as `cmplwi rN, last; bgt default; lis; slwi r, rN, 2; addi; lwzx; mtctr; bctr`, the order of the middle
+  instructions varying. In 29 tables the compared register is the switch value plus a constant. In 113 tables some
+  entries hold the target of the bound branch. For 3 tables Ghidra's value analysis keeps only a sub-range of the
+  entries, the ones left out all holding that target.
+- In a REL the code and the table are filled by relocations: the file holds zeroes there.
+- DolRecomp's generated code leaves through its dispatcher at a `bctr` and enters the target by its label, with no
+  cycle charge for the jump itself; the case costs the charges from the target on.
+

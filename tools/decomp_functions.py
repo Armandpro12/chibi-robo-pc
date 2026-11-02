@@ -31,6 +31,8 @@ This tool:
     2. code check: in that version's DOL or REL the address is the start of a function of the expected size (the
        instruction before it ends a function or is padding, the last one is blr/b/bctr).
     A function enabled for the build must have an address in EVERY version (parity);
+  * follows the jump tables of the code (jump_analysis, comment "Jump tables"): the block hooks and the graph of paths
+    see their cases, and a table-shaped bctr that is not proven refuses the function;
   * writes the registration table of the version (C++ file for runtime/core/decomp/gc_abi.h, build folder only).
 tools/build.py calls it for the HLE hooks (DolRecomp --hle-hooks) and the registration table.
 
@@ -467,14 +469,16 @@ def _locate(f: Function, addr: int, dol, rels: dict) -> tuple[list[tuple[int, by
     return f"{f.name}: unknown module {f.module!r} (dol, or one of {', '.join(sorted(rels))})"
 
 
-def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tuple[list[int], list[int]]:
+def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int,
+                tables: dict[int, JumpTable] | None = None) -> tuple[list[int], list[int]]:
     """Basic blocks of the function [address, address + size) of `ranges`, from its own code: (start addresses of
     the blocks reachable from the entry, start addresses of the blocks no path from the entry reaches). A block
     starts at the entry, at every branch target inside the function and after every branch. Edges: a conditional
     branch goes to its target and to the next instruction; `b` (without link) to its target; blr, bctr, rfi and the
-    always-taken forms of bclr/bcctr end the path; a call (link bit) goes on to the next instruction; a branch out of
-    the function ends the path. BO & 0x14 == 0x14 is "branch always" (PowerPC UISA, bc: neither CTR nor condition
-    tested)."""
+    always-taken forms of bclr/bcctr end the path, except the bctr of a table of `tables` (jump_analysis), which goes to
+    every entry of its table; a call (link bit) goes on to the next instruction; a branch out of the function ends the
+    path. BO & 0x14 == 0x14 is "branch always" (PowerPC UISA, bc: neither CTR nor condition tested)."""
+    tables = tables or {}
     blob = base = None
     for b, data in ranges:
         if b <= address < b + len(data):
@@ -511,7 +515,10 @@ def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tup
                 leaders.add(i + 1)
         elif op == 19 and ((w >> 1) & 0x3FF) in (16, 50, 528):  # bclr, rfi, bcctr
             always = ((w >> 1) & 0x3FF) == 50 or ((w >> 21) & 0x14) == 0x14
-            succ.append(nxt if (lk or not always) else [])
+            table = tables.get(address + 4 * i) if ((w >> 1) & 0x3FF) == 528 else None
+            cases = sorted({(t - address) // 4 for t in table.entries}) if table else []
+            succ.append(cases if table else nxt if (lk or not always) else [])
+            leaders.update(cases)
             if i + 1 < n:
                 leaders.add(i + 1)
         else:
@@ -526,6 +533,377 @@ def code_blocks(ranges: list[tuple[int, bytes]], address: int, size: int) -> tup
     reachable = sorted(address + 4 * i for i in leaders if i in seen)
     dead = sorted(address + 4 * i for i in leaders if i not in seen)
     return reachable, dead
+
+
+# Jump tables. A dense `switch` compiles to a compare of the index, a conditional branch taken when it is out of range,
+# then a word loaded from a table in the data sections and a bctr to it:
+#     cmplwi r3, 8; bgt default; lis r4, table@ha; slwi r0, r3, 2; addi r3, r4, table@l; lwzx r0, r3, r0; mtctr r0; bctr
+# jump_analysis follows such a bctr only on a proof made on this code, in the manner of the AArch64 proof of REA
+# (MIT, its docs/native-investigation.md; REA proves nothing for PowerPC, and tools/ghidra/scripts/ExportJumpTables.java
+# is our own cross-check of this proof):
+#   * bound: the comparison is an unsigned compare with an immediate, of the very value that indexes the table (a
+#     register evaluation from the start of the block, through copies, and with the scaling by 4 seen), and the branch
+#     out of range tests that compare (cmplwi + bgt: immediate + 1 entries; cmplwi + bge: immediate entries);
+#   * no other way in: no branch of the function, direct or through a table, lands after the compare;
+#   * table: its address is a constant of the code, and exactly that many words are read from the image;
+#   * targets: every entry is an instruction of the function other than its entry (a jump to the entry would be a
+#     recursive tail call; the oracle's run-time check tells a case from a tail call by the same rule); two tables of
+#     a function do not overlap.
+# Any failure is a refusal with its reason (`refused`): the table is then not followed, and no case is ever guessed
+# (an index out of range is the bound branch, kept apart as `default`). A bctr whose CTR plainly comes from something
+# else than an indexed load has no table shape: an indirect tail call, listed in `plain`, ending the path as before.
+@dataclass(frozen=True)
+class JumpTable:
+    site: int                  # the bctr
+    base: int                  # address of the table
+    entries: tuple[int, ...]   # target of each index, as many as the bound proves
+    compare: int               # the compare of the index
+    bound_branch: int          # the branch taken when the index is out of range
+    default: int | None        # its target, None when it leaves the function
+    index_register: int        # register compared
+
+
+@dataclass
+class JumpAnalysis:
+    tables: dict[int, JumpTable] = field(default_factory=dict)  # bctr -> proven table
+    refused: dict[int, str] = field(default_factory=dict)       # bctr -> why its table is not proven
+    plain: list[int] = field(default_factory=list)              # bctr without table shape
+
+
+class FunctionWords(list):
+    """Instruction words of an original (resolve `words`) with what jump_analysis found in them: tools/decomp_path_cost.py
+    reads `jump_tables` {bctr: targets by index} and `jump_refusals` {bctr: reason}."""
+
+    def __init__(self, words: list[int], analysis: JumpAnalysis | None = None):
+        super().__init__(words)
+        self.jump_tables = {s: t.entries for s, t in analysis.tables.items()} if analysis else {}
+        self.jump_refusals = dict(analysis.refused) if analysis else {}
+
+
+SPR_CTR = 9
+# Primary opcodes whose register result is in the rD field, in the rA field, and the update forms that also write rA.
+_WRITES_RD = frozenset({7, 8, 12, 13, 14, 15, 32, 34, 40, 42})
+_WRITES_RA = frozenset({20, 21, 23, 24, 25, 26, 27, 28, 29})
+_UPDATE_RD_RA = frozenset({33, 35, 41, 43})
+_UPDATE_RA = frozenset({37, 39, 45, 49, 51, 53, 55, 57, 61})
+_NO_GPR = frozenset({4, 10, 11, 36, 38, 44, 47, 48, 50, 52, 54, 56, 59, 60, 63})
+# Opcode 31: extended opcodes with the result in rA; without register result (compares, cache, indexed stores, FP
+# indexed loads, mtspr, mtcrf); XO-form and other results in rD (9-bit field: bit 21 is OE in the XO forms).
+_X31_RA = frozenset({24, 26, 28, 60, 124, 284, 316, 412, 444, 476, 536, 792, 824, 922, 954})
+_X31_NONE = frozenset({0, 32, 86, 144, 151, 215, 407, 467, 535, 599, 663, 727})
+_X31_RD = frozenset({8, 10, 11, 19, 23, 40, 75, 87, 104, 136, 138, 200, 202, 232, 234, 235, 266, 279, 339, 343, 459, 491})
+_CR_LOGICAL = frozenset({0, 33, 129, 193, 225, 257, 289, 417, 449})
+
+
+def _gpr_written(word: int) -> tuple[int, ...] | None:
+    """General registers `word` writes (PowerPC UISA instruction forms), None for a form not modelled here (no proof
+    goes through one). Branches are not asked here."""
+    op, rd, ra, xo = word >> 26, (word >> 21) & 31, (word >> 16) & 31, (word >> 1) & 0x3FF
+    if op in _WRITES_RD:
+        return (rd,)
+    if op in _WRITES_RA:
+        return (ra,)
+    if op in _UPDATE_RD_RA:
+        return (rd, ra)
+    if op in _UPDATE_RA:
+        return (ra,)
+    if op in _NO_GPR:
+        return ()
+    if op == 46:  # lmw
+        return tuple(range(rd, 32))
+    if op == 19 and xo in _CR_LOGICAL:
+        return ()
+    if op == 31:
+        if xo in _X31_RA:
+            return (ra,)
+        if xo in _X31_NONE:
+            return ()
+        if (xo & 0x1FF) in _X31_RD:
+            return (rd,)
+    return None
+
+
+def _writes_cr(word: int) -> bool:
+    """True if `word` may change a CR field: compares, the record forms, CR logical instructions, mtcrf."""
+    op, xo = word >> 26, (word >> 1) & 0x3FF
+    if op in (10, 11, 13, 28, 29) or (op == 19 and xo in _CR_LOGICAL):
+        return True
+    if op in (20, 21, 23, 59, 63, 4):
+        return bool(word & 1) or (op == 63 and xo in (0, 32)) or (op == 4 and xo in (0, 32, 64, 96))
+    return op == 31 and (bool(word & 1) or xo in (0, 32, 144))
+
+
+def _is_branch(word: int) -> bool:
+    op, xo = word >> 26, (word >> 1) & 0x3FF
+    return op in (16, 17, 18) or (op == 19 and xo in (16, 50, 528))
+
+
+def _is_mtctr(word: int) -> bool:
+    return word >> 26 == 31 and (word >> 1) & 0x3FF == 467 and (((word >> 16) & 31) | (((word >> 11) & 31) << 5)) == SPR_CTR
+
+
+def _direct_targets(words: list[int], address: int) -> set[int]:
+    """Targets of the direct branches without link of `words` (function at `address`)."""
+    return {_branch_target(w, address + 4 * i) for i, w in enumerate(words) if w >> 26 in (16, 18) and not w & 1}
+
+
+def _table_of_index(memory, start: int, compare: int, site: int, index: int) -> int | str:
+    """Address of the table the bctr at `site` reads, from a register evaluation of the instructions [start, site), or
+    the reason there is none: `index` is the register compared at `compare`. Values: ("const", value), ("index",),
+    ("scaled",) for the index times 4, ("entry", table address) for the word of the table; anything else is unknown
+    (absent). The only branch in the range is the bound branch, not taken here."""
+    regs: dict[int, tuple] = {}
+    ctr = None
+
+    def kind(r: int) -> str:
+        return regs[r][0] if r in regs else ""
+
+    for at in range(start, site, 4):
+        w = memory.word(at)
+        op, rs, ra, rb, xo = w >> 26, (w >> 21) & 31, (w >> 16) & 31, (w >> 11) & 31, (w >> 1) & 0x3FF
+        if at == compare:
+            regs[index] = ("index",)
+            continue
+        if _is_branch(w):
+            continue
+        if _is_mtctr(w):
+            ctr = regs.get(rs)
+            continue
+        written = _gpr_written(w)
+        if written is None:
+            return f"instruction {w:08X} at {at:08X} is not modelled"
+        imm = w & 0xFFFF
+        simm = imm - 0x10000 if imm & 0x8000 else imm
+        value = None
+        if op == 15 and (ra == 0 or kind(ra) == "const"):  # lis, addis
+            value = ("const", ((regs[ra][1] if ra else 0) + (imm << 16)) & 0xFFFFFFFF)
+        elif op == 14 and (ra == 0 or kind(ra) == "const"):  # li, addi
+            value = ("const", ((regs[ra][1] if ra else 0) + simm) & 0xFFFFFFFF)
+        elif op == 24 and kind(rs) == "const":  # ori
+            value = ("const", regs[rs][1] | imm)
+        elif op == 31 and xo == 444 and rs == rb:  # mr
+            value = regs.get(rs)
+        elif op == 21 and kind(rs) == "index" and (rb, (w >> 6) & 31, (w >> 1) & 31) == (2, 0, 29):  # slwi 2
+            value = ("scaled",)
+        elif op == 31 and xo == 23 and ra and {kind(ra), kind(rb)} == {"const", "scaled"}:  # lwzx
+            value = ("entry", regs[ra][1] if kind(ra) == "const" else regs[rb][1])
+        for r in written:
+            regs.pop(r, None)
+        if value is not None:
+            regs[written[0]] = value
+    if ctr is None or ctr[0] != "entry":
+        return "the bctr does not jump to the word read at the compared index, scaled by 4, from a constant address"
+    return ctr[1]
+
+
+def _ctr_source(memory, address: int, site: int) -> str:
+    """How CTR reaches the bctr at `site`: "table" (the last mtctr of its block takes a word from an indexed load),
+    "plain" (it takes something else), or the reason it cannot be told."""
+    at = site - 4
+    while at >= address and not _is_mtctr(memory.word(at)):
+        if _is_branch(memory.word(at)):
+            return f"no mtctr in the block of the bctr at {site:08X}"
+        at -= 4
+    if at < address:
+        return f"no mtctr before the bctr at {site:08X}"
+    source = (memory.word(at) >> 21) & 31
+    at -= 4
+    while at >= address:
+        x = memory.word(at)
+        if _is_branch(x):
+            break
+        written = _gpr_written(x)
+        if written is None:
+            return f"instruction {x:08X} at {at:08X} is not modelled"
+        if source in written:
+            return "table" if x >> 26 == 31 and (x >> 1) & 0x3FF == 23 else "plain"
+        at -= 4
+    return f"r{source} of the mtctr before the bctr at {site:08X} comes from another block"
+
+
+def _prove_table(memory, address: int, size: int, site: int, targets: set[int]) -> JumpTable | str:
+    """The table of the bctr at `site` of the function [address, address + size), or the reason it is not proven."""
+    # The bound branch: the nearest branch before the bctr, a conditional one.
+    bound = site - 4
+    while bound >= address and not _is_branch(memory.word(bound)):
+        bound -= 4
+    if bound < address:
+        return "no bound check before the table"
+    b = memory.word(bound)
+    bo, bi = (b >> 21) & 31, (b >> 16) & 31
+    if b >> 26 != 16 or b & 1 or (bo & 0x14) == 0x14:
+        return f"the branch before the table, at {bound:08X}, is not a conditional bound check"
+    compare = bound - 4
+    while compare >= address and not _writes_cr(memory.word(compare)):
+        if _is_branch(memory.word(compare)):
+            return f"no compare in the block of the bound branch at {bound:08X}"
+        compare -= 4
+    if compare < address:
+        return f"no compare before the bound branch at {bound:08X}"
+    c = memory.word(compare)
+    if c >> 26 != 10 or (c >> 21) & 3 or (c >> 23) & 7 != bi >> 2:
+        return (f"the bound branch at {bound:08X} does not test an unsigned compare of a register with an immediate "
+                f"({c:08X} at {compare:08X})")
+    index, limit = (c >> 16) & 31, c & 0xFFFF
+    if bo == 12 and bi & 3 == 1:  # branch if greater: in range up to `limit` included
+        count = limit + 1
+    elif bo == 4 and bi & 3 == 0:  # branch if not less: in range below `limit`
+        count = limit
+    else:
+        return f"the bound branch at {bound:08X} (BO {bo}, BI {bi}) does not leave on an index out of range"
+    if count == 0:
+        return f"the bound at {compare:08X} leaves no entry"
+    inside = sorted(t for t in targets if compare < t <= site)
+    if inside:
+        return f"a branch lands at {inside[0]:08X}, after the compare at {compare:08X}: the bound may not hold there"
+    start = compare
+    while start > address and start not in targets and not _is_branch(memory.word(start - 4)):
+        start -= 4
+    base = _table_of_index(memory, start, compare, site, index)
+    if isinstance(base, str):
+        return base
+    entries = []
+    for i in range(count):
+        t = memory.word((base + 4 * i) & 0xFFFFFFFF)
+        if t is None:
+            return f"entry {i} of {count} of the table at {base:08X} is outside the image"
+        if t % 4 or not address <= t < address + size:
+            return f"entry {i} of {count} of the table at {base:08X} ({t:08X}) is not an instruction of the function"
+        if t == address:
+            return f"entry {i} of {count} of the table at {base:08X} jumps to the function's entry"
+        entries.append(t)
+    target = _branch_target(b, bound)
+    return JumpTable(site, base, tuple(entries), compare, bound,
+                     target if address <= target < address + size else None, index)
+
+
+def jump_analysis(memory, address: int, size: int) -> JumpAnalysis:
+    """Every bcctr without link of the function [address, address + size) of `memory` (word(address) -> word or None;
+    code and data, relocated for a REL: dol_memory, rel_memory): its table if proven, or why not, or `plain`. See
+    "Jump tables" above."""
+    out = JumpAnalysis()
+    words = [memory.word(address + 4 * i) for i in range(size // 4)]
+    if None in words:
+        raise ValueError(f"{address:08X}+0x{size:X} is outside the image")
+    targets = _direct_targets(words, address)
+    for i, w in enumerate(words):
+        if w >> 26 != 19 or (w >> 1) & 0x3FF != 528 or w & 1:
+            continue
+        site = address + 4 * i
+        source = _ctr_source(memory, address, site)
+        if (w >> 21) & 0x14 != 0x14:
+            out.refused[site] = "conditional bcctr"
+        elif source == "plain":
+            out.plain.append(site)
+        elif source != "table":
+            out.refused[site] = source
+        else:
+            found = _prove_table(memory, address, size, site, targets)
+            if isinstance(found, str):
+                out.refused[site] = found
+            else:
+                out.tables[site] = found
+    # A table entry is a way in too: none may land after the compare of a table.
+    for site, table in list(out.tables.items()):
+        inside = sorted({t for other in out.tables.values() for t in other.entries if table.compare < t <= site})
+        if inside:
+            del out.tables[site]
+            out.refused[site] = (f"a table entry lands at {inside[0]:08X}, after the compare at {table.compare:08X}: the "
+                                 f"bound may not hold there")
+    spans = sorted(out.tables.values(), key=lambda t: t.base)
+    for a, b in zip(spans, spans[1:]):
+        if a.base + 4 * len(a.entries) > b.base:
+            for t in (a, b):
+                out.tables.pop(t.site, None)
+                out.refused[t.site] = f"the tables at {a.base:08X} and {b.base:08X} overlap"
+    return out
+
+
+def has_indirect_jump(ranges: list[tuple[int, bytes]], address: int, size: int) -> bool:
+    """True if the function holds a bcctr without link (only then is the data of its module read)."""
+    base, blob = _code_of(ranges, address)
+    if blob is None:
+        return False
+    return any(w >> 26 == 19 and (w >> 1) & 0x3FF == 528 and not w & 1
+               for w in (_word(blob, address - base + 4 * i) for i in range(size // 4)))
+
+
+def dol_memory(path: Path):
+    """Code and data sections of a DOL by address (tools/symbols.py Image)."""
+    import gcinfo  # noqa: E402  (generic tool of the repository)
+    import symbols as sy  # noqa: E402
+    data = path.read_bytes()
+    return sy.Image([(s["addr"], data[s["offset"]:s["offset"] + s["size"]])
+                     for s in gcinfo.describe_dol(data)["segments"] if s["size"]])
+
+
+# REL relocation entries (Dolphin OS module format; type names in tools/gcinfo.py): an offset from the previous entry, a
+# type, a section, an addend. Those that give the code the address of a table and the table its targets: 1 R_PPC_ADDR32,
+# 4 R_PPC_ADDR16_LO, 5 R_PPC_ADDR16_HI, 6 R_PPC_ADDR16_HA; 201 R_DOLPHIN_NOP, 202 R_DOLPHIN_SECTION (start of a section),
+# 203 R_DOLPHIN_END.
+def rel_memory(path: Path, module: dict):
+    """Sections of the REL file `path` at the addresses of `module` (tools/build.py rel_layout), with the relocations
+    against itself and against the DOL applied, as OSLink does at load time: a REL file holds zeroes in the words a
+    relocation fills. Relocations against another module are left as they are."""
+    import struct
+    import symbols as sy  # noqa: E402
+    data = path.read_bytes()
+
+    def be32(offset: int) -> int:
+        return int.from_bytes(data[offset:offset + 4], "big")
+
+    # BSS sections are listed with their address and no bytes: a relocation may point at them.
+    addresses = {i: addr for i, addr, *_ in module["sections"]}
+    sections = {i: bytearray(blob) for i, _, _, _, blob in module["sections"]}
+    for k in range(be32(0x2C) // 8):
+        wanted, offset = be32(be32(0x28) + 8 * k), be32(be32(0x28) + 8 * k + 4)
+        if wanted not in (0, module["id"]):
+            continue
+        where = None
+        here = 0
+        while offset + 8 <= len(data):
+            step, kind, section, addend = struct.unpack_from(">HBBI", data, offset)
+            offset += 8
+            here += step
+            if kind == 203:
+                break
+            if kind == 202:
+                where, here = section, 0
+            elif kind in (1, 4, 5, 6) and where in sections:
+                value = (addresses.get(section, 0) + addend if wanted else addend) & 0xFFFFFFFF
+                if kind == 1:
+                    sections[where][here:here + 4] = value.to_bytes(4, "big")
+                else:
+                    half = {4: value, 5: value >> 16, 6: (value + 0x8000) >> 16}[kind] & 0xFFFF
+                    sections[where][here:here + 2] = half.to_bytes(2, "big")
+    return sy.Image([(addresses[i], bytes(blob)) for i, blob in sections.items() if blob])
+
+
+def module_memory(game_cfg: dict, disc_root: Path, module: str, rels: dict[str, dict]):
+    """Code and data of a module of the table ("dol" or a REL name, `rels` by name as in resolve), for jump_analysis."""
+    if module == "dol":
+        return dol_memory(disc_root / game_cfg["code"]["dol"])
+    code = game_cfg.get("code", {})
+    rel_dir = disc_root / code["rel_dir"] if code.get("rel_dir") else None
+    found = sorted(rel_dir.rglob(f"{module}.rel")) if rel_dir and rel_dir.exists() else []
+    if not found or module not in rels:
+        raise SystemExit(f"module {module}: no REL file under {rel_dir}")
+    return rel_memory(found[0], rels[module])
+
+
+def any_function_words(game_cfg: dict, disc_root: Path, module: str, offset: int, size: int,
+                       layout: list[dict]) -> tuple[int, FunctionWords]:
+    """(guest address, words with their jump tables) of a function that need not be in the table, for a diagnostic:
+    `offset` is its address, or its offset in the code of a REL `module`."""
+    rels = {m["name"]: m for m in layout}
+    memory = module_memory(game_cfg, disc_root, module, rels)
+    guest = offset
+    if module != "dol":
+        guest += next(a for (_, a, _, executable, _) in rels[module]["sections"] if executable)
+    words = [memory.word(guest + 4 * i) for i in range(size // 4)]
+    if None in words:
+        raise SystemExit(f"{guest:08X}+0x{size:X} is outside {module}")
+    return guest, FunctionWords(words, jump_analysis(memory, guest, size))
 
 
 def _branch_target(word: int, at: int) -> int:
@@ -550,7 +928,9 @@ def call_sites(ranges: list[tuple[int, bytes]], address: int, size: int) -> list
     """Addresses of the instructions of [address, address + size) that leave the function for another one: calls
     (bl, bcl, bclrl, bcctrl) and tail branches out of the function (b, and bc without link, whose target is outside
     it; bcctr). The oracle build compiles a hook at each one (runtime/core/decomp/gc_oracle.cpp: the call is recorded,
-    its callee run once, and replayed to the decompiled version). blr and bclr (returns) are not calls."""
+    its callee run once, and replayed to the decompiled version). blr and bclr (returns) are not calls. The bctr of a
+    jump table stays listed: its hook reads CTR at run time (gc_oracle_branch.h decode_branch), so a target inside the
+    function runs as compiled, and a target out of it would be seen as the tail call it is."""
     base, blob = _code_of(ranges, address)
     if blob is None:
         return []
@@ -568,13 +948,15 @@ def call_sites(ranges: list[tuple[int, bytes]], address: int, size: int) -> list
     return out
 
 
-def assertion_blocks(ranges: list[tuple[int, bytes]], address: int, size: int, no_return: set[int]) -> list[int]:
+def assertion_blocks(ranges: list[tuple[int, bytes]], address: int, size: int, no_return: set[int],
+                     tables: dict[int, JumpTable] | None = None) -> list[int]:
     """Reachable basic blocks (starts from code_blocks) that only lead to a function that never returns (`no_return`:
     guest addresses in this version, [decomp] no_return of game.toml): a block whose last instruction is an
     unconditional call (bl) to one of them, or whose successors all are such blocks (fixed point). The oracle report
     lists them apart (tools/decomp_oracle.py): no scenario reaches them without stopping the game, so synthetic cases,
     whose calls the oracle simulates, cover them."""
-    reach, _ = code_blocks(ranges, address, size)
+    tables = tables or {}
+    reach, _ = code_blocks(ranges, address, size, tables)
     base, blob = _code_of(ranges, address)
     if blob is None or not no_return:
         return []
@@ -582,7 +964,7 @@ def assertion_blocks(ranges: list[tuple[int, bytes]], address: int, size: int, n
     end = address + size
     leaders = set(starts)
     # A block runs up to the next leader of the whole function (reachable or not).
-    every, dead = code_blocks(ranges, address, size)
+    every, dead = code_blocks(ranges, address, size, tables)
     bounds = sorted(set(every) | set(dead))
     end_of = {s: next((b for b in bounds if b > s), end) for s in starts}
 
@@ -614,7 +996,8 @@ def assertion_blocks(ranges: list[tuple[int, bytes]], address: int, size: int, n
                 succ[s] = ([t] if inside else []) + ([] if always else nxt)
         elif op == 19 and xo in (16, 50, 528):
             always = xo == 50 or ((w >> 21) & 0x14) == 0x14
-            succ[s] = nxt if (lk or not always) else []
+            table = tables.get(last) if xo == 528 else None
+            succ[s] = sorted(set(table.entries)) if table else nxt if (lk or not always) else []
         else:
             succ[s] = nxt
     found = set(panic)
@@ -906,8 +1289,9 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
     rel_layout (virtual addresses of the RELs). `blocks`: if given, filled with {guest address: code_blocks()}.
     `fpu`: if given, filled with {guest address: fpu_instructions()} (empty list: no floating-point instruction).
     `calls`, `asserts`: if given, filled with {guest address: call_sites()} and {guest address: assertion_blocks()}
-    (oracle builds). `words`: if given, filled with {guest address: instruction words of the original} (graph of its
-    paths, tools/decomp_path_cost.py)."""
+    (oracle builds). `words`: if given, filled with {guest address: instruction words of the original} (FunctionWords,
+    with its jump tables; graph of its paths, tools/decomp_path_cost.py). A table-shaped bctr that jump_analysis does
+    not prove refuses the function: neither the block hooks nor the graph could see its cases."""
     import symbols as sy  # noqa: E402  (generic tool of the repository)
     functions = read_table(game_cfg)
     if not functions:
@@ -918,6 +1302,7 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
     errors: list[str] = []
     known = known_entries(game_cfg, version) if any(f.enabled for f in functions) else None
     forced = forced_entries(game_cfg, version)
+    memories: dict[str, object] = {}
     for f in functions:
         if not f.enabled:
             continue
@@ -938,19 +1323,28 @@ def resolve(game_cfg: dict, version: str, disc_root: Path, layout: list[dict],
             continue
         ranges, guest = located
         reason = check_sources(game_cfg, version, f, addr, known) or check_code(ranges, guest, f.size)
+        analysis = JumpAnalysis()
+        if not reason and has_indirect_jump(ranges, guest, f.size):
+            if f.module not in memories:
+                memories[f.module] = module_memory(game_cfg, disc_root, f.module, rels)
+            analysis = jump_analysis(memories[f.module], guest, f.size)
+            if analysis.refused:
+                site, why = sorted(analysis.refused.items())[0]
+                reason = f"jump table of the bctr at {site:08X} not proven: {why}"
         if reason:
             errors.append(f"{f.name} ({version} {f.module} {addr:08X}, size 0x{f.size:X}): {reason}")
         if blocks is not None:
-            blocks[guest] = code_blocks(ranges, guest, f.size)
+            blocks[guest] = code_blocks(ranges, guest, f.size, analysis.tables)
         if fpu is not None:
             fpu[guest] = fpu_instructions(ranges, guest, f.size)
         if calls is not None:
             calls[guest] = call_sites(ranges, guest, f.size)
         if asserts is not None:
-            asserts[guest] = assertion_blocks(ranges, guest, f.size, no_return_addresses(game_cfg, version))
+            asserts[guest] = assertion_blocks(ranges, guest, f.size, no_return_addresses(game_cfg, version),
+                                              analysis.tables)
         if words is not None and not reason:
             base, blob = _code_of(ranges, guest)
-            words[guest] = [_word(blob, guest - base + 4 * i) for i in range(f.size // 4)]
+            words[guest] = FunctionWords([_word(blob, guest - base + 4 * i) for i in range(f.size // 4)], analysis)
         out.append((guest, f))
     addresses = [a for a, _ in out]
     for a in sorted({a for a in addresses if addresses.count(a) > 1}):
