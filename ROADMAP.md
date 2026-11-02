@@ -412,9 +412,18 @@ a batch.
   functions (the Metrowerks runtime's global destructor chain, in 10 modules).
   `--parity` (`tools/decomp_proof.py`, also `tools/decomp_functions.py check --parity`) says, per batch, whether each
   row's code is the same in US and PAL once addresses are masked, and warns on a difference with no version condition and
-  no stated reason; every row is the same today, because the batches were chosen that way. `--proof` tells a verified row
+  no stated reason; every row is the same today, because the batches were chosen that way, so that 0 % says nothing of the
+  game. Over the 3,708 functions still to decompile, 449 differ between US and PAL (12.1 %, and 42.4 % of their code
+  bytes: 809,236 of 1,907,608), 3,249 are the same and 10 cannot be compared; game code 438 of 2,549, HSD 0 of 684, RELs
+  11 of 475. Both shares are a floor: `same` ignores callees and taken addresses, writable data, indexed accesses, values
+  reached through a `lis`, and a field offset folded into the low half of an address, and a wrong address on a function
+  with the same compared code reads `same` too. 42 of the 449 differ in size, which the table of functions cannot state
+  with its single size column: enabling them takes a change of format as well as version conditions. The decision on
+  keeping the US version at D3 rests on these figures. `--proof` tells a verified row
   whose code changed since its promotion: each promotion records a digest of the function's source unit in a local file,
-  and a row with no digest (a fresh clone has none) reads as unknown, never as fresh.
+  and a row with no digest (a fresh clone has none) reads as unknown, never as fresh. `fresh` does not cover callees in
+  other units or the oracle's cases: the oracle report stays the gate. `check --parity --strict` refuses an enabled row
+  that differs with no stated reason, and `--proof --require-fresh` refuses a row whose code changed since its promotion.
   Two planning views come with it, on both US and PAL: `--routes` gives, for each function no test run reached, the
   shortest static path from a reached function, the call site to take and whether the search was exhaustive, on static
   evidence only: it cannot see code outside a version's inventory or addresses computed in another way (1,208 DOL

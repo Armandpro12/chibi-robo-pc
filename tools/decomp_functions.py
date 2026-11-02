@@ -42,6 +42,8 @@ Options of check:
   --parity      first compares the masked code of every row between the versions, all of them whatever --version says,
                 disabled rows included: same, differs, unknown (tools/decomp_proof.py). Warnings, refuses nothing. It
                 runs before the address checks, so that a refusal does not hide it
+  --strict      with --parity: exit code 1 on an enabled row that differs with no stated reason and no version condition
+                in its source unit, or that could not be compared. A disc not extracted is reported, not refused
   --table PATH  reads this table of functions instead of the configured one
 """
 
@@ -1581,17 +1583,29 @@ def _layout(game_cfg: dict, disc_root: Path) -> list[dict]:
     return build.rel_layout(rels, base) if rels else []
 
 
-def main() -> int:
+def manifest_disc(path: Path) -> Path:
+    """Extracted disc named by the manifest `path` of tools/extract.py."""
     import json
+    disc = json.loads(path.read_text(encoding="utf-8")).get("disc_root")
+    if not disc:
+        raise SystemExit(f"{path} has no disc_root: extract the disc again (tools/extract.py)")
+    return Path(disc)
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="Checks and resolves the table of decompiled functions.")
     parser.add_argument("game")
     parser.add_argument("action", choices=["check", "list"])
     parser.add_argument("--version", action="append", help="version ID (repeatable; default: all)")
     parser.add_argument("--parity", action="store_true", help="check: compare the masked code between the versions")
+    parser.add_argument("--strict", action="store_true", help="check --parity: exit 1 on what the warnings of an enabled "
+                        "row say, except a disc not extracted")
     parser.add_argument("--table", type=Path, help="table of functions to read instead of the configured one")
     args = parser.parse_args()
     if args.parity and args.action != "check":
         parser.error("--parity goes with check")
+    if args.strict and not args.parity:
+        parser.error("--strict goes with check --parity")
     game_cfg = tc.load_game(args.game)
     if args.table:
         game_cfg = dict(game_cfg, decomp=dict(game_cfg["decomp"], functions=str(args.table.resolve())))
@@ -1599,19 +1613,24 @@ def main() -> int:
     functions = read_table(game_cfg)
     print(f"{len(functions)} functions in the table, "
           f"{sum(f.enabled for f in functions)} enabled")
+    parity = None
     if args.parity:
         import decomp_proof  # noqa: E402  (imports this file: not at the top)
         discs = {}
         for version in (v["game_id"] for v in game_cfg["versions"]):
             manifest = tc.GENERATED / args.game / version / "manifest.json"
-            discs[version] = (Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
-                              if manifest.exists() else None)
-        print("\n".join(decomp_proof.parity_lines(decomp_proof.parity_report(game_cfg, discs))))
+            discs[version] = manifest_disc(manifest) if manifest.exists() else None
+        parity = decomp_proof.parity_report(game_cfg, discs)
+        print("\n".join(decomp_proof.parity_lines(parity)))
+        if args.strict and parity["not_extracted"]:
+            print(f"--strict: {parity['not_extracted']} enabled rows not compared: disc not extracted, not refused")
+        if args.strict:
+            print("\n".join(f"--strict refused: {line}" for line in parity["refused"]) or "--strict: nothing refused")
     for version in versions:
         manifest = tc.GENERATED / args.game / version / "manifest.json"
         if not manifest.exists():
             raise SystemExit(f"{manifest} missing: extract the disc first (tools/extract.py)")
-        disc_root = Path(json.loads(manifest.read_text(encoding="utf-8"))["disc_root"])
+        disc_root = manifest_disc(manifest)
         fpu: dict[int, list[int]] = {}
         entries = resolve(game_cfg, version, disc_root, _layout(game_cfg, disc_root), fpu=fpu)
         print(f"{version}: {len(entries)} functions resolved, code checks passed")
@@ -1619,7 +1638,7 @@ def main() -> int:
             for a, f in entries:
                 fp = f"fpu={len(fpu[a])}@{fpu[a][0]:08X}" if fpu.get(a) else "fpu=0"
                 print(f"  {a:08X} {f.size:#06x} {f.module:8} {f.status:10} {fp:16} {f.name}")
-    return 0
+    return 1 if args.strict and parity["refused"] else 0
 
 
 if __name__ == "__main__":

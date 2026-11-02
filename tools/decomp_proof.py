@@ -1,24 +1,30 @@
 """What the rows of the table of decompiled functions rest on (generic; parameters in [decomp] of game.toml).
 
+Both checks come from REA (MIT; only the idea, this is our own code): the states of its function matching
+(docs/native-function-matching.md) and a proof that applies to the digest of what it was about
+(docs/reconstruction-obligation-ledgers.md).
+
 Read by tools/decomp_functions.py check --parity and tools/decomp_progress.py --parity / --proof; tools/decomp_oracle.py
 report --promote writes the digests. This file is not in ORACLE_HASHED_TOOLS: it decides nothing an oracle run measures,
 so changing a report here keeps the oracle results valid.
 
 Version parity. Each row's code in the reference version is compared with its code in every other version, after
-masking the fields that depend on addresses (tools/sdksig.py masked_words, the mask of tools/symbols.py keep_masks):
-  same     the masked words are equal in every version
-  differs  a masked word differs in a version, or a constant read through r2 does (DOL rows: its value, not its
+hiding the fields that depend on addresses. The mask of tools/symbols.py keep_masks hides too much for this: a register
+stays marked once a `lis` wrote it, so a field offset or an array stride on it is hidden long after the address was
+complete. compared_words shows those again, from a flow analysis of the function (a register is the high half of an
+address if one path says so), and shows nothing else: every word keep_masks tells apart stays apart. keep_masks stays as
+it is because the signatures of tools/sdksig.py and the transpositions of tools/symbols.py rest on it.
+  same     the compared words are equal in every version
+  differs  a compared word differs in a version, or a constant read through r2 does (DOL rows: its value, not its
            address, tools/decomp_globals.py references). Only r2: the address is exact there, whereas that scan can take
            a register rewritten since its `lis` for a `lis` base (two false constants found by hand, 2026-11-02)
   unknown  the comparison could not be made (no address in a version, disc not extracted, range outside the code)
-Never read `same` as "the same behavior": the masks still hide the targets of calls, the addresses a function only
-takes (a callee, a string or a table can differ), what it reads from writable data and the .rodata values it loads
-through `lis`. Two functions of a version can also share their masked code, so a wrong address on such a twin reads
-`same`. REL rows are compared in the REL files, relocations not applied (the words they fill hold zeroes), without the
-constants.
-  A `differs` asks for a version condition in the C++ (a comment `version-differs: <name>` in the row's source unit,
-which is how this tool finds it) or a reason in the table below; without one it is a warning, and so is an `unknown` on an
-enabled row. Warnings refuse nothing yet.
+Never read `same` as "the same behavior", and read the share of `differs` as a floor: see PARITY_IGNORES. REL rows are
+compared in the REL files, relocations not applied (the words they fill hold zeroes), without the constants.
+  A `differs` asks for a version condition in the C++ (a comment `version-differs: <name>` in the row's source unit: the
+file of its export and the headers it includes, which is how this tool finds it) or a reason in the table below; without
+one it is a warning, and so is an `unknown` on an enabled row. check --parity --strict refuses them on enabled rows,
+except an `unknown` that only says a disc is not extracted (notes/decisions.md, 2026-11-02).
   [decomp] version_parity (optional, relative to games/<game>/) names a tracked table, with no game data: one line per
 row, columns `name`, `batch` and `reason` ("-" or empty = none). A row that is not in it has no known batch.
 
@@ -39,7 +45,9 @@ State of a `verified` row in a version:
   stale-shared  a line holds its unit digest, none with the current common digest: a shared input changed
   unknown       nothing to compare: no local file, a function never recorded, an unreadable line, no source unit
 A missing file reads as unknown, never as fresh (a fresh clone has none). A digest never changes the table: the status
-stays promoted by the full report only. The cases of the oracle are not in the digests.
+stays promoted by the full report only. See PROOF_LIMITS for what `fresh` does not say. decomp_progress.py --proof
+--require-fresh refuses a `stale-unit`; `stale-shared` and `unknown` stay reports (they block the close of a batch or a
+release, not a merge: notes/decisions.md, 2026-11-02).
 
 No code of the game is written anywhere: only states, counts, names, addresses and hashes.
 """
@@ -55,6 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import decomp_functions as df  # noqa: E402
+import symbols as sy  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 SAME, DIFFERS, UNKNOWN = "same", "differs", "unknown"
@@ -66,6 +75,113 @@ VERSION_MARK = re.compile(r"//.*\bversion-differs:\s*([A-Za-z_][A-Za-z0-9_]*)")
 SHA1 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 DIGEST_COLUMNS = ["name", "version", "unit", "common", "sources", "labels"]
+NO_DISC = "disc not extracted"
+VOLATILE = sum(1 << r for r in (0, *range(3, 13)))  # registers a call may change (PowerPC EABI)
+PARITY_IGNORES = [
+    "callees and taken addresses: a call, a string or a table can differ behind the same words",
+    "writable data: what a function reads from .data, .sdata or .bss",
+    "indexed accesses (lwzx and the like): the offset is in a register",
+    ".rodata loaded through `lis`, and any address or integer constant built from `lis`: its halves are hidden",
+    "a field offset added to the low half of an address: it is hidden with it",
+]
+PROOF_LIMITS = [
+    "fresh does not cover callees in other units, the cases of the oracle, or a proof revoked since",
+    "the digest file is an aid, not evidence: the gate is the oracle report",
+]
+
+
+# Words compared between the versions
+
+
+def successors(word: int, i: int, n: int, start: int, size: int) -> list[int]:
+    """Words that can run after word `i` of a function of `n` words, same edges as tools/decomp_functions.py code_blocks:
+    a branch out of the function, blr, bctr and rfi end the path; a call comes back. Not its proven jump tables: the
+    cases of a bctr are the code no other path reaches (high_half_registers)."""
+    op = word >> 26
+    next_word = [i + 1] if i + 1 < n else []
+    if op in (16, 18):
+        sign = 0x8000 if op == 16 else 0x02000000
+        off = word & (2 * sign - 4)
+        off -= 2 * sign if off & sign else 0
+        target = off if word & 2 else start + 4 * i + off
+        inside = [(target - start) // 4] if start <= target < start + size else []
+        if word & 1:
+            return next_word
+        return inside if op == 18 or (word >> 21) & 0x14 == 0x14 else inside + next_word
+    if op == 19 and (word >> 1) & 0x3FF in (16, 50, 528):
+        ends = (word >> 1) & 0x3FF == 50 or (not word & 1 and (word >> 21) & 0x14 == 0x14)
+        return [] if ends else next_word
+    return next_word
+
+
+def high_halves_after(word: int, bases: int) -> int:
+    """`bases` (bit n: rn can hold the high half of an address) after `word`. An instruction not modelled by
+    tools/decomp_functions.py _gpr_written writes nothing here: its register stays hidden, as with keep_masks."""
+    op, rd, ra, xo = word >> 26, (word >> 21) & 31, (word >> 16) & 31, (word >> 1) & 0x3FF
+    if op == 15:  # lis, addis: still a high half; addi and ori complete it, through _gpr_written
+        return bases | 1 << rd if ra == 0 or bases >> ra & 1 else bases & ~(1 << rd)
+    if op == 31 and xo == 444 and rd == (word >> 11) & 31:  # mr rA, rS
+        return bases | 1 << ra if bases >> rd & 1 else bases & ~(1 << ra)
+    if word & 1 and (op in (16, 18) or (op == 19 and xo in (16, 528))):
+        return bases & ~VOLATILE
+    for register in df._gpr_written(word) or ():
+        bases &= ~(1 << register)
+    return bases
+
+
+def high_half_registers(words: list[int], start: int, size: int) -> list[int]:
+    """Before each word, the registers that can hold the high half of an address, on any path: forward flow to a fixed
+    point, a join keeps what one path says, so a join never shows a low half. A linear scan would, each time a register is
+    rewritten on one branch only. Code no path reaches is a case of a jump table: it starts from what a bctr knows."""
+    n = len(words)
+    before: list[int | None] = [None] * n
+
+    def run(todo: list[int]) -> None:
+        while todo:
+            i = todo.pop()
+            out = high_halves_after(words[i], before[i])
+            for j in successors(words[i], i, n, start, size):
+                merged = out | (before[j] or 0)
+                if merged != before[j]:
+                    before[j] = merged
+                    todo.append(j)
+
+    before[0] = 0
+    run([0])
+    while None in before:
+        i = before.index(None)
+        before[i] = 0
+        for word, bases in zip(words, before):
+            if bases is not None and word >> 26 == 19 and (word >> 1) & 0x3FF == 528 and not word & 1:
+                before[i] |= bases
+        run([i])
+    return before
+
+
+def immediate_base(word: int) -> int | None:
+    """Register an immediate of `word` is relative to, None if it has none."""
+    op, rs, ra = word >> 26, (word >> 21) & 31, (word >> 16) & 31
+    if op in (24, 25):  # ori, oris: the source is the rS field
+        return rs
+    return (ra or None) if op in (14, 15, 56, 57, 60, 61) or 32 <= op <= 55 else None
+
+
+def compared_words(words: list[int], start: int, size: int) -> list[int]:
+    """`words` with the mask of keep_masks, except on an immediate whose base register holds no high half there: that one
+    is a field offset or a stride, which the mask hides only because a `lis` wrote the register earlier. Only shows
+    bits: two functions that keep_masks tells apart stay apart."""
+    out = []
+    for word, mask, bases in zip(words, sy.keep_masks(words, start, size), high_half_registers(words, start, size)):
+        base = immediate_base(word)
+        shown = base is not None and base not in sy.SDA_REGS and not bases >> base & 1
+        out.append(word if shown else word & mask)
+    return out
+
+
+def parity_words(image, address: int, size: int) -> list[int] | None:
+    """Compared words of the function at `address` of a tools/symbols.py Image, None outside the code."""
+    words = image.words(address, size // 4)
+    return compared_words(words, address, size) if words else None
 
 
 # Version parity
@@ -97,9 +213,8 @@ class VersionCode:
         return self.images[module]
 
     def _load(self, module: str):
-        import symbols as sy  # noqa: E402  (generic tool of the repository)
         if self.disc is None or not self.disc.is_dir():
-            return "disc not extracted"
+            return NO_DISC
         if module == "dol":
             path = self.disc / self.code["dol"]
             return sy.Image.from_dol(path) if path.is_file() else f"{path.name} missing"
@@ -125,15 +240,14 @@ def constants(code: VersionCode, address: int, size: int) -> dict[int, bytes | N
 
 
 def masked_code(code: VersionCode, f: df.Function, version: str) -> list[int] | str:
-    """Masked words of `f` in `version`, or the reason there are none."""
-    import sdksig  # noqa: E402  (generic tool of the repository)
+    """Compared words of `f` in `version`, or the reason there are none."""
     address = f.addresses.get(version)
     if address is None:
         return f"no {version} address"
     image = code.image(f.module)
     if isinstance(image, str):
         return f"{version}: {image}"
-    words = sdksig.masked_words(image, address, f.size)
+    words = parity_words(image, address, f.size)
     return words if words else f"{version} {address:08X}+0x{f.size:X} is outside the code"
 
 
@@ -152,13 +266,13 @@ def compare_row(f: df.Function, reference: str, codes: dict[str, VersionCode]) -
             continue
         changed = [4 * i for i, (a, b) in enumerate(zip(base, other)) if a != b]
         if changed:
-            return DIFFERS, f"{version}: {len(changed)} of {len(base)} masked words, first at +0x{changed[0]:X}"
+            return DIFFERS, f"{version}: {len(changed)} of {len(base)} compared words, first at +0x{changed[0]:X}"
         if f.module == "dol":
             ours = constants(codes[reference], f.addresses[reference], f.size)
             theirs = constants(code, f.addresses[version], f.size)
             moved = sorted(o for o in ours.keys() | theirs.keys() if ours.get(o) != theirs.get(o))
             if moved:
-                return DIFFERS, f"{version}: same masked words, {len(moved)} constants differ, first at +0x{moved[0]:X}"
+                return DIFFERS, f"{version}: same compared words, {len(moved)} constants differ, first at +0x{moved[0]:X}"
     return (UNKNOWN, unknown) if unknown else (SAME, "")
 
 
@@ -191,13 +305,44 @@ def read_parity_table(game_cfg: dict) -> dict[str, tuple[str, str]]:
     return out
 
 
-def version_conditions(src: Path) -> set[str]:
-    """Names that a comment `version-differs: <name>` of the decompiled code marks as written for both versions."""
+def version_conditions(game_cfg: dict, names: set[str], src: Path | None) -> set[str]:
+    """`names` that a comment `version-differs: <name>` of their own source unit marks as written for both versions: a
+    comment elsewhere says nothing of them."""
+    src = src or decomp_sources(game_cfg)
+    units, roots = source_units(game_cfg, src), source_roots(game_cfg, src)
+    marks: dict[Path, set[str]] = {}
     out: set[str] = set()
-    if src.is_dir():
-        for path in df.files_below(src):
-            out.update(VERSION_MARK.findall(path.read_text(encoding="utf-8", errors="replace")))
+    for name in names:
+        for path in (p for unit in units.get(name, ()) for p in unit_files(unit, roots)):
+            if path not in marks:
+                marks[path] = set(VERSION_MARK.findall(path.read_text(encoding="utf-8", errors="replace")))
+            if name in marks[path]:
+                out.add(name)
     return out
+
+
+def masked_twins(game_cfg: dict, functions: list[df.Function], codes: dict[str, VersionCode]) -> int | None:
+    """Rows whose compared words are those of another function of the symbol maps, in a version: a wrong address on that
+    function reads `same`. None when no version could be read."""
+    map_dir = game_cfg["_dir"] / game_cfg.get("symbols", {}).get("map_dir", "symbols")
+    keys = {(f.module, f.size) for f in functions}
+    exposed, read = set(), False
+    for version, code in codes.items():
+        entries = {**df._map_entries(map_dir / f"{version}.map"), **df._map_entries(map_dir / f"{version}-rel.tsv")}
+        holders: dict[tuple, set[tuple[str, int]]] = {}
+        for (module, address), size in entries.items():
+            image = code.image(module) if (module, size) in keys else None
+            words = parity_words(image, address, size) if image is not None and not isinstance(image, str) else None
+            if words:
+                read = True
+                holders.setdefault((module, size, tuple(words)), set()).add((module, address))
+        for f in functions:
+            address = f.addresses.get(version)
+            image = code.image(f.module)
+            words = parity_words(image, address, f.size) if address is not None and not isinstance(image, str) else None
+            if words and holders.get((f.module, f.size, tuple(words)), set()) - {(f.module, address)}:
+                exposed.add(f.name)
+    return len(exposed) if read else None
 
 
 def tally(rows: list[Row]) -> dict:
@@ -206,15 +351,16 @@ def tally(rows: list[Row]) -> dict:
 
 
 def parity_report(game_cfg: dict, discs: dict[str, Path | None], src: Path | None = None) -> dict:
-    """Comparison of every row, totals (all rows, verified rows, per batch) and warnings. `discs`: extracted disc of
-    every version, None if it is not there. `src`: decompiled sources to read instead of the configured ones."""
+    """Comparison of every row, totals (all rows, verified rows, enabled rows, per batch), warnings and what --strict
+    refuses. `discs`: extracted disc of every version, None if it is not there. `src`: decompiled sources to read instead
+    of the configured ones."""
     sym, d = game_cfg.get("symbols", {}), game_cfg.get("decomp", {})
     reference = d.get("reference") or sym.get("reference")
     codes = {v: VersionCode(game_cfg, discs.get(v)) for v in discs}
     functions = df.read_table(game_cfg)
     table = read_parity_table(game_cfg)
-    marked = version_conditions(src or decomp_sources(game_cfg))
-    rows, warnings = [], []
+    marked = version_conditions(game_cfg, {f.name for f in functions}, src)
+    rows, warnings, refused, not_extracted = [], [], [], 0
     for f in functions:
         state, detail = compare_row(f, reference, codes)
         batch, reason = table.get(f.name, (NO_BATCH, ""))
@@ -223,8 +369,14 @@ def parity_report(game_cfg: dict, discs: dict[str, Path | None], src: Path | Non
         rows.append(Row(f, state, detail, batch, reason))
         if state == DIFFERS and not reason:
             warnings.append(f"{f.name}: code differs ({detail}) with no version condition and no stated reason")
+            if f.enabled:
+                refused.append(warnings[-1])
         elif state == UNKNOWN and f.enabled:
             warnings.append(f"{f.name}: enabled, code not compared ({detail})")
+            if detail.endswith(NO_DISC):
+                not_extracted += 1
+            else:
+                refused.append(warnings[-1])
         elif state == SAME and reason:
             warnings.append(f"{f.name}: a reason is stated, but the masked code is the same")
     names = {f.name for f in functions}
@@ -232,11 +384,13 @@ def parity_report(game_cfg: dict, discs: dict[str, Path | None], src: Path | Non
     batches = sorted({r.batch for r in rows})
     verified = [r for r in rows if r.function.kind == "done"]
     return {"reference": reference, "versions": sorted(codes), "total": tally(rows), "verified": tally(verified),
+            "enabled": tally([r for r in rows if r.function.enabled]), "ignores": PARITY_IGNORES,
+            "masked_twins": masked_twins(game_cfg, functions, codes),
             "batches": {b: tally([r for r in rows if r.batch == b]) for b in batches},
             "verified_batches": {b: tally([r for r in verified if r.batch == b]) for b in batches},
             "not_same": [{"name": r.function.name, "status": r.function.status, "state": r.state, "detail": r.detail,
                           "batch": r.batch, "reason": r.reason} for r in rows if r.state != SAME],
-            "warnings": warnings}
+            "warnings": warnings, "refused": refused, "not_extracted": not_extracted}
 
 
 def parity_share(counts: dict) -> str:
@@ -245,9 +399,15 @@ def parity_share(counts: dict) -> str:
 
 def parity_lines(report: dict) -> list[str]:
     others = [v for v in report["versions"] if v != report["reference"]]
-    out = [f"Code of {report['reference']} against {', '.join(others)}: masked words (tools/sdksig.py) and constants read "
-           "through r2; same says nothing of calls, taken addresses or writable data"]
-    t, v = report["total"], report["verified"]
+    t, v, e = report["total"], report["verified"], report["enabled"]
+    twins = report["masked_twins"]
+    out = [f"Code of {report['reference']} against {', '.join(others)}: address fields masked, field offsets and strides "
+           "kept, constants read through r2. The share of differs is a floor. same ignores:"]
+    out += [f"  - {line}" for line in report["ignores"]]
+    out.append("  - a wrong address on a function with the same compared words: "
+               + (f"{twins} of {t['rows']} rows have such a twin" if twins is not None else "not counted, no disc read"))
+    out.append(f"  Enabled rows: {parity_share(e)} differs, a selection effect (batches were chosen for matching code), "
+               "not a share of the game")
     out.append(f"  {t['rows']} rows: {t[SAME]} same, {t[DIFFERS]} differs, {t[UNKNOWN]} unknown; "
                f"verified {v['rows']}: {v[SAME]} same, {v[DIFFERS]} differs, {v[UNKNOWN]} unknown")
     out.append(f"  {'batch':16s} {'rows':>5s} {'same':>5s} {'differs':>8s} {'unknown':>8s} {'differs %':>10s}")
@@ -340,6 +500,15 @@ def common_hash(game_cfg: dict, units: dict[str, list[Path]], src: Path | None =
     return h.hexdigest()
 
 
+def shown_path(path: Path, *bases: Path | None) -> str:
+    """`path` for a report: relative to the first of `bases` that holds it, else its name. No report carries a local path."""
+    resolved = path.resolve()
+    for base in bases:
+        if base and resolved.is_relative_to(base.resolve()):
+            return resolved.relative_to(base.resolve()).as_posix()
+    return path.name
+
+
 def proof_path(game_cfg: dict, root: Path) -> Path | None:
     """Local digest file ([decomp] proof_digests under the checkout `root`), None if the key is missing."""
     rel = game_cfg.get("decomp", {}).get("proof_digests")
@@ -371,9 +540,11 @@ def read_proofs(path: Path | None) -> Proofs:
     return proofs
 
 
-def record_proofs(game_cfg: dict, path: Path, names: list[str], versions: list[str], sources: str,
-                  labels: list[str]) -> tuple[int, list[str]]:
-    """Adds the digests of the promoted `names` to the local file. Returns (lines added, names with no source unit)."""
+def pending_proofs(game_cfg: dict, path: Path, names: list[str], versions: list[str], sources: str,
+                   labels: list[str]) -> tuple[list[str], list[str]]:
+    """Lines of the promoted `names` not in the local file yet, and the names with no source unit. Writes nothing: the
+    promotion computes them before it touches the table, so that a failure here leaves the table as it was. Neither
+    digest reads a status, so writing the table next does not change them."""
     roots = source_roots(game_cfg)
     units = source_units(game_cfg)
     common = common_hash(game_cfg, units)
@@ -391,13 +562,18 @@ def record_proofs(game_cfg: dict, path: Path, names: list[str], versions: list[s
             digest = unit_digest(f, version, files, roots)
             if (digest, common) not in existing.get((f.name, version), ()):
                 lines.append("\t".join([f.name, version, digest, common, sources, ",".join(labels)]))
+    return lines, missing
+
+
+def append_proofs(path: Path, lines: list[str]) -> int:
+    """Adds the lines of pending_proofs to the local file and returns how many."""
     if lines:
         path.parent.mkdir(parents=True, exist_ok=True)
         head = "" if path.exists() else "# " + "\t".join(DIGEST_COLUMNS) + "\n"
         tail = path.read_bytes()[-1:] if path.exists() else b"\n"
         with path.open("a", encoding="utf-8", newline="\n") as out:
             out.write(("" if tail == b"\n" else "\n") + head + "\n".join(lines) + "\n")
-    return len(lines), missing
+    return len(lines)
 
 
 def proof_state(f: df.Function, version: str, proofs: Proofs, units: dict[str, list[Path]], roots: list[Path],
@@ -406,7 +582,7 @@ def proof_state(f: df.Function, version: str, proofs: Proofs, units: dict[str, l
     found = units.get(f.name, [])
     if len(found) != 1:
         return UNKNOWN, f"{len(found)} source units hold its export"
-    shown = found[0].as_posix()
+    shown = shown_path(found[0], *roots)
     records = proofs.records.get((f.name, version))
     if not proofs.exists or not records:
         return UNKNOWN, shown
@@ -417,15 +593,16 @@ def proof_state(f: df.Function, version: str, proofs: Proofs, units: dict[str, l
 
 
 def proof_report(game_cfg: dict, path: Path | None, versions: list[str], src: Path | None = None,
-                 external: Path | None = None) -> dict:
-    """State of every verified row, per version. Reads only: staleness never edits the table."""
+                 external: Path | None = None, root: Path | None = None) -> dict:
+    """State of every verified row, per version. Reads only: staleness never edits the table. `root`: the checkout that
+    holds the digest file, for the path shown."""
     proofs = read_proofs(path)
     roots = source_roots(game_cfg, src)
     units = source_units(game_cfg, src)
     common = common_hash(game_cfg, units, src, external)
     verified = [f for f in df.read_table(game_cfg) if f.kind == "done"]
-    out = {"file": path.as_posix() if path else None, "file_present": proofs.exists, "damaged_lines": proofs.damaged,
-           "common": common, "versions": {}, "rows": []}
+    out = {"file": shown_path(path, root) if path else None, "file_present": proofs.exists,
+           "damaged_lines": proofs.damaged, "common": common, "limits": PROOF_LIMITS, "versions": {}, "rows": []}
     for version in versions:
         states = Counter()
         for f in verified:
@@ -444,6 +621,7 @@ def proof_lines(report: dict, want_list: bool = False) -> list[str]:
     where = report["file"] or "no [decomp] proof_digests"
     out = [f"Proof of the verified rows, against {where}"
            + ("" if report["file_present"] else " (no such local file: unknown, never fresh)")]
+    out += [f"  {line}" for line in report["limits"]]
     if report["damaged_lines"]:
         out.append(f"  {report['damaged_lines']} unreadable lines: they prove nothing")
     for version, c in report["versions"].items():

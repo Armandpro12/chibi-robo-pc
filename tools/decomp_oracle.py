@@ -921,13 +921,17 @@ def cmd_report(args) -> int:
     if args.dry_run:
         print(f"--promote --dry-run: would set {', '.join(promote)} to verified (nothing written; {rule})")
         return exit_code
-    write_status(game_cfg, promote, versions)
-    print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
     import decomp_proof
     digests = decomp_proof.proof_path(game_cfg, bench)
+    # Computed before the table is written: a failure here leaves it as it was.
+    lines, missing = (decomp_proof.pending_proofs(game_cfg, digests, promote, versions, current["sources"], labels)
+                      if digests else ([], []))
+    write_status(game_cfg, promote, versions)
+    print(f"--promote: {', '.join(promote)} -> verified in {df.config(game_cfg)[0].name} ({rule})")
     if digests:
-        added, missing = decomp_proof.record_proofs(game_cfg, digests, promote, versions, current["sources"], labels)
-        print(f"--promote: {added} proof digests added to {digests} (local file, not in Git)")
+        added = decomp_proof.append_proofs(digests, lines)
+        shown = decomp_proof.shown_path(digests, bench)
+        print(f"--promote: {added} proof digests added to {shown} (local file, not in Git)")
         for name in missing:
             print(f"WARNING: {name}: no single source unit holds its export: no proof digest, it reads as unknown")
     return exit_code
