@@ -26,6 +26,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ghidra_provenance as gp  # noqa: E402
 import symbols as sy  # noqa: E402
 import toolchain  # noqa: E402,F401  (console encoding)
 
@@ -192,6 +193,7 @@ def cmd_find(ns) -> int:
     # Candidate starts: bl targets, words following a blr, and Ghidra functions if provided.
     starts = sy.Matcher(img, [], img, set())._candidate_starts()
     if ns.starts:
+        gp.require(Path(ns.starts), Path(ns.dol))
         for line in Path(ns.starts).read_text(encoding="utf-8").splitlines():
             if not line.startswith("#"):
                 starts.add(int(line.split("	")[0], 16))

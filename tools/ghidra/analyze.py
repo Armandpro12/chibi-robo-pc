@@ -3,15 +3,23 @@
 Usage:
   py -3 tools/ghidra/analyze.py <game> [--version ID] import [--force] [--map auto|none|<path>] [--rels]
   py -3 tools/ghidra/analyze.py <game> [--version ID] export          # re-exports functions and registers
+  py -3 tools/ghidra/analyze.py <game> [--version ID] attest [--dol file] [--language id]
   py -3 tools/ghidra/analyze.py <game> [--version ID] dump <target>... [-o file]
-  py -3 tools/ghidra/analyze.py <game> [--version ID] script <Script.java> [args...]
+  py -3 tools/ghidra/analyze.py <game> [--version ID] script [--rels] <Script.java> [args...]
 
 Ghidra project: `generated/<game>/<ID>/ghidra/<ID>.gpr`, program `/main.dol`
 (and `/rels/<module>.rel` with `--rels`: the GameCube loader then puts the DOL and every REL of
 the folder into a single program, the RELs following the end of the DOL).
 Outputs: `generated/<game>/<ID>/ghidra/out/` (ignored by Git: contains information taken from the game).
   functions.tsv: functions (entry, size, name, callees); mmio.tsv: accesses to the hardware registers
-  and to the OS low globals; disasm.txt: disassemblies requested by `dump`.
+  and to the OS low globals; disasm.txt: disassemblies requested by `dump`; attest.tsv: attestation of the program
+  (below).
+
+Provenance (tools/ghidra_provenance.py): every Ghidra run also runs AttestImage.java, which compares each loaded block
+with the DOL, then the entry point and the language. Files written by the run's scripts then start with a header made
+from what that attestation observed (DOL and map hashes, Ghidra and extension versions, language), and the readers
+refuse one that does not match their version. A run whose attestation fails exits with 1 and its header says so.
+Only files named on the command line can get the header: a `script` that picks its own output path does not.
 
 Technical choices (see notes/decisions.md):
   - Ghidra scripts in Java (`tools/ghidra/scripts/`): Ghidra 12.1 compiles them itself in headless mode;
@@ -25,16 +33,20 @@ Technical choices (see notes/decisions.md):
 from __future__ import annotations
 
 import argparse
+import functools
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import ghidra_provenance as gp  # noqa: E402
 import toolchain as tc  # noqa: E402
 
 SCRIPTS = Path(__file__).resolve().parent / "scripts"
 LOADER_ARGS = ["-loader", "GameCubeLoader", "-loader-autoloadMaps", "false"]
+ATTEST: dict = {}  # filled by main(): version, dol, language, rel_dir, out
 
 
 def version_of(game: dict, requested: str | None) -> str:
@@ -66,6 +78,46 @@ def default_map(game: dict, vid: str) -> Path | None:
     return candidate if candidate.exists() else None
 
 
+def script_outputs(args: list, started: float) -> list[Path]:
+    """Text files named among the arguments of the post-scripts and written since `started`."""
+    out = []
+    if "-postScript" in args:
+        for a in args[args.index("-postScript"):]:
+            path = Path(a)
+            if path.suffix in (".tsv", ".txt") and path.is_file() and path.stat().st_mtime >= started:
+                out.append(path)
+    return out
+
+
+def attested(run):
+    """Adds the attestation to a Ghidra run, then stamps what the run wrote with what the attestation observed."""
+    @functools.wraps(run)
+    def wrapper(project_dir: Path, project: str, args: list, log: Path) -> int:
+        rels = project.endswith("/rels")
+        report = ATTEST["out"] / ("attest-rels.tsv" if rels else "attest.tsv")
+        report.unlink(missing_ok=True)
+        attest = ["-postScript", "AttestImage.java", ATTEST["dol"], ATTEST["language"], report]
+        at = args.index("-postScript") if "-postScript" in args else len(args)
+        started = time.time()
+        rc = run(project_dir, project, [*args[:at], *attest, *args[at:]], log)
+        if rc != 0:
+            return rc
+        found = gp.read_report(report)
+        if found is None:
+            print(f"attestation: no report ({report}): see {log}", file=sys.stderr)
+            return 1
+        print(f"attestation: {found['result']} ({len(found['blocks'])} blocks, language {found.get('language')})")
+        for failure in found["failures"]:
+            print(f"  {failure}", file=sys.stderr)
+        extra = {"rels_sha256": gp.files_sha256(list(ATTEST["rel_dir"].glob("*.rel")))} if rels else None
+        lines = gp.header(found, ATTEST["version"], extra)
+        for path in script_outputs(args, started):
+            gp.stamp(path, lines)
+        return 0 if found["result"] == "pass" else 1
+    return wrapper
+
+
+@attested
 def headless(project_dir: Path, project: str, args: list, log: Path) -> int:
     exe = tc.find_ghidra_headless()
     if not exe:
@@ -80,7 +132,7 @@ def headless(project_dir: Path, project: str, args: list, log: Path) -> int:
     # Useful summary: report lines, error lines and script outputs.
     for line in text.splitlines():
         if any(k in line for k in ("REPORT", "ERROR", "Exception", "ApplySymbolMap", "ExportFunctions",
-                                   "ExportMmioRefs", "DumpDisasm", "SCRIPT")):
+                                   "ExportMmioRefs", "ExportJumpTables", "DumpDisasm", "SCRIPT")):
             print("  " + line.strip())
     if "ERROR" in text and "Abort" in text:
         return 1
@@ -159,13 +211,25 @@ def cmd_dump(ns, game, vid, p) -> int:
     return rc
 
 
+def cmd_attest(ns, game, vid, p) -> int:
+    """Attests the imported program, against another DOL or language if asked (controls of the check itself)."""
+    if ns.dol:
+        ATTEST["dol"] = Path(ns.dol).resolve()
+    if ns.language:
+        ATTEST["language"] = ns.language
+    args = ["-process", "main.dol", "-noanalysis", "-readOnly", "-scriptPath", SCRIPTS]
+    return headless(p["project_dir"], vid, args, p["out"] / "attest.log")
+
+
 def cmd_script(ns, game, vid, p) -> int:
     extra = [a.replace("{out}", str(p["out"])) for a in ns.args]
-    args = ["-process", "main.dol", "-noanalysis", "-scriptPath", SCRIPTS]
+    # --rels: the program of `import --rels`, named after the first REL.
+    target = sorted(p["rel_dir"].glob("*.rel"))[0].name if ns.rels else "main.dol"
+    args = ["-process", target, "-noanalysis", "-scriptPath", SCRIPTS]
     if ns.read_only:
         args.append("-readOnly")
     args += ["-postScript", ns.script, *extra]
-    return headless(p["project_dir"], vid, args, p["out"] / "script.log")
+    return headless(p["project_dir"], f"{vid}/rels" if ns.rels else vid, args, p["out"] / "script.log")
 
 
 def main() -> int:
@@ -178,6 +242,9 @@ def main() -> int:
     imp.add_argument("--map", default="auto", help="auto (games/<game>/symbols/<ID>.map), none, or a path")
     imp.add_argument("--rels", action="store_true", help="also imports DOL + REL into /rels/")
     sub.add_parser("export", help="re-exports functions.tsv and mmio.tsv")
+    att = sub.add_parser("attest", help="compares the imported program with the DOL")
+    att.add_argument("--dol", help="another DOL to compare with")
+    att.add_argument("--language", help="another expected language")
     dmp = sub.add_parser("dump", help="disassembles functions (address, name or start-end range)")
     dmp.add_argument("targets", nargs="+")
     dmp.add_argument("-o", "--output")
@@ -185,13 +252,17 @@ def main() -> int:
     scr.add_argument("script")
     scr.add_argument("args", nargs=argparse.REMAINDER)
     scr.add_argument("--read-only", action="store_true")
+    scr.add_argument("--rels", action="store_true", help="the DOL + REL program of `import --rels`")
     ns = ap.parse_args()
     if ns.cmd is None:
         ns = ap.parse_args(sys.argv[1:] + ["import"])
     game = tc.load_game(ns.game)
     vid = version_of(game, ns.version)
     p = paths(ns.game, vid, game)
-    handler = {"import": cmd_import, "export": cmd_export, "dump": cmd_dump, "script": cmd_script}[ns.cmd]
+    ATTEST.update(version=vid, dol=p["dol"], rel_dir=p["rel_dir"], out=p["out"],
+                  language=game.get("rea", {}).get("language", "-"))
+    handler = {"import": cmd_import, "export": cmd_export, "dump": cmd_dump, "attest": cmd_attest,
+               "script": cmd_script}[ns.cmd]
     return handler(ns, game, vid, p)
 
 

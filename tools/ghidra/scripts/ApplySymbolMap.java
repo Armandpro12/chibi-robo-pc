@@ -1,6 +1,8 @@
 // Applies an "address size name" symbol map (format accepted by dolrecomp --map) to the
 // current program: creates the function if the address is in an executable block, otherwise a label.
 // Lines starting with '#' are ignored. Generic: no game-specific address here.
+// Keeps the SHA-256 of the map in the program (option "Provenance"): AttestImage.java reports the map really applied,
+// which may no longer be the file on disk when the program is exported later.
 //
 // Headless usage: -preScript ApplySymbolMap.java <map.map>
 //@category GameCube
@@ -8,6 +10,9 @@
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
@@ -26,6 +31,8 @@ public class ApplySymbolMap extends GhidraScript {
 			return;
 		}
 		File mapFile = new File(args[0]);
+		currentProgram.getOptions("Provenance").setString("map_sha256", HexFormat.of()
+				.formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(mapFile.toPath()))));
 		int functions = 0, labels = 0, skipped = 0;
 		try (BufferedReader reader = new BufferedReader(new FileReader(mapFile))) {
 			String line;

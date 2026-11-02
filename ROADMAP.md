@@ -150,7 +150,8 @@ request, sound-stream and particle state; and two that use the floating-point un
 `hsd_mtx_get_translation`, enabled again once the gateway handled a call made while the unit is off; see "Follow-ups
 from D1" below). The particle allocation (`ps_alloc_particle`) is written but stays disabled (the original runs): one
 block (no free particle) depends only on a global that synthetic oracle cases cannot set yet. `HSD_Index2LightID` was left
-out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do not follow yet.
+out then, as a jump-table `switch`; the tools now follow those tables ("Jump tables" below), the function itself waits for
+a batch.
 
 - **Memory type layer** (D1 started 2026-10-27): `runtime/core/decomp/gc_mem.h` (big-endian scalars, 32-bit guest
   pointers, bit-fields, per-version globals, native-memory switch), checked by unit and compile-refusal tests in the
@@ -175,6 +176,15 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   the non-IEEE mode off and on (no difference on 2.66 million cases per mode, at two optimization levels). Equal to
   DolRecomp is what the oracle needs; that every result equals the console is not proven (DolRecomp's `fmadds`, for
   example, does not flush tiny results in the non-IEEE mode, while Dolphin's interpreter does).
+- **Jump tables** (`tools/decomp_functions.py` `jump_analysis`, `tools/decomp_path_cost.py`, not yet exercised by an enabled
+  function): a dense `switch` ends in a `bctr` through a table in the data. The tools follow it only on a proof made on the
+  code (unsigned bound on the very value that indexes the table, no other way in, exact entry count read from the
+  image, every target inside the function); anything else is refused with its reason, and a function holding a refused
+  table cannot be enabled. In both versions: 178 such sites, 174 tables proved, all 145 tables of functions to
+  decompile among them; the 4 refused are in libraries that are not decompiled. Ghidra's decompiler
+  (`tools/ghidra/scripts/ExportJumpTables.java`) agrees on all 174 (on 3 of them it keeps a sub-range, the entries it
+  leaves out holding the default target), and each table shifted by one entry is refused. Basic blocks, oracle block
+  hooks and path graphs now see the cases; a table read at tool run time is never written to Git.
 - **Oracle** (`tools/build.py --oracle`, `tools/decomp_oracle.py`, `runtime/core/decomp/gc_oracle.cpp`; not in the
   normal build): on every call of a decompiled function, an oracle build runs the recompiled original and then the
   decompiled version from the same state and compares the result registers, the registers the PowerPC EABI preserves
@@ -283,6 +293,16 @@ out: it is a jump-table `switch`, which the oracle and the cost-by-path tool do 
   unchanged today (none of the 64 enabled functions makes a call): same HLE hooks, and the title-boot scenario ends at
   the reference's exact cycle and tick counts in US and PAL. Not yet exercised in a production build, for the same
   reason. Removed with the cycle clock at D3.
+- **False "block without progress" stop**: that charge left the chassis's stuck-block check blind. A block entered at
+  the return address of a call, which loops back to the same call inside its recompiled range, ends in the compiled
+  hook of the decompiled function: same `pc` as on entry, and a `downcount` of 0 because the gateway has charged the
+  cycles itself. The chassis took it for a block that ran nothing and stopped the game. The 64 enabled functions never
+  reached that shape on the bench's scenarios; a test function on `HSD_Index2LightID` did (its second call in a light
+  loop), with or without the oracle, and without any jump table running. The check now reads the cycle counter, which sees both ways of counting
+  (test on hand-written blocks: the old check stops, the new one does not, and a block that really ran nothing still
+  stops). A block that counts cycles without moving `pc` is no longer reported: like a `b .` loop, only the run limits
+  or closing the window stop it. With the fix, the production path of that test function ends title-boot at the reference's exact cycle and
+  tick counts in US and PAL.
 - **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
   (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
   yet (refused at compile time); the address of a local variable passed to a callee (an output parameter) would show
