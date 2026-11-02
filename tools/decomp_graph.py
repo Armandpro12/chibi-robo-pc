@@ -19,7 +19,8 @@ absence. Applied here:
     stays unknown.
 
 Function bounds come from the caller. Inside a function: basic blocks with the rules of
-tools/decomp_functions.py code_blocks (every call ends a block), with their edges. A block behind a jump table has no
+tools/decomp_functions.py code_blocks (every call ends a block) up to a bctr, which ends the walk here on purpose, with
+their edges. A block behind a jump table has no
 known predecessor: such a function is marked (`Cfg.jumps`).
 
 Block coverage does not exist for most functions: the coverage probe records function entries and the return address
@@ -353,7 +354,7 @@ class Cfg:
 
 
 def control_flow(code: list[tuple[int, bytes]], address: int, size: int, no_return: set[int]) -> Cfg | None:
-    """Basic blocks of [address, address + size) with their edges. Same rules as decomp_functions.code_blocks; in
+    """Basic blocks of [address, address + size) with their edges. Rules of decomp_functions.code_blocks, tables not followed; in
     addition a call to a function of `no_return` has no successor. A bctr ends its path: its targets are not followed."""
     base, blob = dfn._code_of(code, address)
     if blob is None:

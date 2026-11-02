@@ -1808,5 +1808,6 @@ versions, every function of the symbol maps]`:
   entries, the ones left out all holding that target.
 - In a REL the code and the table are filled by relocations: the file holds zeroes there.
 - DolRecomp's generated code leaves through its dispatcher at a `bctr` and enters the target by its label, with no
-  cycle charge for the jump itself; the case costs the charges from the target on.
+  cycle charge for the jump itself; the case costs the charges from the target on (read in the generated code, and
+  equal to its `downcount` charges on a function of each version).
 

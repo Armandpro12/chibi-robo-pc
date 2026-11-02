@@ -8,6 +8,7 @@
 //
 // HighFunction.getJumpTables() needs the jump loads for the load tables (DecompInterface.toggleJumpLoads, Ghidra 12.1
 // sources of JumpTable and DecompInterface). A destination without a label is written with the label "-".
+// The decompiler set-up follows REA (https://github.com/morluto/rea, MIT, bridge/ghidra/ReaGhidraBridge.java).
 //
 // Headless usage: -postScript ExportJumpTables.java <output.tsv> [<entries.txt>]
 // entries.txt: one hexadecimal function entry per line. An entry that is in no function of the program (code that

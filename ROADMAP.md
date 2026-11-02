@@ -284,7 +284,8 @@ a batch.
   reached that shape on the bench's scenarios; a test function on `HSD_Index2LightID` did (its second call in a light
   loop), with or without the oracle, and without any jump table running. The check now reads the cycle counter, which sees both ways of counting
   (test on hand-written blocks: the old check stops, the new one does not, and a block that really ran nothing still
-  stops). With the fix, the production path of that test function ends title-boot at the reference's exact cycle and
+  stops). A block that counts cycles without moving `pc` is no longer reported: like a `b .` loop, only the run limits
+  or closing the window stop it. With the fix, the production path of that test function ends title-boot at the reference's exact cycle and
   tick counts in US and PAL.
 - **Known limits of the call comparison**: only the argument registers of the decompiled call's C++ type are compared
   (an argument the decompiled version leaves out is not reported); calls with arguments on the stack cannot be written
