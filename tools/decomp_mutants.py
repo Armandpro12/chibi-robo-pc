@@ -12,14 +12,16 @@ sources, the production build or the oracle build; --out outside build/ is refus
 Operators (OPERATORS, on the functions of the table, their helpers in the same file, the constants and field types
 they use): invert_branch (a condition, each operand of || and &&, == and != outside conditions), relational (< and <=,
 > and >=), constant (a literal +1, -1), removed_write (a store or a local update becomes an empty statement),
-swapped_writes (two consecutive stores in one block exchange places), signedness (s8/u8, s16/u16, s32/u32 in the
-signature, the body, or the type of a field the function uses).
-write_before_read (not in the default set) is the shape of a real bug of this project (anomaly A19): a store moved
-above a load that follows it, or a temporary inlined so that a struct copy reads while it writes.
+swapped_writes (two consecutive stores in one block exchange places), write_before_read (the shape of a real bug of
+this project, anomaly A19: a store moved above a load that follows it, or a temporary inlined so that a struct copy
+reads while it writes; defined after that bug was known, so its results on that bug prove nothing), signedness (s8/u8,
+s16/u16, s32/u32 in the signature, the body, or the type of a field the function uses).
 
 Outcome of a mutant, per version:
   invalid     it does not compile (dropped);
-  equivalent  same machine code as the unchanged source, proven by comparing the object's code sections (so no replay);
+  equivalent  same machine code as the unchanged source, proven by comparing the object's code sections (so no replay).
+              Sufficient, not necessary: a mutant that behaves the same can still compile differently (a load moved past
+              an address check, one more host read seen by GC_MEM_OBSERVER); it then survives and is sorted by hand;
   killed      a case shows a difference in the compared results while staying inside the bytes the case gives;
   weak        every failing case read outside the bytes the case gives, or the mutant crashed or hung: the replay has
               no value for those bytes (it reads 0), so this is not a difference proven against the original (it is
@@ -37,6 +39,11 @@ Sorting survivors: --triage FILE (default games/<game>/decomp/oracle_mutants/tri
 verdict: equivalent (no input can tell it from the source: the reason says why), hypothesis (not proven either way,
 the reason says what would settle it), case:<synthetic label> (the case added to kill it), gap (a real gap, no case
 yet). The ids are stable while the mutated text does not change. Survivors with no line are listed as untriaged.
+
+Prediction: a run on a batch (--functions) expects --prediction FILE, a note written before the run that holds a line
+  mutants-prediction: survivors=<n> gaps=<n>
+Without it the tool only warns (it never blocks); with it the output compares the figures. Real gaps count the survivors
+sorted gap, case:<label> or hypothesis: those that need a case, or stay unproven for want of one.
 
 Generic: no game here, everything comes from the functions table, the sources and the captured cases.
 """
@@ -59,13 +66,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import toolchain as tc  # noqa: E402
 
-OPERATORS = ("invert_branch", "relational", "constant", "removed_write", "swapped_writes", "signedness")
-EXTRA_OPERATORS = ("write_before_read",)
+OPERATORS = ("invert_branch", "relational", "constant", "removed_write", "swapped_writes", "write_before_read",
+             "signedness")
 SIGNED = {"s8": "u8", "u8": "s8", "s16": "u16", "u16": "s16", "s32": "u32", "u32": "s32"}
 KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "catch", "else", "do"}
 ASSIGNMENTS = ("<<=", ">>=", "|=", "&=", "^=", "+=", "-=", "*=", "/=", "%=", "=")
 LITERAL = r"(?:0[xX][0-9a-fA-F]+|\d+\.\d*(?:[eE][+-]?\d+)?|\.\d+|\d+)[uUlLfF]*"
 REPLAY_TIMEOUT_SECONDS = 20
+PREDICTION = re.compile(r"^\W*mutants-prediction:\s*survivors=(\d+)\s+gaps=(\d+)\s*$", re.M)
+GAP_VERDICTS = ("gap", "case", "hypothesis")
 
 
 # --- parsing the sources (no compiler: comments and strings blanked, then braces, parentheses, statements) ------------
@@ -780,6 +789,14 @@ def read_triage(path: Path) -> dict[str, tuple[str, str]]:
     return out
 
 
+def read_prediction(path: Path | None) -> tuple[int, int] | None:
+    """(survivors, real gaps) of the note's prediction line, or None (no note, or no such line)."""
+    if path is None or not path.is_file():
+        return None
+    found = PREDICTION.search(path.read_text(encoding="utf-8", errors="replace"))
+    return (int(found.group(1)), int(found.group(2))) if found else None
+
+
 def run(args, oracle) -> int:
     started = time.monotonic()
     game = oracle.game_name(args.game)
@@ -792,9 +809,9 @@ def run(args, oracle) -> int:
     if build_root != out and build_root not in out.parents:
         raise SystemExit(f"--out {out}: mutants stay under {build_root}")
     operators = [x for x in (args.operators or ",".join(OPERATORS)).split(",") if x]
-    unknown = [x for x in operators if x not in OPERATORS + EXTRA_OPERATORS]
+    unknown = [x for x in operators if x not in OPERATORS]
     if unknown:
-        raise SystemExit(f"unknown operators: {', '.join(unknown)} (known: {', '.join(OPERATORS + EXTRA_OPERATORS)})")
+        raise SystemExit(f"unknown operators: {', '.join(unknown)} (known: {', '.join(OPERATORS)})")
     table = oracle.df.read_table(game_cfg)
     if args.functions:
         selected = {x for x in args.functions.split(",") if x}
@@ -822,8 +839,12 @@ def run(args, oracle) -> int:
         for m in mutants:
             print(f"{m.id}\t{m.file.name}:{m.line}\t{m.before}\t=> {m.after}")
         return 0
+    prediction = read_prediction(Path(args.prediction) if args.prediction else None)
+    if args.functions and prediction is None:
+        print("WARNING: no prediction for this batch: --prediction FILE, a note written before the run with the line "
+              "'mutants-prediction: survivors=<n> gaps=<n>' (not blocking)")
 
-    drop = {x for x in (args.drop_synthetic or "").split(",") if x}
+    drop ={x for x in (args.drop_synthetic or "").split(",") if x}
     if drop:
         print(f"   synthetic cases dropped: {', '.join(sorted(drop))}")
     out.mkdir(parents=True, exist_ok=True)
@@ -979,6 +1000,10 @@ def run(args, oracle) -> int:
     for r in survivors:
         verdict = triage.get(r["id"], ("UNTRIAGED", ""))
         print(f"SURVIVED {r['id']} {r['file']}:{r['line']} [{verdict[0]}] {r['before']} => {r['after']}")
+    if prediction:
+        gaps = sum(triage[r["id"]][0].split(":")[0] in GAP_VERDICTS for r in survivors if r["id"] in triage)
+        print(f"prediction: {prediction[0]} survivors, measured {len(survivors)}; {prediction[1]} real gaps, measured "
+              f"{gaps}" + (f" (+ {len(untriaged)} untriaged)" if untriaged else ""))
     if not args.only and not args.functions and not args.drop_synthetic:
         alive = {r["id"] for r in survivors}
         for stale in sorted(t for t in set(triage) - alive if t.split(".")[1] in operators):

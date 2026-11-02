@@ -20,7 +20,7 @@ Commands (run from any checkout; scenarios through tools/ab.py of the main check
   py -3 tools/decomp_oracle.py replay --label L [--versions ...] [--negative DIR] [--extra-source FILE]
   py -3 tools/decomp_oracle.py replay --cases FILE.jsonl [...]      (replay of any case file)
   py -3 tools/decomp_oracle.py mutate --label L [--versions ...] [--functions a,b] [--operators ...]
-        [--drop-synthetic LABEL,...] [--list]                       (mutants, tools/decomp_mutants.py)
+        [--prediction NOTE] [--drop-synthetic LABEL,...] [--list]   (mutants, tools/decomp_mutants.py)
   py -3 tools/decomp_oracle.py hash                                 (hashes the results are tied to)
 
 `run` refuses a label folder that already holds results (one label = one run of one build), and writes run-<ID>.json
@@ -1259,13 +1259,16 @@ def main() -> int:
     m.add_argument("--versions")
     m.add_argument("--functions", help="comma-separated table names (default: every row of --status)")
     m.add_argument("--status", default="verified", help="status of the rows to mutate (default %(default)s)")
-    m.add_argument("--operators", help="comma-separated (default: the six of tools/decomp_mutants.py OPERATORS)")
+    m.add_argument("--operators", help="comma-separated (default: all of tools/decomp_mutants.py OPERATORS)")
     m.add_argument("--only", metavar="REGEX", help="keep the mutants whose id matches")
     m.add_argument("--drop-synthetic", metavar="LABEL,...", help="leave these synthetic cases out (labels)")
     m.add_argument("--jobs", type=int, default=6)
     m.add_argument("--out", help="work folder, under build/ (default build/oracle-mutants/<label>)")
     m.add_argument("--report", help="name of the json report in the work folder (default mutants.json)")
     m.add_argument("--triage", help="sorted survivors (default games/<game>/decomp/oracle_mutants/triage.tsv)")
+    m.add_argument("--prediction", metavar="NOTE", help="note written before the run, with the line 'mutants-prediction: "
+                                                         "survivors=<n> gaps=<n>' (a batch without one gets a warning; "
+                                                         "the output compares the figures)")
     m.add_argument("--list", action="store_true", help="list the mutants, build nothing")
     m.add_argument("--keep", action="store_true", help="keep each mutant's folder")
     args = p.parse_args()

@@ -11,7 +11,7 @@ HSD_IDGetDataFromTable.signedness.46044438	equivalent	the pointee only receives 
 HSD_LObjGetActiveByIndex.constant.bc203cc2	gap	needs a non-null light in slot 7: the array is a global, which synthetic cases cannot set, and no scenario reaches eight active lights
 obj_alloc_free.swapped_writes.9c3f942a	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
 obj_alloc_free.swapped_writes.144c8c57	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
-obj_alloc_free.write_before_read.1a61cf70	equivalent	the temporary is inlined with no store between the load and the store it feeds: same accesses in the same order
+obj_alloc_free.write_before_read.1a61cf70	equivalent	measured on valid addresses: same guest accesses in the same order and same final bytes, overlap included. Not the same machine code: the load moves past the address check of the block (only a bad block, which faults, can see it) and the oracle build loses a host read of the temporary
 HSD_PObjClearMtxMark.swapped_writes.7658ceac	equivalent	two stores to disjoint fields of one object, their values fixed before: same final bytes, which is what the oracle compares
 HSD_PObjClearMtxMark.signedness.2ddefe73	equivalent	the field is only stored here: same bytes in either type
 HSD_PObjClearFlags.signedness.2313c518	equivalent	bit operation truncated to 16 bits: same bits in either type
